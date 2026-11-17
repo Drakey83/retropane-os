@@ -231,6 +231,35 @@ index 4b1e40c..41d0718 100644
  void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h );
  #else
  static inline void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h ) { }
+diff --git a/engine/server/sv_save.c b/engine/server/sv_save.c
+index 54975d6..3b2e3e4 100644
+--- a/engine/server/sv_save.c
++++ b/engine/server/sv_save.c
+@@ -33,7 +33,11 @@ half-life implementation of saverestore system
+ #define SAVEGAME_VERSION		0x0071				// Version 0.71 GoldSrc compatible
+ #define CLIENT_SAVEGAME_VERSION	0x0067				// Version 0.67
+ 
+-#define SAVE_HEAPSIZE		0x400000				// reserve 4Mb for now
++// RetroPane (R298, run 37: the level change's 4 MiB refused with 34 of the
++// heap's 35 MiB in use): 1 MiB, its use logged at every save and an
++// overflow said plainly (a level's save is a few hundred KiB in GoldSrc's
++// own files); Xash reserves 4 MiB "for now", a PC's habit
++#define SAVE_HEAPSIZE		0x100000
+ #define SAVE_HASHSTRINGS		0xFFF				// 4095 unique strings
+ 
+ // savedata headers
+@@ -1565,6 +1569,11 @@ static SAVERESTOREDATA *SaveGameState( int changelevel )
+ 	// Write entity string token table
+ 	pTokenData = StoreHashTable( pSaveData );
+ 
++	// RetroPane (R298): what the level's save used of the buffer
++	Con_Printf( "save: %s used %i bytes of data and %i of tokens of the %i-byte buffer%s\n", sv.name,
++		pSaveData->size, pSaveData->tokenSize, pSaveData->bufferSize,
++		pSaveData->size + pSaveData->tokenSize >= pSaveData->bufferSize ? " (FULL: the save is cut short)" : "" );
++
+ 	// output to disk
+ 	if(( pFile = FS_Open( name, "wb", true )) == NULL )
+ 	{
 diff --git a/filesystem/io.c b/filesystem/io.c
 index d30047f..6128130 100644
 --- a/filesystem/io.c
@@ -676,7 +705,7 @@ index 03790d8..733b3a8 100644
  		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
  		{
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
-index e47e115..86c7a3a 100644
+index e47e115..7eada61 100644
 --- a/ref/soft/r_surf.c
 +++ b/ref/soft/r_surf.c
 @@ -236,7 +236,7 @@ R_TextureAnimation
@@ -688,7 +717,21 @@ index e47e115..86c7a3a 100644
  {
  	texture_t *base = s->texinfo->texture;
  	int       reletive;
-@@ -1137,9 +1137,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
+@@ -782,6 +782,13 @@ void R_InitCaches( void )
+ 			size += ( pix - 64000 ) * 3;
+ 	}
+ 
++	// RetroPane (R298): under ref_rp the 2700G holds the lit surfaces
++	// (r_emit.c's atlas, lit through its own scratch); this cache only
++	// serves the test's end shot drawn by the software renderer: 384 KiB
++	// (the largest surface, 512 x 256 texels, fits), not 1.5 MiB
++	if( !sw_surfcacheoverride.value && size > 384 * 1024 )
++		size = 384 * 1024;
++
+ 	// round up to page size
+ 	size = ( size + 8191 ) & ~8191;
+ 
+@@ -1137,9 +1144,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
  //
  // allocate memory if needed
  //

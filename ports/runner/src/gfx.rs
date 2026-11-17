@@ -39,7 +39,7 @@ use rp_hal_cabi::{Errno, Gfx};
 use rp_hal_mem::{load32_volatile, store32_volatile};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
 use rp_mbx3d_render::{Picture, PixelFormat, Target, TileOrder, binner, fixed, order_tile};
-use rp_port::gfx::{Piece, Screen, check, send};
+use rp_port::gfx::{Piece, Screen, check, send, send_runs};
 
 use super::panel;
 
@@ -634,8 +634,11 @@ const TA_LIMIT_US: u32 = 500_000;
 const RENDER_LIMIT_US: u32 = 50_000;
 /// Every this many frames the render is waited for at once and timed.
 const TIMED_EVERY: u32 = 16;
-/// The background: opaque black.
-const BLACK: u32 = 0xFF00_0000;
+/// The background: opaque black to the eye, but one step of blue off it
+/// (RGB565 `0x0001`: 8 is the 5-bit channel's 1 by its top bits), so a
+/// pixel nothing drew over is told from a dark texel: ref_rp's hole check
+/// counts them (the black walls, the owner, runs 37-39).
+const BLACK: u32 = 0xFF00_0008;
 
 /// The display's underrun flag (`DINTRS` bit 4, the graphics stream's
 /// fetch run short), cleared Dell's way; whether it was set (ADR-0035
@@ -1492,7 +1495,14 @@ impl Screen for Chip {
         // The frame as made goes straight to the TA: the split (its 7 KiB
         // strip buffer, a branch a word) cost 3.8 ms a frame in run 29.
         let left_out = if part == Part::All {
-            send(words, &mut put);
+            // The frame as runs of words, each in one tight loop.
+            drop(put);
+            send_runs(
+                words,
+                &mut feed,
+                |f, ws| f.put_words(ws),
+                |f| f.put(ta::Item::End),
+            );
             0
         } else {
             let mut split = Split {

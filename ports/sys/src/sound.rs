@@ -66,6 +66,10 @@ pub trait Voice {
     /// The program is over: its stream closed if it left one open, the DMA
     /// engine stopped (before the codec goes down).
     fn shut(&mut self);
+    /// The mixer's counts for the run's log (Half-Life run 39: the sound's
+    /// write 5.1% of the play, about 350 cycles a sample played: mixed
+    /// against re-mixed against played tells where).
+    fn report(&self, _out: &mut dyn core::fmt::Write) {}
 }
 
 /// The longest write the stream's ring is sized for, in milliseconds of
@@ -208,6 +212,15 @@ impl<R: DmaRing> Voice for Sound<'_, R> {
         if self.mixer.is_running() && now_ms.wrapping_sub(self.due_ms) as i32 >= 0 {
             self.tick(now_ms);
         }
+    }
+
+    fn report(&self, out: &mut dyn core::fmt::Write) {
+        let s = self.mixer.stats();
+        let _ = writeln!(
+            out,
+            "sound: the mixer woke {} times, mixed {} frames ({} of them re-mixed by {} rewrites), {} late, {} dry, {} samples clipped",
+            s.wakes, s.mixed, s.rewritten, s.rewrites, s.late, s.starved, s.clipped
+        );
     }
 
     fn shut(&mut self) {

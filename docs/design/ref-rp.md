@@ -373,7 +373,44 @@ skipped):** the guards' helmet tops (barneyt.mdl `BX_Chrome1`, chrome and
 flat shade, 40 triangles) were missing under the integer path. A chrome
 mesh now goes as every mesh, its texels `R_StudioSetupChrome`'s in
 integers (each bone's vectors 2.30 once an entity a frame, two integer dot
-products a normal: `RP_StudioChromeFixed`), run 37.
+products a normal: `RP_StudioChromeFixed`), run 37. **Proven by the owner's
+eye on run 37: "the helmet looks correct now".** The owner's ruling the
+same day: **draw everything, nothing skipped**: blended models drawn
+since (see-through by the model's alpha, additive 1 + 1, depth not
+written: the measured `blend`/`depth_test` words).
+
+**Kit 40, toward 45 a second (the owner, after run 39: "work longer on
+these big changes"):** run 39's samples (`local/half-life/run39-profile.txt`)
+named the costs; each lever's rule 0:
+
+- **The models' culling** (`RP_StudioClipCmd`): models are 85% of the
+  frame's words and the bus is the feed's cost. ref_gl leaves back faces
+  to the GPU (GL_FRONT culled), the software renderer draws them; the
+  2700G culls only after the bus carried them. Ours drops them on the
+  CPU from the TA's own integer x, y, Half-Life's GL winding, plus
+  triangles wholly off the screen, keeping gaps of one or two triangles
+  inside a strip (cheaper than a restart). `rp_cull` 0 / -1 for checks.
+- **The feed's software per word** (`Feed::put_words`, `send_runs`): run
+  39 paid 234 ns a word against the bus's ~133; now a run of words is one
+  tight loop, the FIFO's room read once a chunk. DMA was weighed and set
+  aside (R292: no faster than the CPU's stores, and the CPU would have to
+  start a piece every ~70 us).
+- **No double physics**: `cl_nopred 1`, `cl_lw 0` (one device, the server
+  runs the input in the same host frame: Host_Frame's order).
+- **The mip hold** (`RP_MipHold`): a face keeps its level until a quarter
+  past the line, so the atlas's churn (run 39: `RP_SurfacePlace` with its
+  uploads 4.2%, the CPU lighting 2.4%) stops while standing or strafing.
+- **The float compares that weren't** (`rp_fixq`, `RP_Fix16`, `RP_Fix30`):
+  the compiler turned bit tests back into `__aeabi_fcmpeq` calls (1.6%,
+  seen in the disassembly); an empty asm hides the bits' origin.
+- **The client's skeleton** (`ConcatTransforms`, hlsdk patch): the SDK's
+  floats (NEON where there is one) as integers, rotation 4.28 and offset
+  16.16, floats made back from their bits; the PC's check over 200,000
+  random bone pairs: within 2.4e-7 and 0.0005 units, out-of-range values
+  back to the floats.
+- **The black walls' witness** (`RP_HoleCheck`): the clear colour one step
+  off black, sampled every report, the first three frames with holes kept.
+
 
 In the emulator (`emu-xash-kit`, rp-v0.33.0): the 2700G's end shot has
 the scientists behind the desk as the software renderer's does, 95% of

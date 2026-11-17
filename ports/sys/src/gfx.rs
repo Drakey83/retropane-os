@@ -139,6 +139,49 @@ pub fn check(words: &[u32], g: &Gfx) -> Result<Counts, Refused> {
     walk(words, Some(g), |_| true)
 }
 
+/// A frame [`check`] took, as runs of words to `run` (a state block, a
+/// strip's header, its corners) and each strip's end to `end`, in the
+/// order [`send`] gives them word by word; either returning false stops it
+/// (the chip stuck). What was sent. The feed writes a run in one tight
+/// loop (run 39: the frame's words were costing ~100 ns each of software
+/// on top of the bus's ~133).
+pub fn send_runs<T>(
+    words: &[u32],
+    ctx: &mut T,
+    mut run: impl FnMut(&mut T, &[u32]) -> bool,
+    mut end: impl FnMut(&mut T) -> bool,
+) -> Counts {
+    let mut c = Counts::default();
+    let mut at = 0;
+    while at < words.len() {
+        let w = words[at];
+        if w == STATE {
+            let Some(block) = words.get(at..=at + STATE_WORDS) else {
+                break;
+            };
+            c.states += 1;
+            if !run(ctx, block) {
+                break;
+            }
+            at += 1 + STATE_WORDS;
+        } else if w & 0xFFFF_FF00 == STRIP || w & 0xFFFF_FF00 == FAN {
+            let len = (w & 0xFF) as usize * CORNER_WORDS;
+            let Some(corners) = words.get(at + 1..=at + len) else {
+                break;
+            };
+            c.strips += 1;
+            c.corners += w & 0xFF;
+            if !(run(ctx, &[w & 0xFFFF_FF00]) && run(ctx, corners) && end(ctx)) {
+                break;
+            }
+            at += 1 + len;
+        } else {
+            break;
+        }
+    }
+    c
+}
+
 /// A frame [`check`] took, as pieces to `put` in order; `put` returning
 /// false stops it (the chip stuck). What was sent.
 pub fn send(words: &[u32], put: impl FnMut(Piece) -> bool) -> Counts {
@@ -249,6 +292,22 @@ mod tests {
                 true
             });
             assert_eq!(Ok(sent), r);
+            // The runs give the same words and ends in the same order.
+            let mut runs: Vec<Piece> = Vec::new();
+            let counted = send_runs(
+                words,
+                &mut runs,
+                |o, ws| {
+                    o.extend(ws.iter().map(|&w| Piece::Word(w)));
+                    true
+                },
+                |o| {
+                    o.push(Piece::End);
+                    true
+                },
+            );
+            assert_eq!(Ok(counted), r);
+            assert_eq!(runs, out);
         }
         (r, out)
     }

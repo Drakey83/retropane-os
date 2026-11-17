@@ -76,7 +76,7 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +exec {BINDS_FILE}",
+            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +cl_nopred 1 +cl_lw 0 +exec {BINDS_FILE}",
             play_secs(),
             limit_secs()
         ),
@@ -110,15 +110,16 @@ bind B_BUTTON +use
 bind X_BUTTON +duck
 bind Y_BUTTON +reload
 bind L1_BUTTON invnext
-bind MOUSE1 +attack
+unbind MOUSE1
 echo rp_binds.cfg: the X51v's buttons bound
 ";
 /// The engine's names (Xash `engine/client/input/in_keys.c` `keynames`)
 /// of the keys `ports/xash/platform/in_rp.c` sends: the D-pad's arrows,
-/// its centre, the four program buttons and Record (`K_AUX1`-`K_AUX5`),
-/// the pen's first button.
+/// its centre, the four program buttons and Record (`K_AUX1`-`K_AUX5`)
+/// (the pen's tap is not bound: the owner, 2026-11-16, only the D-pad's
+/// centre fires; dragging looks around).
 #[cfg(test)]
-const KEY_NAMES: [&str; 11] = [
+const KEY_NAMES: [&str; 10] = [
     "UPARROW",
     "DOWNARROW",
     "LEFTARROW",
@@ -129,7 +130,6 @@ const KEY_NAMES: [&str; 11] = [
     "X_BUTTON",
     "Y_BUTTON",
     "L1_BUTTON",
-    "MOUSE1",
 ];
 /// [`BINDS`]' file in the game's folder on the card.
 pub const BINDS_FILE: &str = "rp_binds.cfg";
@@ -379,6 +379,9 @@ mod tests {
             let key = line.split_whitespace().nth(1).unwrap_or("");
             assert!(KEY_NAMES.contains(&key), "{line}");
         }
+        // A tap never fires (the owner, 2026-11-16): only the D-pad's centre.
+        assert!(BINDS.lines().any(|l| l == "unbind MOUSE1"));
+        assert!(!BINDS.lines().any(|l| l.starts_with("bind MOUSE1")));
     }
 
     #[test]

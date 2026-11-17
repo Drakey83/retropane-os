@@ -290,12 +290,29 @@ fn word(r: u8, v: u16) -> [u8; 2] {
     [(r << 1) | (v >> 8) as u8 & 1, v as u8]
 }
 
+/// A level's attenuation in dB (0-100): the audio taper, amplitude
+/// `(level / 100)^2`, so `40 log10(level / 100)` dB, rounded, at most the
+/// codec's 73 dB (computed offline: `round(-40 * log10(l / 100))`). Iterate, don't
+/// imitate: Windows Mobile's `waveOut` volume is linear in amplitude (most
+/// of its travel loud), and this driver's first curve was linear in dB
+/// (level 60 was -29 dB: Half-Life "cant hardly be heard", the owner
+/// 2026-11-16); the square taper is what modern mixers' faders follow:
+/// 60 is -9 dB, 30 is -21 dB, each step about as loud as the last.
+const TAPER_DB: [u8; 101] = [
+    73, 73, 68, 61, 56, 52, 49, 46, 44, 42, 40, 38, 37, 35, 34, 33, 32, 31, 30, 29,
+    28, 27, 26, 26, 25, 24, 23, 23, 22, 22, 21, 20, 20, 19, 19, 18, 18, 17, 17, 16,
+    16, 15, 15, 15, 14, 14, 13, 13, 13, 12, 12, 12, 11, 11, 11, 10, 10, 10, 9, 9,
+    9, 9, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4,
+    4, 4, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 0,
+    0,
+];
+
 /// The output volume code for `level` (0-100, already clamped).
 fn volume_code(level: u32) -> u16 {
     if level == 0 {
         0 // below VOL_MIN: muted
     } else {
-        VOL_MIN + ((VOL_0DB - VOL_MIN) as u32 * level / 100) as u16
+        (VOL_0DB - u16::from(TAPER_DB[level.min(100) as usize])).max(VOL_MIN)
     }
 }
 
@@ -542,6 +559,10 @@ mod tests {
         assert_eq!(volume_code(0), 0);
         assert_eq!(volume_code(100), VOL_0DB);
         assert_eq!(volume_code(1), VOL_MIN);
+        // The audio taper: 60 at -9 dB, 50 at -12, 30 at -21 (40 log10).
+        assert_eq!(volume_code(60), VOL_0DB - 9);
+        assert_eq!(volume_code(50), VOL_0DB - 12);
+        assert_eq!(volume_code(30), VOL_0DB - 21);
         let mut last = 0;
         for l in 1..=100 {
             let c = volume_code(l);

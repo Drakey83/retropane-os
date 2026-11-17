@@ -604,6 +604,7 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
 
     fn end(&mut self) {
         if let Some(v) = self.sound.as_mut() {
+            v.report(&mut Line(&mut self.console));
             v.shut();
         }
         // The screen back to the image, if the program left it open.

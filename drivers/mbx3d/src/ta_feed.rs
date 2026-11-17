@@ -232,6 +232,33 @@ impl<'r, B: RegisterBus> Feed<'r, B> {
         }
     }
 
+    /// `words` into the TA window in one tight run (the owner, run 39: "be
+    /// clever" toward 45 a second): the FIFO's room read once a chunk, the
+    /// window's wrap and the counts once a chunk, each word a load and a
+    /// store; the same words in the same order as [`Self::put`] a word at a
+    /// time (the bus's ~133 ns a word was paying ~100 ns more of software,
+    /// run 39: 234 ns a word). False once the scene has ended stuck.
+    pub fn put_words(&mut self, words: &[u32]) -> bool {
+        let mut i = 0;
+        while i < words.len() {
+            if self.credit == 0 && !self.wait_room() {
+                return false;
+            }
+            let window = (PORT_SIZE - self.at) / 4;
+            let k = (self.credit as usize).min(words.len() - i).min(window);
+            let mut at = PORT + self.at;
+            for &w in &words[i..i + k] {
+                self.regs.write32(at, w);
+                at += 4;
+            }
+            self.at = (self.at + 4 * k) % PORT_SIZE;
+            self.credit -= k as u32;
+            self.fed.words += k as u32;
+            i += k;
+        }
+        true
+    }
+
     /// Free FIFO words now (one status read, counted in [`Fed`]); 0 once
     /// stuck.
     pub fn room(&mut self) -> u32 {

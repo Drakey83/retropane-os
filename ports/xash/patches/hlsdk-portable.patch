@@ -1,3 +1,107 @@
+diff --git a/cl_dll/studio_util.cpp b/cl_dll/studio_util.cpp
+index 441aca8..f0fc678 100644
+--- a/cl_dll/studio_util.cpp
++++ b/cl_dll/studio_util.cpp
+@@ -36,8 +36,99 @@ ConcatTransforms
+ 
+ ================
+ */
++#if XASH_RETROPANE
++#include <stdint.h>
++// RetroPane OS (the Dell Axim X51v, no FPU): ConcatTransforms in integers.
++// Run 39's samples: the client's skeleton was 4.9% of the play in software
++// floats, ConcatTransforms half of it (36 multiplies and 27 adds a bone,
++// ~3,500 cycles). Iterate, don't imitate: the SDK's own way is floats (NEON
++// where there is one); ours takes each float's bits straight to fixed point
++// (rotation 4.28, offset 16.16), works the product in 32 x 32 -> 64
++// multiplies and makes the floats back from their bits, no helper call,
++// and keeps the float path for any value outside those ranges.
++static inline int rp_cf_fix( float f, int q, int32_t *out )
++{
++	uint32_t u, m;
++	int      sh;
++	int32_t  v;
++
++	__builtin_memcpy( &u, &f, sizeof( u ));
++	__asm__( "" : "+r"( u )); // the bit tests stay integer tests
++	if(( u & 0x7FFFFFFFu ) == 0 )
++	{
++		*out = 0;
++		return 1;
++	}
++	sh = (int)( u >> 23 & 0xFF ) - 127 - 23 + q;
++	if( sh < -24 )
++	{
++		*out = 0;
++		return 1;
++	}
++	if( sh > 7 ) // |f| at least 2^(31 - q): outside the range
++		return 0;
++	m = ( u & 0x007FFFFFu ) | 0x00800000u;
++	v = (int32_t)( sh >= 0 ? m << sh : m >> -sh );
++	*out = u >> 31 ? -v : v;
++	return 1;
++}
++
++static inline float rp_cf_float( int32_t v, int q )
++{
++	uint32_t a, s = 0, bits;
++	int      e;
++	float    f;
++
++	if( v == 0 )
++		return 0.0f;
++	if( v < 0 )
++	{
++		s = 0x80000000u;
++		a = 0u - (uint32_t)v;
++	}
++	else
++		a = (uint32_t)v;
++	e = 31 - __builtin_clz( a );
++	a = e > 23 ? a >> ( e - 23 ) : a << ( 23 - e );
++	bits = s | (uint32_t)( e - q + 127 ) << 23 | ( a & 0x007FFFFFu );
++	__builtin_memcpy( &f, &bits, sizeof( f ));
++	return f;
++}
++
++// 1 when done in integers, 0 when a value is out of range (the caller's
++// floats then).
++static inline int rp_concat_fixed( float in1[3][4], float in2[3][4], float out[3][4] )
++{
++	int32_t a[3][4], b[3][4];
++
++	for( int i = 0; i < 3; i++ )
++		for( int j = 0; j < 4; j++ )
++			if( !rp_cf_fix( in1[i][j], j == 3 ? 16 : 28, &a[i][j] ) || !rp_cf_fix( in2[i][j], j == 3 ? 16 : 28, &b[i][j] ))
++				return 0;
++	for( int i = 0; i < 3; i++ )
++	{
++		for( int j = 0; j < 4; j++ )
++		{
++			int64_t sum = (int64_t)a[i][0] * b[0][j] + (int64_t)a[i][1] * b[1][j] + (int64_t)a[i][2] * b[2][j];
++			int64_t r = sum >> 28;
++
++			if( j == 3 )
++				r += a[i][3];
++			if( r > 0x7FFFFFFF || r < -0x7FFFFFFF )
++				return 0;
++			out[i][j] = rp_cf_float( (int32_t)r, j == 3 ? 16 : 28 );
++		}
++	}
++	return 1;
++}
++#endif // XASH_RETROPANE
++
+ void ConcatTransforms( float in1[3][4], float in2[3][4], float out[3][4] )
+ {
++#if XASH_RETROPANE
++	if( rp_concat_fixed( in1, in2, out ))
++		return;
++#endif
+ #if XASH_SIMD_NEON
+ 	float32x4_t in2_row0 = vld1q_f32( in2[0] );
+ 	float32x4_t in2_row1 = vld1q_f32( in2[1] );
 diff --git a/public/build.h b/public/build.h
 index 5f4d861..4c70960 100644
 --- a/public/build.h

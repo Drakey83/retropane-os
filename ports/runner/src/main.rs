@@ -92,8 +92,10 @@ mod image {
     /// The touch chip's select and pen lines (docs/hw/touch.md).
     const TS_CS: u8 = 24;
     const TS_PENIRQ: u8 = 94;
-    /// The codec's output level, 0-100.
-    const LEVEL: u32 = 60;
+    /// The codec's output level, 0-100: full (0 dB), the game's own volume
+    /// setting is the player's control (Half-Life's sound was "cant hardly
+    /// be heard" at 60, then -29 dB: the owner, 2026-11-16).
+    const LEVEL: u32 = 100;
     /// The sound's memory is sized for the largest stream a game opens
     /// here: 44.1 kHz stereo.
     const SOUND_FOR: (u32, u8) = (44_100, 2);

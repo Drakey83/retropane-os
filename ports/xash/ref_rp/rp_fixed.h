@@ -35,6 +35,9 @@ static inline int32_t rp_fixq( float f, int q )
 
 	/* inline even where the build is -ffreestanding (no builtins) */
 	__builtin_memcpy( &u, &f, sizeof( u ));
+	/* hidden from the optimiser: it turned the bit tests below back into
+	   float compares, each a software call (run 39: __aeabi_fcmpeq 1.6%) */
+	__asm__( "" : "+r"( u ));
 	if(( u & 0x7FFFFFFFu ) == 0 )
 		return 0;
 	/* f = 1.m 2^e, the value m 2^(e - 23 + q) */

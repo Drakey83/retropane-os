@@ -819,6 +819,35 @@ mod feed {
     }
 
     #[test]
+    fn words_in_runs_write_what_words_one_at_a_time_write() {
+        // 3,000 words: past the 510-word FIFO many times and across the
+        // window's wrap (1,024 words), the FIFO full once along the way.
+        let words: Vec<u32> = (0..3_000u32).map(|k| 0x1000_0000 + k).collect();
+        let writes = |runs: bool| {
+            let mut bus = idle(0);
+            bus.script_reads(MBX + reg::STATUS, &[level(0), level(0x1FE), level(0)]);
+            let mut f = ta::Feed::start(&mut bus, &READY, &GLESFEAT, CLOCK, 200_000);
+            if runs {
+                assert!(f.put_words(&words[..7]));
+                assert!(f.put(ta::Item::End));
+                assert!(f.put_words(&words[7..]));
+            } else {
+                for &w in &words[..7] {
+                    assert!(f.put(ta::Item::Word(w)));
+                }
+                assert!(f.put(ta::Item::End));
+                for &w in &words[7..] {
+                    assert!(f.put(ta::Item::Word(w)));
+                }
+            }
+            let fed = f.finish();
+            assert!(fed.done);
+            (bus.writes(), fed.words)
+        };
+        assert_eq!(writes(true), writes(false));
+    }
+
+    #[test]
     fn the_scene_end_bit_can_be_off_for_the_body_and_on_for_the_end() {
         let mut bus = idle(0);
         let mut f = ta::Feed::start(&mut bus, &READY, &GLESFEAT, CLOCK, 200_000);
