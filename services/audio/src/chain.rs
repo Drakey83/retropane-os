@@ -75,6 +75,9 @@ const fn round(v: f64) -> i32 {
 
 /// The speaker's filter.
 pub const SPEAKER_HP: Biquad = high_pass(SPEAKER_HP_HZ);
+// The high-pass's numerator is b0 (1, -2, 1) exactly in its stored Q30
+// words, so [`high_pass_step`] may take it as one product.
+const _: () = assert!(SPEAKER_HP[2] == SPEAKER_HP[0] && SPEAKER_HP[1] == -2 * SPEAKER_HP[0]);
 
 /// The chain's state between blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,7 +154,7 @@ impl State {
                 let mut st = *z;
                 for f in 0..BLOCK {
                     let s = &mut mix[2 * f + c];
-                    *s = biquad(&SPEAKER_HP, &mut st, *s);
+                    *s = high_pass_step(&SPEAKER_HP, &mut st, *s);
                 }
                 *z = st;
             }
@@ -253,7 +256,24 @@ impl State {
     }
 }
 
+/// The cookbook biquad for a high-pass whose numerator is `b0 (1, -2, 1)`
+/// (the stored words, asserted above): `b0 x + b1 x1 + b2 x2` is
+/// `b0 (x - 2 x1 + x2)` in exact integers (the sum fits 32 bits: Q8
+/// samples are under 2^24), so three products a sample where the
+/// cookbook's form takes five. The same output bit for bit (a test holds
+/// them equal).
 #[inline(always)]
+fn high_pass_step(c: &Biquad, z: &mut [i32; 4], x: i32) -> i32 {
+    let acc = i64::from(c[0]) * i64::from(x - 2 * z[0] + z[1])
+        - i64::from(c[3]) * i64::from(z[2])
+        - i64::from(c[4]) * i64::from(z[3]);
+    let y = (acc >> 30) as i32;
+    *z = [x, z[0], y, z[2]];
+    y
+}
+
+/// The cookbook's direct form I: the reference for [`high_pass_step`].
+#[cfg(test)]
 fn biquad(c: &Biquad, z: &mut [i32; 4], x: i32) -> i32 {
     let acc = i64::from(c[0]) * i64::from(x)
         + i64::from(c[1]) * i64::from(z[0])
@@ -341,6 +361,25 @@ mod tests {
         let mut st = State::default();
         let (out, _) = run(&mut st, &[0; 1_024], false);
         assert!(out.iter().all(|&f| f == (0, 0)));
+    }
+
+    /// The speaker's three-product step gives the cookbook biquad's
+    /// output bit for bit, across full scale, the edges and noise.
+    #[test]
+    fn the_high_pass_step_is_the_biquad_exactly() {
+        let (mut a, mut b) = ([0i32; 4], [0i32; 4]);
+        let mut r = 0x1234_5678u32;
+        for k in 0..200_000u32 {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            let x = match k % 5 {
+                0 => CEIL,
+                1 => -CEIL - 256,
+                _ => ((r as i32) >> 7).clamp(-CEIL - 256, CEIL),
+            };
+            assert_eq!(high_pass_step(&SPEAKER_HP, &mut a, x), biquad(&SPEAKER_HP, &mut b, x), "at {k}");
+        }
     }
 
     #[test]

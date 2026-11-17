@@ -536,9 +536,14 @@ fn the_block_path_gives_exactly_what_the_frame_path_gives() {
                 let start = sim.m.status(id, 0).unwrap().actual_start.unwrap();
                 let s = sim.m.slots.iter_mut().flatten().next().unwrap();
                 assert!(s.ramp.2 > start, "the ramp is inside the stream");
-                for b in (start.saturating_sub(64)..start + frames(600)).step_by(BLOCK / 2) {
+                // Both lanes: into a mix with something in it, and the
+                // block's first stream written in (`fresh`).
+                for (b, fresh) in (start.saturating_sub(64)..start + frames(600))
+                    .step_by(BLOCK / 2)
+                    .flat_map(|b| [(b, false), (b, true)])
+                {
                     let mut fast = [0i32; 2 * BLOCK];
-                    if s.add_fast(b, &mut fast) {
+                    if s.add_fast(b, &mut fast, fresh) {
                         used += 1;
                         let mut exact = [0i32; 2 * BLOCK];
                         let starved = s.starved_at;
@@ -550,7 +555,7 @@ fn the_block_path_gives_exactly_what_the_frame_path_gives() {
                         );
                         assert_eq!(
                             fast, exact,
-                            "{rate} Hz, {ch} ch, volume {volume}, block {b}"
+                            "{rate} Hz, {ch} ch, volume {volume}, block {b}, fresh {fresh}"
                         );
                     }
                 }

@@ -386,7 +386,11 @@ static void RP_Walk( uint64_t played_us )
 	if( !started )
 	{
 		started = 1;
-		Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 100\nvolume 0.05\nMP3Volume 0\n+forward\n" ); // quiet: nobody is listening (the owner, 2026-11-16: "my daughter is trying to sleep") // the flashlight on (R308: its dynamic light every frame)
+		/* the suit first (the owner, 2026-11-17: tests measure with the
+		   HUD, and the touch keys show only with the suit; without it the
+		   game ignored impulse 100, so the runs to 53 had no flashlight),
+		   the flashlight once it is picked up */
+		Cbuf_AddText( "sv_cheats 1\ngod\ngive item_suit\nwait\nwait\nwait\nimpulse 100\nvolume 0.05\nMP3Volume 0\n+forward\n" ); // quiet: nobody is listening (the owner, 2026-11-16: "my daughter is trying to sleep") // the flashlight on (R308: its dynamic light every frame)
 		VectorCopy( cl.simorg, last );
 		stuck_check = ms + 1000;
 		turn_until = next = used = 0;
@@ -525,10 +529,14 @@ void Platform_RunEvents( void )
 	RP_MemoryLog();
 	RP_End();
 
-	/* the touch keys while a game is played (not the menu or console):
+	/* the touch keys while a game is played (not the menu or console)
+	   and the player has the HEV suit (the owner, 2026-11-17: only once
+	   the suit is on, as the game's own HUD: its WEAPON_SUIT bit, 31, in
+	   the weapons the server sends; the flashlight is the suit's too):
 	   ref_rp draws them by this cvar, the touch tests them by it */
 	{
-		int on = cls.state == ca_active && cls.key_dest == key_game;
+		int suit = ( (unsigned)cl.frames[cl.parsecountmod].clientdata.weapons >> 31 ) & 1;
+		int on = cls.state == ca_active && cls.key_dest == key_game && suit;
 
 		if( on != in_rp.keys_on )
 		{

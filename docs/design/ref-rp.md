@@ -701,6 +701,17 @@ a strip; a frame needing more goes by the CPU, counted). Off by default
 until the X51v draws it: its first run measures `-rpchain` against the
 CPU's feed on the same walk.
 
+**Kit 57 (2026-11-17, the owner: "Start the next batch toward 30, biggest
+levers first": yes), all exact:**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The game's C flags | `-ffreestanding` for everything built for the X51v (bare metal's textbook: the C library must not call itself) | the game's modules hosted (builtins on); picolibc keeps `-ffreestanding` | clang lets no flag bring builtins back under freestanding, so every small `memcpy`/`memset` was a call: the traces' 4-byte float-bit copies (`RP_Lt0`, `RP_Ge0`) and the rest, `memcpy` + `memset` + `__aeabi_memcpy4` ~4.7% of run 53 N's play |
+| The OS mixer's add (one stereo stream at 44.1 kHz, full volume: Half-Life's) | a general per-sample add with a saturating sum, a gain test and a channel test | the block's first stream written into the empty mix a run at a time | run 53: 128 cycles a frame for the add; the same values (`0 + v` never saturates; the test holds the fast and the reference paths equal both ways) |
+| The speaker's high-pass | the RBJ cookbook's direct form, five products a sample | its numerator is `b0 (1, -2, 1)` exactly in the stored Q30 words (asserted at build): three products | bit for bit the same (200,000 samples compared) |
+| The test walk | `impulse 100` without the suit (ignored by the game: no flashlight, no HUD in runs to 53) | `give item_suit` first | every run measures what the player sees: HUD and flashlight light |
+| The touch keys (LIGHT, FIRE 2) | shown whenever a map is played | only with the HEV suit (the owner, 2026-11-17), as the game's own HUD: `WEAPON_SUIT`, bit 31 of the weapons the server sends | no flashlight key before the suit has a flashlight |
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

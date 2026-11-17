@@ -428,8 +428,8 @@ impl Slot<'_> {
 
     /// Adds this stream into one block starting at output frame `b`.
     /// Returns whether it ran out of data in the block.
-    fn add(&mut self, b: u64, acc: &mut [i32; 2 * BLOCK]) -> bool {
-        if self.add_fast(b, acc) {
+    fn add(&mut self, b: u64, acc: &mut [i32; 2 * BLOCK], fresh: bool) -> bool {
+        if self.add_fast(b, acc, fresh) {
             return false;
         }
         self.add_exact(b, acc)
@@ -442,7 +442,11 @@ impl Slot<'_> {
     /// coefficients are worked out once per frame for both channels. Gives
     /// exactly what [`Self::add_exact`] gives (a test holds them equal);
     /// false (nothing added) when it doesn't apply.
-    fn add_fast(&self, b: u64, acc: &mut [i32; 2 * BLOCK]) -> bool {
+    ///
+    /// `fresh`: `acc` is all zeros (the block's first stream): a stereo
+    /// stream at the output's rate and full volume is then written in,
+    /// where adding would give the same values (`0 + v` never saturates).
+    fn add_fast(&self, b: u64, acc: &mut [i32; 2 * BLOCK], fresh: bool) -> bool {
         let Some((ao, asrc)) = self.anchor else {
             return false;
         };
@@ -491,6 +495,24 @@ impl Slot<'_> {
                 acc[2 * f + c] = acc[2 * f + c].saturating_add(v);
             }
         };
+        if bypass && fresh && g == UNITY && self.ch == 2 {
+            // Half-Life's case (one 44.1 kHz stereo stream, R306 item 3:
+            // the add was ~128 cycles a frame in run 53): the block's
+            // samples written in a run at a time up to the ring's wrap.
+            let cap = self.cap as usize;
+            let mut pos = (i0 % self.cap) as usize;
+            let mut f = 0;
+            while f < BLOCK {
+                let n = (BLOCK - f).min(cap - pos);
+                let src = &self.buf[4 * pos..4 * (pos + n)];
+                for (d, s) in acc[2 * f..2 * (f + n)].iter_mut().zip(src.as_chunks::<2>().0) {
+                    *d = i32::from(i16::from_le_bytes(*s)) << 8;
+                }
+                f += n;
+                pos = (pos + n) % cap;
+            }
+            return true;
+        }
         if bypass {
             // Straight from the ring, a frame at a time.
             let mut pos = (i0 % self.cap) as usize;
@@ -1406,8 +1428,10 @@ impl<'a> Mixer<'a> {
             }
             let mut acc = [0i32; 2 * BLOCK];
             let t0 = self.now();
+            let mut fresh = true;
             for s in self.slots.iter_mut().flatten() {
-                s.add(b, &mut acc);
+                s.add(b, &mut acc, fresh);
+                fresh = false;
             }
             let t1 = self.now();
             let at = (b % RING_FRAMES) as usize * 4;
