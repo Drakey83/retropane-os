@@ -43,6 +43,9 @@ use rp_port::gfx::{Piece, Screen, check, send, send_runs};
 
 use super::panel;
 
+mod probe4f;
+pub use probe4f::{Probe, WALK_BYTES};
+
 const W: u32 = 480;
 const H: u32 = 640;
 /// The screen's bytes a line.
@@ -810,6 +813,8 @@ pub struct Chip {
     /// C2: the core's turbo multiplier while the program has the screen
     /// (`-rpcpu`), or Dell's 624 MHz.
     cpu: Option<u8>,
+    /// Step 4f's probe (`-rp4f`).
+    probe: Option<Probe>,
 }
 
 impl Chip {
@@ -840,7 +845,15 @@ impl Chip {
             ladder: None,
             bar: false,
             cpu: None,
+            probe: None,
         }
+    }
+
+    /// Step 4f's probe (`-rp4f`, [`Probe`]).
+    #[must_use]
+    pub fn with_probe(mut self, probe: Option<Probe>) -> Self {
+        self.probe = probe;
+        self
     }
 
     /// C2 (`crate::cpu`): the core past 624 MHz while the program has the
@@ -1503,6 +1516,16 @@ impl Screen for Chip {
             } else {
                 o.recover(regs);
             }
+        }
+        // Step 4f's probe on its frames (not counted with the others).
+        if self.ladder.is_none()
+            && let Some(p) = self.probe.as_mut()
+            && p.due()
+        {
+            let r = p.frame(o, regs, parts, &bg, self.log);
+            self.frame = self.frame.wrapping_add(1);
+            self.report();
+            return r;
         }
         let _ = ta::clear(o.vram, &o.lay.ta);
         cpu::drain_write_buffer();

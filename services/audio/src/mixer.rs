@@ -294,9 +294,13 @@ pub struct Stats {
     /// took ~520 cycles a frame and the samples can't see inside it): the
     /// streams added into a block, the chain (speaker filter, limiter,
     /// dither), the cache written back for the DMA, and each wake whole.
+    /// This one: the streams added.
     pub cyc_add: u64,
+    /// The chain (speaker filter, limiter, dither).
     pub cyc_chain: u64,
+    /// The cache written back for the DMA.
     pub cyc_filled: u64,
+    /// Each wake whole.
     pub cyc_tick: u64,
 }
 

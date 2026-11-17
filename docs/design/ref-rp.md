@@ -590,6 +590,41 @@ during those pieces against idle: what the CPU keeps; (c) the paced way
 (P4's) on the game's real frames: CPU free time a frame. Then 4f is built
 on the answers.
 
+**Step 4f's probe, built (2026-11-17, `-rp4f <seconds>`,
+`ports/runner/src/gfx/probe4f.rs`; emulator-run, not on the X51v).**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Whether DMA may feed the TA | Dell's GLES: the CPU writes every word, a full FIFO stalls the bus; P4's `rp-tabench`: one unbroken list by DMA in pieces the FIFO has room for, timed on quads | the game's own frames fed twice each, by the CPU and by DMA (each run's whole cache lines by DMA, its ragged ends, the strip word and the strip's end by the CPU), both rendered and the pictures hashed against each other; 16 frames paced (phase A), then 16 unpaced (phase B, last: it may freeze the X51v) | the answer comes from the frames 4f would feed, judged by the chip's own pixels, not a synthetic list |
+| What the CPU keeps meanwhile | a stall is invisible to the samples and to a loop that only polls | while each piece runs the CPU walks 128 KiB (four times the D-cache) a line a load, against the same walk with the bus idle, measured before each phase | the share of the CPU's memory speed left while the chip is fed: what a double-buffered 4f would really get back |
+| The run's safety | a hung bus is found by the owner's eye | a piece not done in 200 ms aborted, a TA or render hang reset by the runner's recovery, phase B's first line on the card before its first piece, any failure ends the probe | a freeze, if it comes, is named in the log up to its moment |
+
+The walk's buffer is the last 128 KiB of the samples' room (sampling then
+covers ~48 s), the DMA channel is the CompactFlash reads' (the runner reads
+no CF card; the channel table's chains are at their budget). Probed frames
+are not counted in the `rp-gfx:` lines.
+
+Emulator (c1a0, 70 s, `+rp_emit 2 -rp4f 20`): both phases 16 of 16
+pictures the same as the CPU's, no TA, render or DMA failure; ~1,500
+pieces a frame (~26 words each: the runs are short). The emulator's DMA
+finishes at once, so the walk's share and the free time are the X51v's to
+say. What would overturn the probe's plan for 4f: phase B hanging or
+differing (then 4f stays paced), the walk keeping little of its speed
+during pieces (then the bus is the cost, not the CPU's stores), or the
+per-piece cost (arm, clean, poll ~1,500 times a frame) eating the free
+time: then 4f's design is one descriptor chain a frame (the strip words
+and ends from a side table), not a piece a run.
+
+**Run 52's batch (planned 2026-11-17; kit 54's build, only `args.txt`
+changes between runs; c1a0's walk, `-rpend 120`, compared with run 51's
+first 120 s: 22.9 fps).** A: the default (kits 52-54). B: `-rpwalloc`.
+C: `-rpmix22`. A2: the default again (the drift between A and A2 bounds
+what B and C can claim). D: c2a5 with the tour to c2a4b (`-rpend 150`:
+R309's water budget and sky, the conveyors, R310's heap fix across a
+level change). E, last: `-rp4f 20`, `-rpend 45`, the owner told it may
+freeze the X51v. Each run's log, samples and the mixer's stage cycles
+read against A.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

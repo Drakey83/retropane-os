@@ -58,7 +58,7 @@ pub const PLAY: &str = "RETROPANE_XASH_PLAY";
 
 /// Seconds of play: [`PLAY`]'s if it is a number from 1 to an hour, else
 /// [`PLAY_SECS`].
-fn play_secs() -> u32 {
+pub fn play_secs() -> u32 {
     std::env::var(PLAY)
         .ok()
         .and_then(|v| v.trim().parse::<u32>().ok())

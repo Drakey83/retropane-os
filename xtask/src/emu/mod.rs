@@ -1535,14 +1535,15 @@ fn check_xash_kit(log: &str) -> Result<Vec<String>, String> {
         }
     }
     let rates = xash_frame_rates(log);
-    // Five seconds a line: the play's time gives its count, less the one
-    // a line's own start can cost.
-    let least = (crate::xashkit::PLAY_SECS / 5).saturating_sub(2) as usize;
+    // Five seconds a line: the play's time (the run's own, `PLAY`'s when
+    // set) gives its count, less the one a line's own start can cost.
+    let play = crate::xashkit::play_secs();
+    let least = (play / 5).saturating_sub(2) as usize;
     if rates.len() < least {
         return Err(format!(
             "emu-xash-kit: {} frame-rate lines after the map began to play, at least {least} expected in {} s",
             rates.len(),
-            crate::xashkit::PLAY_SECS
+            play
         ));
     }
     if !log.contains("the last, written to /rp-xash/frame.565") {

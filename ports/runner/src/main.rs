@@ -139,6 +139,15 @@ mod image {
     /// server's text at 0xA8C00048, the engine's bss ending 0xA99F6284).
     const WALLOC_WORD: &[u8] = b"-rpwalloc";
     const WALLOC_FROM: u32 = 0xA8C0_0000;
+    /// A test run's word for step 4f's probe (`gfx::Probe`,
+    /// docs/design/ref-rp.md "Step 4f's probe before the build"), with the
+    /// seconds of frames before it: the game's frames fed by DMA, paced
+    /// then unpaced, each against the CPU's feed of the same words. Its
+    /// cache-missing walk takes `gfx::WALK_BYTES` from the end of
+    /// [`SAMPLE_ROOM`] (the samples then cover a little less of the run),
+    /// and its DMA channel is the CompactFlash reads' (the runner reads
+    /// no CF card; `dma_map`'s chains are at their budget).
+    const PROBE_WORD: &[u8] = b"-rp4f";
     const WALLOC_TO: u32 = 0xA9A0_0000;
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
@@ -1251,12 +1260,30 @@ mod image {
                 Some((n, [])) => u8::try_from(n).ok(),
                 _ => None,
             });
+        // Step 4f's probe: its walk from the samples' room, its channel.
+        let probe_after = seconds_after(&args[..arg_count], PROBE_WORD);
+        let (samples, probe) = match probe_after {
+            Some(after) => {
+                let (samples, walk) = samples.split_at_mut(SAMPLE_ROOM - super::gfx::WALK_BYTES);
+                let walk: &'static [u8] = walk;
+                let probe = rt::take_dma(rp_hal_pxa27x::dma_map::CF)
+                    .map(|dma| super::gfx::Probe::new(dma, walk, after));
+                let _ = writeln!(
+                    uart,
+                    "runner: -rp4f: step 4f's probe {} after {after} s of frames",
+                    if probe.is_some() { "set" } else { "NOT set (no DMA channel)" }
+                );
+                (samples, probe)
+            }
+            None => (samples, None),
+        };
         match CHIP.put_with(|| {
             super::gfx::Chip::new(gfx_log, mbx)
                 .with_rung(rung)
                 .with_ladder(ladder)
                 .with_bar(bar)
                 .with_cpu(cpu_n2)
+                .with_probe(probe)
         }) {
             Some(c) => s.set_screen(c),
             None => {
