@@ -76,7 +76,7 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +cl_nopred 1 +cl_lw 0 +exec {BINDS_FILE}",
+            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +cl_nopred 1 +cl_lw 0 +rp_defaults {LAYOUT}",
             play_secs(),
             limit_secs()
         ),
@@ -100,6 +100,18 @@ pub fn args() -> String {
 /// [`KEY_NAMES`] holds the names in_rp.c's keys carry; the test checks
 /// every bind against it. The `echo` line shows in the log that the file
 /// ran (the engine's console reaches the log with `-console`).
+/// The owner, run 46: "i would like the flashlight key and the secondary
+/// fire keys to be on the screen like i originally read, home to bring up
+/// the menu, and wifi/record to switch through weapons": Home (Y_BUTTON)
+/// `togglemenu`, Record (L1_BUTTON) the next weapon, the wireless button
+/// (R1_BUTTON) the one before; the two touch keys (`rp_hl_keys.h`) send
+/// C_BUTTON (the flashlight, `impulse 100`) and Z_BUTTON (the second
+/// fire). Every one an engine key, so the game's Controls menu remaps it.
+/// `sensitivity 12.8` (the owner, run 46: the stylus look "not nearly
+/// sensative enough"): the engine turns a mouse count by `sensitivity` x
+/// `m_yaw` 0.022 degrees, a desk mouse's scale (3: 42 degrees across the
+/// screen's 640 pixels); rule 0, as touch shooters do, one stroke across the
+/// long side turns half a circle: 180 / 640 / 0.022 = 12.8.
 pub const BINDS: &str = "bind UPARROW +forward
 bind DOWNARROW +back
 bind LEFTARROW +left
@@ -108,9 +120,13 @@ bind ENTER +attack
 bind A_BUTTON +jump
 bind B_BUTTON +use
 bind X_BUTTON +duck
-bind Y_BUTTON +reload
+bind Y_BUTTON togglemenu
 bind L1_BUTTON invnext
+bind R1_BUTTON invprev
+bind C_BUTTON impulse 100
+bind Z_BUTTON +attack2
 unbind MOUSE1
+sensitivity 12.8
 echo rp_binds.cfg: the X51v's buttons bound
 ";
 /// The engine's names (Xash `engine/client/input/in_keys.c` `keynames`)
@@ -119,7 +135,7 @@ echo rp_binds.cfg: the X51v's buttons bound
 /// (the pen's tap is not bound: the owner, 2026-11-16, only the D-pad's
 /// centre fires; dragging looks around).
 #[cfg(test)]
-const KEY_NAMES: [&str; 10] = [
+const KEY_NAMES: [&str; 13] = [
     "UPARROW",
     "DOWNARROW",
     "LEFTARROW",
@@ -130,9 +146,17 @@ const KEY_NAMES: [&str; 10] = [
     "X_BUTTON",
     "Y_BUTTON",
     "L1_BUTTON",
+    "R1_BUTTON",
+    "C_BUTTON",
+    "Z_BUTTON",
 ];
 /// [`BINDS`]' file in the game's folder on the card.
 pub const BINDS_FILE: &str = "rp_binds.cfg";
+/// The layout's number: `rp_defaults` execs [`BINDS_FILE`] only when the
+/// saved config's `rp_layout` is older (the player's remaps kept; the
+/// owner, run 46: "make sure you make the key remappable"). Raise it with
+/// any change to [`BINDS`].
+pub const LAYOUT: u32 = 2;
 
 /// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL
 /// M, N, P, the cores' divider): 125.67 / 1, the owner's ruling of
@@ -334,7 +358,7 @@ mod tests {
         assert_eq!(after("-rpbase"), Some("/rp-xash/game"));
         assert_eq!(after("-rodir"), Some("/Ports"));
         assert_eq!(after("-rpclock"), Some("29"));
-        assert_eq!(after("+exec"), Some(BINDS_FILE));
+        assert_eq!(after("+rp_defaults"), Some("2"));
         assert!(words.contains(&"-rpfps") && words.contains(&"-rpendshot"));
         assert!(words.contains(&"-rpsample") && words.contains(&"-rpfloat"));
         // Nothing that fills the 64 KiB run log, nothing written while
@@ -382,6 +406,8 @@ mod tests {
         // A tap never fires (the owner, 2026-11-16): only the D-pad's centre.
         assert!(BINDS.lines().any(|l| l == "unbind MOUSE1"));
         assert!(!BINDS.lines().any(|l| l.starts_with("bind MOUSE1")));
+        // The stylus turns half a circle across the long side (run 46).
+        assert!(BINDS.lines().any(|l| l == "sensitivity 12.8"));
     }
 
     #[test]

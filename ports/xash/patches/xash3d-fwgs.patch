@@ -172,6 +172,24 @@ index 95c85f7..4d67425 100644
  	{
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
+diff --git a/engine/client/input/input.c b/engine/client/input/input.c
+index 712a86e..bccf97f 100644
+--- a/engine/client/input/input.c
++++ b/engine/client/input/input.c
+@@ -493,6 +493,13 @@ void IN_Init( void )
+ 
+ 		Touch_Init();
+ 
++#if XASH_RETROPANE
++		{
++			void RP_InputInit( void ); // ports/xash/platform/in_rp.c: rp_layout, rp_defaults
++			RP_InputInit();
++		}
++#endif
++
+ #if XASH_USE_EVDEV
+ 		Evdev_Init();
+ #endif
 diff --git a/engine/client/parse/cl_parse.c b/engine/client/parse/cl_parse.c
 index 61de1f4..041bb8e 100644
 --- a/engine/client/parse/cl_parse.c
@@ -368,9 +386,20 @@ index a0d9c23..b7b36d9 100644
  {
  	size_t count = 0, size = 0, realsize = 0;
 diff --git a/engine/platform/platform.h b/engine/platform/platform.h
-index 4b1e40c..41d0718 100644
+index 4b1e40c..c2435b8 100644
 --- a/engine/platform/platform.h
 +++ b/engine/platform/platform.h
+@@ -384,8 +384,8 @@ static inline void GAME_EXPORT Platform_GetMousePos( int *x, int *y )
+ #endif // XASH_SDL
+ 
+ // the platform without a cursor of its own draws it after everything else
+-#if XASH_PS4
+-void Platform_DrawCursor( void );
++#if XASH_PS4 || XASH_RETROPANE
++void Platform_DrawCursor( void ); // RetroPane: the touch keys (in_rp.c)
+ #else
+ static inline void Platform_DrawCursor( void ) { }
+ #endif
 @@ -397,7 +397,7 @@ qboolean Platform_MouseConnected( void );
  static inline qboolean Platform_MouseConnected( void ) { return true; }
  #endif
@@ -497,6 +526,41 @@ index 8b213a2..4e0b05b 100644
  		// FIXME: use bounding-box-based frustum clipping info?
  
  		// copy the edges to bedges, flipping if necessary so always
+diff --git a/ref/soft/r_draw.c b/ref/soft/r_draw.c
+index 5e64fcd..53bcfc0 100644
+--- a/ref/soft/r_draw.c
++++ b/ref/soft/r_draw.c
+@@ -153,11 +153,22 @@ void GAME_EXPORT R_DrawStretchPic( float x, float y, float w, float h, float s1,
+ 		return;
+ 	if( w < 1.0f || h < 1.0f )
+ 		return;
++	if( rp_emit_on == 2 )
++	{
++		// ref_rp: the picture drawn by the 2700G (its 2D layer)
++		RP_EmitPic( x + vid.offset2d[0], y + vid.offset2d[1], w, h, s1, t1, s2, t2, pic );
++		return;
++	}
+ 	R_DrawStretchPicImplementation( x + vid.offset2d[0], y + vid.offset2d[1], w, h, width * s1, height * t1, width * s2, height * t2, pic );
+ }
+ 
+ void Draw_Fill( int x, int y, int w, int h )
+ {
++	if( rp_emit_on == 2 )
++	{
++		RP_EmitFill( x, y, w, h ); // ref_rp's 2D layer
++		return;
++	}
+ 	pixel_t src = vid.color;
+ 	int     alpha = vid.alpha;
+ 
+@@ -230,6 +241,7 @@ void GAME_EXPORT R_Set2DMode( qboolean enable )
+ 	vid.color = COLOR_WHITE;
+ 	vid.is2d = enable;
+ 	vid.alpha = 7;
++	RP_Emit2DColour( 1.0f, 1.0f, 1.0f, 1.0f );
+ 
+ 	if( enable )
+ 	{
 diff --git a/ref/soft/r_glblit.c b/ref/soft/r_glblit.c
 index 863d5b4..322f249 100644
 --- a/ref/soft/r_glblit.c
@@ -519,10 +583,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..580447a 100644
+index 1a7efd6..c5f7e4a 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,43 @@ typedef struct
+@@ -992,6 +992,48 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -531,6 +595,11 @@ index 1a7efd6..580447a 100644
 +void RP_EmitInit( void );
 +void RP_EmitFrame( void );
 +void RP_EmitNewMap( void );
++// ref_rp's 2D layer (the HUD, text, menus, the loading plaque)
++struct image_s;
++void RP_Emit2DColour( float r, float g, float b, float a );
++void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const struct image_s *pic );
++void RP_EmitFill( int x, int y, int w, int h );
 +void RP_EmitFace( msurface_t *fa );
 +void RP_EmitTriangle( void );
 +void RP_EmitSurfBuilt( qboolean relit );
@@ -567,7 +636,7 @@ index 1a7efd6..580447a 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..232b1b7 100644
+index 2c644f6..084020c 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -959,7 +959,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
@@ -590,16 +659,17 @@ index 2c644f6..232b1b7 100644
  }
  
  /*
-@@ -1140,6 +1142,8 @@ R_RenderFrame
+@@ -1113,6 +1115,9 @@ R_BeginFrame
  */
- void GAME_EXPORT R_RenderFrame( const ref_viewpass_t *rvp )
+ void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
++	// ref_rp: a frame's words start with the screen's update, 3D or not
++	// (the menu and the loading plaque are 2D alone)
 +	RP_EmitFrame();
-+
- 	if( r_norefresh->value )
- 		return;
+ 	R_Set2DMode( true );
  
-@@ -1224,6 +1228,7 @@ void GAME_EXPORT R_NewMap( void )
+ 	// draw buffer stuff
+@@ -1224,6 +1229,7 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -607,7 +677,7 @@ index 2c644f6..232b1b7 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1375,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1376,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  
@@ -948,3 +1018,15 @@ index e47e115..7eada61 100644
  				   r_drawsurf.surfwidth * r_drawsurf.surfheight * 2 );
  		CACHESPOT( surface )[miplevel] = cache;
  		cache->owner = &CACHESPOT( surface )[miplevel];
+diff --git a/ref/soft/r_triapi.c b/ref/soft/r_triapi.c
+index a4a90ea..a1b93ca 100644
+--- a/ref/soft/r_triapi.c
++++ b/ref/soft/r_triapi.c
+@@ -85,6 +85,7 @@ void GAME_EXPORT _TriColor4f( float rr, float gg, float bb, float aa )
+ 	// pglColor4f( r, g, b, a );
+ 	if( vid.rendermode == kRenderTransAdd || vid.rendermode == kRenderGlow )
+ 		rr *= aa, gg *= aa, bb *= aa;
++	RP_Emit2DColour( rr, gg, bb, aa ); // ref_rp's 2D layer: the colour at 8 bits
+ 
+ 	// gEngfuncs.Con_Printf("%d\n", vid.alpha);
+ 

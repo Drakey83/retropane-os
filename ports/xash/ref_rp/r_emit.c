@@ -97,6 +97,7 @@ static struct
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
+	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
@@ -178,6 +179,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: bones in integers: %u model parts a frame, %u bones joined with the view, %u normals lit\n",
 			rp_count.bparts / f, rp_count.bones / f, rp_count.lit / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: 2D: %u quads a frame (the HUD, text, fills), %u tiles not drawn (no room); %u see-through faces a frame (R303)\n",
+			rp_count.pics / f, rp_count.pics_skipped / f, rp_count.masked / f );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -884,6 +888,25 @@ in one run of 32 words, each texel through the renderer's own table to
 RGB565 (`vid.screen`, as its blit does) and to its twiddled place in the
 same pass. Texels past the surface's edge repeat its last row and column.
 */
+/* R303 (the owner, run 46: "the glass half wall is bright blue"): a face
+   with a see-through texture (`{`: SURF_TRANSPARENT) keeps ref_soft's key
+   texel (TRANSPARENT_COLOR) unlit in its surface; ours writes it as
+   ARGB1555 with that texel's alpha 0, drawn with the alpha test (the
+   models' masked skins' words, proven). Set per face by RP_ChipFace. */
+static int rp_face_masked;
+
+static inline uint32_t RP_FaceTexel( pixel_t p )
+{
+	uint32_t c;
+
+	if( !rp_face_masked )
+		return vid.screen[p];
+	if( p == TRANSPARENT_COLOR )
+		return 0;
+	c = vid.screen[p];
+	return 0x8000u | ( c >> 1 & 0x7FE0u ) | ( c & 0x1Fu );
+}
+
 static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy )
 {
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
@@ -904,8 +927,8 @@ static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy 
 				{
 					int a = rp_square[2 * k], b = rp_square[2 * k + 1];
 
-					dst[k] = vid.screen[at[( a >> 3 ) * w + ( a & 7 )]]
-						| (uint32_t)vid.screen[at[( b >> 3 ) * w + ( b & 7 )]] << 16;
+					dst[k] = RP_FaceTexel( at[( a >> 3 ) * w + ( a & 7 )] )
+						| RP_FaceTexel( at[( b >> 3 ) * w + ( b & 7 )] ) << 16;
 				}
 			}
 			else
@@ -923,7 +946,7 @@ static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy 
 							x = w - 1;
 						if( y >= h )
 							y = h - 1;
-						t[j] = vid.screen[src[y * w + x]];
+						t[j] = RP_FaceTexel( src[y * w + x] );
 					}
 					dst[k] = t[0] | t[1] << 16;
 				}
@@ -975,7 +998,7 @@ static void RP_FaceBlend( void )
 static void RP_PageState( int pg )
 {
 	/* each blend its own key on the page (models use +1 to +6) */
-	const void *what = (const uint8_t *)&rp_page[pg] + ( rp_face_blend ? 8 + rp_face_blend : 0 );
+	const void *what = (const uint8_t *)&rp_page[pg] + ( rp_face_blend ? 8 + rp_face_blend : 0 ) + ( rp_face_masked ? 16 : 0 );
 	uint32_t    tsp = RP_TSP_WORLD;
 
 	if( what == rp_state )
@@ -990,8 +1013,8 @@ static void RP_PageState( int pg )
 	rp_count.states++;
 	RP_Put( RP_GFX_STATE );
 	RP_Put( tsp );
-	RP_Put( RP_ISP_ALWAYS );
-	RP_Put( RP_TEX0_PAGE );
+	RP_Put( rp_face_masked ? RP_ISP_ALPHA : RP_ISP_ALWAYS );
+	RP_Put( rp_face_masked ? RP_TEX0_PAGE_1555 : RP_TEX0_PAGE );
 	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
 	RP_Put( RP_TEX2 );
 	RP_Put( RP_CLIP );
@@ -1202,7 +1225,10 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	const mtexinfo_t *tex = fa->texinfo;
 	const uint32_t   *cw[RP_MAX_CORNERS];
 	const int32_t    *st[RP_MAX_CORNERS], *cxy[RP_MAX_CORNERS];
-	int64_t           sx = 0, sy = 0; /* the face's centre on the screen, 28.4 */
+	/* the face's centre on the screen, 28.4: 32 bits hold it (a corner within
+	   +-2^20 of the screen x 64 corners), and an int64 divide is a library
+	   call on the PXA270 (run 46: RP_ChipFaceFixed 4.0% of the play) */
+	int32_t           sx = 0, sy = 0;
 	uint32_t          nearzi = 0;
 	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh, oldmip = -1, wanted;
 
@@ -1230,12 +1256,12 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 			nearzi = c->w[2];
 		cw[i] = c->w;
 		cxy[i] = c->xy;
-		sx += c->xy[0];
-		sy += c->xy[1];
+		sx += c->xy[0] >> 2; /* quarter pixels: 64 far corners can't overflow */
+		sy += c->xy[1] >> 2;
 		st[i] = rp_wst[fa->firstedge + i];
 	}
-	sx /= n;
-	sy /= n;
+	sx = sx / n * 4;
+	sy = sy / n * 4;
 
 	/* the software renderer's mip level for the nearest corner (positive
 	   floats compare as their bits) */
@@ -1359,6 +1385,9 @@ static void RP_ChipFace( msurface_t *fa )
 	if( fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS )
 		return;
 	RP_FaceBlend();
+	rp_face_masked = ( fa->flags & SURF_TRANSPARENT ) != 0;
+	if( rp_face_masked )
+		rp_count.masked++;
 	/* the world's faces by the integer tables (steps 4b, 4d), and a brush
 	   entity's (a submodel: the world's own vertices and corners, its view
 	   turned into the entity's space) by the same tables in its own view */
@@ -2601,4 +2630,273 @@ void RP_EmitNewMap( void )
 		RP_WorldTables( );
 	rp_map_frames = 0;
 	fprintf( stderr, "rp-emit: new map: per-map state reset, tables in %u us\n", (uint32_t)( rp_time_us( ) - t0 ));
+}
+
+/*
+==============================================================================
+The 2D layer (the owner, run 46: "no hud"; "switching between levels should
+say loading"; the weapon list and the menu the buttons open): the HUD, the
+console's text, the menu, the loading plaque and the touch keys, every
+picture the engine hands R_DrawStretchPic and every fill (CL_FillRGBA,
+Draw_Fill), drawn by the 2700G over the 3D frame.
+
+Rule 0. `ref_soft` copies each picture's pixels on the CPU into its buffer
+every frame, blending through tables at 8 levels of alpha (the HUD alone a
+few ms on the PXA270); `ref_gl` uploads each picture once as a GL texture
+and draws a quad. Ours: each picture (or each 256 x 256 tile of a larger
+one: the menu's 800 x 600 background) uploaded once into the atlas, RGB565
+or ARGB4444 when it has alpha (its 3-bit alpha widened, its colour from
+the renderer's table), a quad of four corners a draw: the CPU writes 37
+words where ref_soft wrote every pixel, and the 2700G blends at 8 bits
+(alpha, additive, the screen fade's multiply: the models' proven words),
+depth "always", not written, after the 3D. A fill samples one white
+square, so fills use the same textured words (no untextured form new to
+ref_rp).
+==============================================================================
+*/
+static uint32_t rp_2d_colour = 0xFFFFFFFFu; /* the colour the engine set last, ARGB */
+static struct
+{
+	int pg, qx, qy, gen;
+} rp_white = { -1, 0, 0, 0 };
+
+void RP_Emit2DColour( float r, float g, float b, float a )
+{
+	int32_t c[4] = { rp_fixq( a, 8 ), rp_fixq( r, 8 ), rp_fixq( g, 8 ), rp_fixq( b, 8 ) };
+	uint32_t w = 0;
+
+	for( int i = 0; i < 4; i++ )
+		w = w << 8 | (uint32_t)( c[i] < 0 ? 0 : c[i] > 255 ? 255 : c[i] );
+	rp_2d_colour = w;
+}
+
+/* A picture's texel: RGB565 through the renderer's table, or ARGB4444 from
+   `alpha_pixels` (ref_soft's: alpha in the top 3 bits, the pixel << 3). */
+static inline uint32_t RP_PicTexel( pixel_t p, int fmt )
+{
+	uint32_t a, c;
+
+	if( !fmt )
+		return vid.screen[p];
+	a = p >> 13;
+	if( !a )
+		return 0;
+	c = vid.screen[(pixel_t)( p << 3 )];
+	return ( a * 15 + 3 ) / 7 << 12 | ( c >> 12 & 0xFu ) << 8 | ( c >> 7 & 0xFu ) << 4 | ( c >> 1 & 0xFu );
+}
+
+/* `w` x `h` texels from `src` (rows `stride` apart) into page `pg` at
+   square (`qx`, `qy`), past the edges the last row and column again. */
+static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, int qx, int qy, int fmt )
+{
+	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
+	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
+
+	for( int sy = 0; sy < h8; sy++ )
+		for( int sx = 0; sx < w8; sx++ )
+		{
+			uint32_t *dst = page + RP_Interleave( qx + sx, qy + sy ) * 32;
+			int       x0 = sx << 3, y0 = sy << 3;
+
+			for( int k = 0; k < 32; k++ )
+			{
+				uint32_t t[2];
+
+				for( int j = 0; j < 2; j++ )
+				{
+					int c = rp_square[2 * k + j];
+					int x = x0 + ( c & 7 ), y = y0 + ( c >> 3 );
+
+					if( x >= w )
+						x = w - 1;
+					if( y >= h )
+						y = h - 1;
+					t[j] = RP_PicTexel( src[y * stride + x], fmt );
+				}
+				dst[k] = t[0] | t[1] << 16;
+			}
+		}
+}
+
+/* A picture tile's place in the atlas (the skins' table, keyed by its first
+   texel's address), uploaded when new or its page was dropped; NULL when
+   there is no room (the tile not drawn this frame, counted). */
+static const rp_skin_t *RP_PicPlace( const pixel_t *src, int stride, int w, int h, int fmt )
+{
+	uint32_t   slot = (uint32_t)( (uintptr_t)src >> 1 ) % RP_SKINS;
+	rp_skin_t *e;
+
+	if( rp_skin_world != WORLDMODEL )
+	{
+		memset( rp_skin, 0, sizeof( rp_skin ));
+		rp_skin_world = WORLDMODEL;
+	}
+	for( int i = 0;; i++ )
+	{
+		e = &rp_skin[( slot + i ) % RP_SKINS];
+		if( !e->pixels || ( e->pixels == src && e->w == w && e->h == h ))
+			break;
+		if( i == RP_SKINS - 1 )
+			return NULL;
+	}
+	if( !e->pixels || e->gen != rp_page[e->pg].gen )
+	{
+		int      x, y, pg;
+		uint64_t t0 = rp_time_us();
+
+		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &x, &y );
+		if( pg < 0 )
+			return NULL;
+		RP_PicUpload( src, stride, w, h, pg, x, y, fmt );
+		e->pixels = src;
+		e->w = (uint16_t)w;
+		e->h = (uint16_t)h;
+		e->pg = (uint8_t)pg;
+		e->qx = (uint8_t)x;
+		e->qy = (uint8_t)y;
+		e->masked = (uint8_t)( 2 + fmt );
+		e->gen = rp_page[pg].gen;
+		rp_count.upload_kib += ( w * h * 2 ) >> 10;
+		rp_count.upload_us += rp_time_us() - t0;
+	}
+	rp_page[e->pg].used = tr.framecount;
+	rp_page[e->pg].live += (uint32_t)e->w * e->h * 2;
+	return e;
+}
+
+/* The state block for a 2D draw from page `pg` (`fmt` 1: ARGB4444) in the
+   engine's render mode. */
+static void RP_2DState( int pg, int fmt )
+{
+	int         mode = vid.rendermode, blend;
+	uint32_t    tsp = ( RP_TSP_WORLD & 0x03FFF07Fu ) | 7u << 9 | 1u << 7; /* depth always, not written */
+	const void *what;
+
+	if( mode == kRenderTransAdd || mode == kRenderGlow )
+		blend = 2;
+	else if( mode == kRenderScreenFadeModulate )
+		blend = 3;
+	else if( fmt || ( rp_2d_colour >> 24 ) != 0xFF || mode != kRenderNormal )
+		blend = 1;
+	else
+		blend = 0;
+	what = (const uint8_t *)&rp_page[pg] + 32 + fmt * 4 + blend;
+	if( what == rp_state )
+		return;
+	switch( blend )
+	{
+	case 1: tsp |= 4u << 29 | 5u << 26 | 1u << 13; break; /* source alpha, one minus it */
+	case 2: tsp |= 1u << 29 | 1u << 26 | 1u << 13; break; /* one, one */
+	case 3: tsp |= 2u << 29 | 0u << 26 | 1u << 13; break; /* the destination's colour, zero */
+	default: tsp |= 1u << 29; break;                       /* one, zero */
+	}
+	rp_state = what;
+	rp_count.states++;
+	RP_Put( RP_GFX_STATE );
+	RP_Put( tsp );
+	RP_Put( RP_ISP_ALWAYS );
+	RP_Put( fmt ? ( RP_TEX0_PAGE & ~( 7u << 13 )) | 4u << 13 : RP_TEX0_PAGE );
+	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+	RP_Put( fmt ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha (rp-glesfeat L) */
+	RP_Put( RP_CLIP );
+	RP_Put( 0 );
+	RP_Whole();
+}
+
+/* A quad in the game's 640 x 480 picture, page texels (u0, v0)-(u1, v1). */
+static void RP_2DQuad( float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1 )
+{
+	const float gx[4] = { x0, x1, x0, x1 }, gy[4] = { y0, y0, y1, y1 };
+	const float gu[4] = { u0, u1, u0, u1 }, gv[4] = { v0, v0, v1, v1 };
+
+	RP_Put( RP_GFX_STRIP( 4 ));
+	for( int k = 0; k < 4; k++ )
+	{
+		RP_Put( RP_Bits( gy[k] ));                   /* the upright picture: x = the game's y */
+		RP_Put( RP_Bits( (float)RP_GAME_W - gx[k] )); /* y = 640 - the game's x */
+		RP_Put( 0x3F800000u );
+		RP_Put( 0x3F800000u );
+		RP_Put( rp_2d_colour );
+		RP_Put( RP_Bits( gu[k] * ( 1.0f / RP_PAGE_SIDE )));
+		RP_Put( RP_Bits( gv[k] * ( 1.0f / RP_PAGE_SIDE )));
+	}
+	RP_Whole();
+	rp_count.tris += 2;
+	rp_count.verts += 4;
+	rp_count.pics++;
+}
+
+/* R_DrawStretchPic: the picture's (s1, t1)-(s2, t2) (0 to 1) at (x, y), w x h. */
+void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const image_t *pic )
+{
+	const pixel_t *src;
+	int            fmt, pw, ph, tile;
+	float          S1, T1, S2, T2;
+
+	if( rp_emit_on != 2 || !pic || !pic->pixels[0] || w <= 0.0f || h <= 0.0f || s1 >= s2 || t1 >= t2 )
+		return;
+	fmt = pic->alpha_pixels != NULL;
+	src = fmt ? pic->alpha_pixels : pic->pixels[0];
+	pw = pic->width;
+	ph = pic->height;
+	if( pw < 1 || ph < 1 )
+		return;
+	/* a picture larger than a page in tiles of 256 (the menu's background) */
+	tile = pw <= RP_PAGE_SIDE && ph <= RP_PAGE_SIDE ? 0 : 256;
+	S1 = s1 * pw;
+	S2 = s2 * pw;
+	T1 = t1 * ph;
+	T2 = t2 * ph;
+	for( int ty = tile ? (int)T1 / tile * tile : 0; ty < ( tile ? T2 : 1 ); ty += tile ? tile : 1 )
+		for( int tx = tile ? (int)S1 / tile * tile : 0; tx < ( tile ? S2 : 1 ); tx += tile ? tile : 1 )
+		{
+			int   tw = tile ? ( pw - tx < tile ? pw - tx : tile ) : pw;
+			int   th = tile ? ( ph - ty < tile ? ph - ty : tile ) : ph;
+			float a0 = S1 > tx ? S1 : tx, a1 = S2 < tx + tw ? S2 : tx + tw;
+			float b0 = T1 > ty ? T1 : ty, b1 = T2 < ty + th ? T2 : ty + th;
+			const rp_skin_t *e;
+
+			if( a0 >= a1 || b0 >= b1 )
+				continue;
+			e = RP_PicPlace( src + (size_t)ty * pw + tx, pw, tw, th, fmt );
+			if( !e )
+			{
+				rp_count.pics_skipped++;
+				continue;
+			}
+			RP_2DState( e->pg, fmt );
+			RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y + ( b0 - T1 ) / ( T2 - T1 ) * h,
+				x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,
+				e->qx * 8 + ( a0 - tx ), e->qy * 8 + ( b0 - ty ), e->qx * 8 + ( a1 - tx ), e->qy * 8 + ( b1 - ty ));
+		}
+}
+
+/* Draw_Fill: a rectangle in the colour the engine set (CL_FillRGBA's). */
+void RP_EmitFill( int x, int y, int w, int h )
+{
+	float u, v;
+
+	if( rp_emit_on != 2 || w <= 0 || h <= 0 )
+		return;
+	if( rp_white.pg < 0 || rp_white.gen != rp_page[rp_white.pg].gen )
+	{
+		int       pg = RP_AtlasAlloc( 1, 1, &rp_white.qx, &rp_white.qy );
+		uint32_t *dst;
+
+		rp_white.pg = pg;
+		if( pg < 0 )
+		{
+			rp_count.pics_skipped++;
+			return;
+		}
+		dst = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES ) + RP_Interleave( rp_white.qx, rp_white.qy ) * 32;
+		for( int k = 0; k < 32; k++ )
+			dst[k] = 0xFFFFFFFFu;
+		rp_white.gen = rp_page[pg].gen;
+	}
+	rp_page[rp_white.pg].used = tr.framecount;
+	u = rp_white.qx * 8 + 4.0f;
+	v = rp_white.qy * 8 + 4.0f;
+	RP_2DState( rp_white.pg, 0 );
+	RP_2DQuad( (float)x, (float)y, (float)( x + w ), (float)( y + h ), u, v, u, v );
 }

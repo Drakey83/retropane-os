@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include "input.h"
 #include "platform/platform.h"
 #include <retropane.h>
+#include "rp_hl_keys.h"
 #include <stdio.h>
 
 /*
@@ -31,7 +32,13 @@ does it.
 The owner's pick (2026-11-15, the mock-up hl-controls-doomgles): the
 D-pad walks and turns, its centre fires and so does a touch of the
 stylus, Calendar jumps, Contacts is use, Mail crouches, Home reloads,
-Record is the next weapon, the wireless button the menu. That layout is
+Record is the next weapon, the wireless button the menu. Run 46 (the
+owner: "like doom gles, but make it make sense for hl", then "the
+flashlight key and the secondary fire keys to be on the screen like i
+originally read, home to bring up the menu, and wifi/record to switch
+through weapons"): Home the menu, Record the next weapon, the wireless
+button (K_AUX6) the one before, the flashlight and the second fire two
+touch keys (rp_hl_keys.h). That layout is
 a set of default bindings over these engine keys (not written yet: the
 engine reads them from its config), not code here.
 */
@@ -48,7 +55,7 @@ static const byte rp_keys[] =
 	[RP_KEY_MAIL]     = K_AUX3,
 	[RP_KEY_HOME]     = K_AUX4,
 	[RP_KEY_RECORD]   = K_AUX5,
-	[RP_KEY_WIFI]     = K_ESCAPE,
+	[RP_KEY_WIFI]     = K_AUX6, // R1_BUTTON: the second fire (run 46)
 };
 
 static struct
@@ -57,7 +64,98 @@ static struct
 	qboolean pen_down;
 	int x, y;       // where the stylus last was
 	int dx, dy;     // how far it was dragged since the engine last asked
+	int touch_key;  // the engine key a touch key holds down, or 0
+	int keys_on;    // the touch keys shown (in a game, not a menu or the console)
 } in_rp;
+
+/*
+The layout's defaults, remappable (the owner, run 46: "make sure you make
+the key remappable"). Rule 0: Xash (as Quake) execs a default config only
+when no config.cfg exists, and a port that execs its own binds at every
+start (ours until run 46) undoes the player's remaps each time. Ours: the
+saved config carries the layout's number (`rp_layout`, archived);
+`rp_defaults N` on the kit's command line execs rp_binds.cfg only when
+the saved layout is older than N, so the player's own bindings stay and a
+new layout from the kit still reaches him once.
+*/
+static CVAR_DEFINE_AUTO( rp_layout, "0", FCVAR_ARCHIVE, "RetroPane: the button layout the saved bindings follow (rp_defaults)" );
+
+static void RP_Defaults_f( void )
+{
+	int want = Cmd_Argc() > 1 ? Q_atoi( Cmd_Argv( 1 )) : 1;
+
+	if( (int)rp_layout.value >= want )
+	{
+		Con_Printf( "rp_defaults: the saved bindings kept (layout %d)\n", (int)rp_layout.value );
+		return;
+	}
+	Con_Printf( "rp_defaults: layout %d over the saved %d: rp_binds.cfg\n", want, (int)rp_layout.value );
+	Cbuf_InsertText( "exec rp_binds.cfg\n" );
+	Cvar_SetValue( "rp_layout", (float)want );
+}
+
+void RP_InputInit( void )
+{
+	Cvar_RegisterVariable( &rp_layout );
+	Cvar_Get( "rp_touchkeys", "0", 0, "RetroPane: 1 while the touch keys are shown (in_rp.c sets it)" );
+	Cmd_AddCommand( "rp_defaults", RP_Defaults_f, "RetroPane: rp_binds.cfg when the saved layout is older than the argument" );
+}
+
+/*
+The touch keys drawn (the engine's Platform_DrawCursor, after its HUD and
+console), as the owner's mock-up hl-controls-doomgles shows them: silver
+glass pills labelled LIGHT and FIRE 2, the label dark on the glass; held,
+the blue glow (the OS's selection, Aero not Metro). Drawn with the engine's
+own fill and text, so ref_rp's 2D layer draws them like the HUD: a few
+fills of graded alpha make the glass's light from top to bottom, one pixel
+cut from each corner rounds it.
+*/
+static void RP_GlassKey( int x, int y, int w, int h, const char *label, qboolean held )
+{
+	static const byte top[3] = { 238, 242, 246 }, bottom[3] = { 168, 178, 190 };
+	static const byte glow_top[3] = { 150, 200, 245 }, glow_bottom[3] = { 40, 110, 200 };
+	const byte *a = held ? glow_top : top, *b = held ? glow_bottom : bottom;
+	const int   bands = 8;
+	rgba_t      ink = { 34, 40, 48, 255 };
+	int         tw = 0, th = 0;
+
+	/* the rim: the rectangle less its four corner pixels */
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 1, y, w - 2, h, 70, 82, 96, 210 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x, y + 1, 1, h - 2, 70, 82, 96, 210 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + w - 1, y + 1, 1, h - 2, 70, 82, 96, 210 );
+	/* the body, lit from the top */
+	for( int i = 0; i < bands; i++ )
+	{
+		int y0 = y + 1 + ( h - 2 ) * i / bands, y1 = y + 1 + ( h - 2 ) * ( i + 1 ) / bands;
+
+		ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 1, y0, w - 2, y1 - y0,
+			a[0] + ( b[0] - a[0] ) * i / ( bands - 1 ), a[1] + ( b[1] - a[1] ) * i / ( bands - 1 ),
+			a[2] + ( b[2] - a[2] ) * i / ( bands - 1 ), 200 );
+	}
+	/* the glass's shine on its upper half */
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 2, y + 2, w - 4, ( h - 4 ) / 2, 255, 255, 255, 60 );
+	if( held )
+		ink[0] = ink[1] = ink[2] = 255;
+	Con_DrawStringLen( label, &tw, &th );
+	Con_DrawString( x + ( w - tw ) / 2, y + ( h - th ) / 2, label, ink );
+}
+
+void Platform_DrawCursor( void )
+{
+	if( !in_rp.keys_on )
+		return;
+	RP_GlassKey( RP_TK_X( 0 ), RP_TK_Y( 0 ), RP_TK_W, RP_TK_H, "LIGHT", in_rp.touch_key == K_C_BUTTON );
+	RP_GlassKey( RP_TK_X( 1 ), RP_TK_Y( 1 ), RP_TK_W, RP_TK_H, "FIRE 2", in_rp.touch_key == K_Z_BUTTON );
+}
+
+/* The touch key at the game's (x, y), or -1. */
+static int RP_TouchKeyAt( int x, int y )
+{
+	for( int k = 0; k < RP_TK_COUNT; k++ )
+		if( x >= RP_TK_X( k ) && x < RP_TK_X( k ) + RP_TK_W && y >= RP_TK_Y( k ) && y < RP_TK_Y( k ) + RP_TK_H )
+			return k;
+	return -1;
+}
 
 /*
 A test image's memory log: with -rpmemlist on the command line the
@@ -342,6 +440,23 @@ void Platform_RunEvents( void )
 	RP_MemoryLog();
 	RP_End();
 
+	/* the touch keys while a game is played (not the menu or console):
+	   ref_rp draws them by this cvar, the touch tests them by it */
+	{
+		int on = cls.state == ca_active && cls.key_dest == key_game;
+
+		if( on != in_rp.keys_on )
+		{
+			in_rp.keys_on = on;
+			Cvar_SetValue( "rp_touchkeys", (float)on );
+			if( !on && in_rp.touch_key )
+			{
+				Key_Event( in_rp.touch_key, false );
+				in_rp.touch_key = 0;
+			}
+		}
+	}
+
 	if( !in_rp.open )
 	{
 		// the owner's hold (2026-11-15): the D-pad under the left thumb, so
@@ -369,6 +484,29 @@ void Platform_RunEvents( void )
 		}
 		else if( ev.type == RP_EV_PEN )
 		{
+			/* a touch key: its engine key down while the stylus stays,
+			   no look and no MOUSE1 (the flashlight's C_BUTTON, the
+			   second fire's Z_BUTTON: bound in rp_binds.cfg, remappable) */
+			if( ev.code == RP_PEN_DOWN && in_rp.keys_on && !in_rp.touch_key )
+			{
+				int k = RP_TouchKeyAt( ev.x, ev.y );
+
+				if( k >= 0 )
+				{
+					in_rp.touch_key = k == 0 ? K_C_BUTTON : K_Z_BUTTON;
+					Key_Event( in_rp.touch_key, true );
+					continue;
+				}
+			}
+			if( in_rp.touch_key )
+			{
+				if( ev.code == RP_PEN_UP )
+				{
+					Key_Event( in_rp.touch_key, false );
+					in_rp.touch_key = 0;
+				}
+				continue;
+			}
 			if( ev.code == RP_PEN_MOVE && in_rp.pen_down )
 			{
 				in_rp.dx += ev.x - in_rp.x;
