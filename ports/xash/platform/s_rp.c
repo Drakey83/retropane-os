@@ -58,6 +58,7 @@ static struct
 	int samplepos;
 	int calls, saved; // calls made and not made (the run log's line)
 	uint64_t since;
+	qboolean peak; // kit 73: the output's peak measured only with -rpsndpeak
 } s_rp;
 
 qboolean SNDDMA_Init( void )
@@ -87,6 +88,7 @@ qboolean SNDDMA_Init( void )
 
 	s_rp.sent = 0;
 	s_rp.open = true;
+	s_rp.peak = Sys_CheckParm( "-rpsndpeak" ) != 0;
 
 	return true;
 }
@@ -186,6 +188,9 @@ void SNDDMA_Submit( void )
 		if( frames > RING_FRAMES - at )
 			frames = RING_FRAMES - at;
 
+		/* kit 73 (run 70: ~150 samples, every output sample read): asked
+		   for with -rpsndpeak, as a test run's other measurements are */
+		if( s_rp.peak )
 		{
 			/* the sound "cant hardly be heard" (the owner, run 37): the
 			   engine's own output peak every 5 s, against full scale

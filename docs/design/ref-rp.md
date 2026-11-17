@@ -1020,6 +1020,28 @@ fill wasted on the PXA270's four): out in the next kit (R318). From kit
 60: 103,808 -> 90,161 ms (13.1%); 30 fps is 91,667 ms: the margin is
 1,506 ms (1.6%).
 
+**Kit 73 (2026-11-17, exact):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The server's datagram and the client's command packet (`SV_SendClientDatagram`, `CL_WritePacket`) | Xash and GoldSrc: the whole buffer zeroed before each message (16 KiB and 8,000 bytes a frame), because the bit writer reads and masks whole dwords | `MSG_InitLazy`: the writer zeroes each dword the first time a write reaches it (64 bytes at a time, a frontier that only moves up); every other buffer as before | run 70: ~280 samples of `memset`/`__aeabi_memclr4` from these two; below the frontier everything was zeroed then written, so every byte a message holds is the cleared buffer's (kit 63 bounded the network's own buffer the same way) |
+| The engine's output peak (`SNDDMA_Submit`) | run 37's diagnostic: every output sample read for a once-a-minute loudness line | measured only when a test run asks (`-rpsndpeak`) | run 70: ~150 samples; the sound unchanged |
+| R318 | kit 72's clip-node hints | out | run 70: they cost more than they gave |
+
+**Run 71 (2026-11-17, kit 73, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **89,772 ms (30.6 fps) against kit 72's 90,161 ms
+(30.5 fps): 0.4% less time**, every 250-frame window faster (by 29-52
+ms) and every one of the thirteen marks at the same place (a message
+holding other bytes would have moved them: the client and server talk
+through these buffers every frame); the network guard 0. From kit 60:
+103,808 -> 89,772 ms (13.5%); the margin over 30 fps is 1,895 ms (2.1%).
+The owner, watching it: "looks glitchy" (things jump or stutter, frame
+pacing hitches). Not yet measured: the frame-rate lines are 5-second
+averages, so a single long frame does not show; the walk's own motion
+(game time a fixed 1/30 s a frame, ~1,500 frames walking into one
+corner) is the same since kit 60. R319: the worst frame of each 5-second
+line, and a check of the hitches against the kits before today's.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
