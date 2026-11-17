@@ -723,6 +723,14 @@ run, so changes of a few percent cannot be told apart this way.** Next:
 a fixed measurement, the engine's `timedemo` of one recorded demo (the
 same frames every run), before the next levers are judged.
 
+**The fixed-step walk (2026-11-17, the owner chose it over `timedemo`,
+which replays the client only).** `-rpwalk` now sets the engine's
+`host_framerate` to 1/30 s and the random seed on the run's first frame,
+before the map loads, and the walk's timers read the game's clock: every
+run plays the same frames. The score: `rp-walk: frames a-b took N ms`
+every 250 frames, with the player's position (the emulator: two runs at
+the same place at every mark). Kits compare window by window.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

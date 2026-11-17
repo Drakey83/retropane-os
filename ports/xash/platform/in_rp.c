@@ -355,14 +355,59 @@ static int RP_Tour( uint64_t ms, int *started )
 	return 1;
 }
 
+/*
+The walk at a fixed step (the owner, 2026-11-17: "fixed-step walk"; run 54:
+two runs of one kit differed by up to 10%, the walk's views following its
+own timing). The game's time goes on 1/30 s a frame whatever the frame
+took (`host_framerate`, the engine's own lock), the walk's timers read the
+game's clock, and the random generator starts from one seed, so every run
+plays the same frames in the same order: server, physics, sound, HUD and
+all, the whole game (a `timedemo` replays the client only). The score is
+the real time those frames took, logged every RP_WALK_WINDOW frames from
+the walk's start: two kits compare window by window.
+*/
+#define RP_WALK_STEP   "0.0333333"
+#define RP_WALK_WINDOW 250
+
+static void RP_WalkScore( void )
+{
+	static uint32_t frames;
+	static uint64_t t0, from;
+	uint64_t        now = rp_time_us();
+
+	if( !frames )
+		t0 = from = now;
+	frames++;
+	if( frames % RP_WALK_WINDOW == 0 )
+	{
+		uint32_t ms = (uint32_t)(( now - from ) / 1000u ), all = (uint32_t)(( now - t0 ) / 1000u );
+
+		/* where the player is: the same in every run when the frames are */
+		fprintf( stderr, "rp-walk: frames %u-%u took %u ms (%u.%u fps); frames 1-%u %u ms (%u.%u fps); at %d %d %d\n",
+			frames - RP_WALK_WINDOW + 1, frames, ms, RP_WALK_WINDOW * 10000u / ( ms ? ms : 1 ) / 10u,
+			RP_WALK_WINDOW * 10000u / ( ms ? ms : 1 ) % 10u, frames, all,
+			(uint32_t)( (uint64_t)frames * 10000u / ( all ? all : 1 ) / 10u ),
+			(uint32_t)( (uint64_t)frames * 10000u / ( all ? all : 1 ) % 10u ),
+			(int)cl.simorg[0], (int)cl.simorg[1], (int)cl.simorg[2] );
+		from = now;
+	}
+}
+
 static void RP_Walk( uint64_t played_us )
 {
 	static int      started, turn; // turn: 0 none, 1 left, -1 right
 	static uint64_t next, stuck_check, turn_until, used, active_at;
 	static int      toured, count; // a map of the tour started: wait for it (its server count)
 	static vec3_t   last;
-	uint64_t        ms = played_us / 1000;
+	static double   game0 = -1.0;
+	uint64_t        ms;
 	int             want = turn;
+
+	/* the game's clock, not the wall's: the same frames every run */
+	(void)played_us;
+	if( game0 < 0.0 && CL_Active( ))
+		game0 = cl.time;
+	ms = game0 < 0.0 ? 0 : (uint64_t)(( cl.time - game0 ) * 1000.0 );
 
 	if( RP_Tour( ms, &started ))
 	{
@@ -474,6 +519,14 @@ static void RP_End( void )
 		end = RP_Seconds( "-rpend" );
 		limit = RP_Seconds( "-rplimit" );
 		state = 0;
+		/* the fixed step and the seed from the first frame, before the
+		   map loads: its scientists and doors move from its first
+		   frame, in game time */
+		if( Sys_CheckParm( "-rpwalk" ))
+		{
+			COM_SetRandomSeed( 0x5EED );
+			Cvar_Set( "host_framerate", RP_WALK_STEP );
+		}
 	}
 	if( state == 2 )
 		return;
@@ -501,7 +554,10 @@ static void RP_End( void )
 	}
 
 	if( state == 1 && Sys_CheckParm( "-rpwalk" ))
+	{
 		RP_Walk( now - played_from );
+		RP_WalkScore();
+	}
 	if( state == 1 && end && now - played_from >= (uint64_t)end * 1000000u )
 		why = "its time of play|is over";
 	else if( limit && now >= (uint64_t)limit * 1000000u )
