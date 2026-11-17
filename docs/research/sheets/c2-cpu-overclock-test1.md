@@ -156,3 +156,8 @@ is memory first:
    every card write gated on both.
 4. **The owner watches.** A silent error is the risk: the log's counts, not
    the picture alone, decide.
+
+**Final (2026-11-16): "ok, if its dangerous dont do it".** Route B is the
+dangerous kind (RAM past its rating fails silently, onto a shared card),
+so it was not built or run; the RAM rule stands; C2 is closed at 624 MHz
+for this unit.
