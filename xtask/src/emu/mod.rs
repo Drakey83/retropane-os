@@ -1694,6 +1694,7 @@ pub fn boot_xash_kit(
         std::fs::write(&cf_image, data).map_err(|e| format!("{}: {e}", cf_image.display()))?;
         extra.extend(["-drive", &cf_drive]);
     }
+    let shots = kit_shots(root)?;
     let output = boot(
         root,
         &Boot {
@@ -1709,6 +1710,7 @@ pub fn boot_xash_kit(
             timeout: Duration::from_secs(u64::from(crate::xashkit::LIMIT_SECS) + 300),
         },
     )?;
+    let shots = shots.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
     let (_, log) = output
         .rsplit_once("RPL LOG")
         .ok_or("emu-xash-kit: the loader sent no run log")?;
@@ -1720,7 +1722,19 @@ pub fn boot_xash_kit(
     });
     std::fs::write(&kept, log).map_err(|e| format!("{}: {e}", kept.display()))?;
     eprint!("{log}");
+    for line in &shots {
+        eprintln!("    {line}");
+    }
+    // The 2700G's last frame kept even when a check below fails (a short
+    // play's few frame-rate lines: R309's look at a map is still wanted).
+    if let Ok(Some(gpu)) = xash_frame_words(&sd, XASH_GPU_FRAME) {
+        let gpu_png = root.join("target").join("xash-kit").join("emu-gpu-frame.png");
+        let picture = crate::ui_preview::png_rgb(XASH_FRAME.1, XASH_FRAME.2, &rgb565_to_rgb(&gpu));
+        let _ = std::fs::write(&gpu_png, picture);
+        eprintln!("    the 2700G's last frame: {}", gpu_png.display());
+    }
     let mut found = check_xash_kit(log).map_err(|e| format!("{e}:{log}"))?;
+    found.extend(shots);
     found.push(format!("the run log: {}", kept.display()));
     // Where the card log went while the runner held the SD controller.
     found.push(
@@ -3525,6 +3539,58 @@ impl Serial {
 /// Boots `image`, waits until its serial output contains `marker`, optionally
 /// takes a screenshot, then runs `steps`. Returns the serial output.
 /// How to boot an image in the emulator.
+/// `RETROPANE_EMU_SHOTS` (seconds after the emulator starts, by commas):
+/// the 2700G's screen at each, as `target/xash-kit/emu-shot-<s>.png`, while
+/// the kit runs (R309: the sky and water seen without a device run; the
+/// end shot is the software renderer's picture, not the chip's). A thread
+/// waits beside the boot; a shot the emulator could not give is said, not
+/// a failure.
+fn kit_shots(root: &Path) -> Result<Option<std::thread::JoinHandle<Vec<String>>>, String> {
+    let Ok(list) = std::env::var("RETROPANE_EMU_SHOTS") else {
+        return Ok(None);
+    };
+    let mut at: Vec<u64> = list
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .filter(|&v| v > 0 && v < 7200)
+        .collect();
+    at.sort_unstable();
+    let wsl = matches!(emulator(root)?, Emulator::Wsl);
+    let dir = root.join("target").join("xash-kit");
+    let ppm = scratch(root, "emu-kit-shot.ppm")?;
+    let port = monitor_port();
+    Ok(Some(std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let mut said = Vec::new();
+        for s in at {
+            let due = Duration::from_secs(s);
+            if let Some(wait) = due.checked_sub(start.elapsed()) {
+                std::thread::sleep(wait);
+            }
+            let guest = if wsl {
+                to_wsl_path(&ppm)
+            } else {
+                ppm.display().to_string()
+            };
+            let _ = std::fs::remove_file(&ppm);
+            let png = dir.join(format!("emu-shot-{s}.png"));
+            let r = crate::screen::Monitor::connect(port)
+                .and_then(|mut m| m.screendump(&guest, &ppm))
+                .and_then(|()| std::fs::read(&ppm).map_err(|e| e.to_string()))
+                .and_then(|b| crate::screen::parse_ppm(&b))
+                .and_then(|img| {
+                    let bytes = crate::ui_preview::png_rgb(img.width, img.height, &img.rgb);
+                    std::fs::write(&png, bytes).map_err(|e| format!("{}: {e}", png.display()))
+                });
+            said.push(match r {
+                Ok(()) => format!("the 2700G's screen at {s} s: {}", png.display()),
+                Err(e) => format!("no screen at {s} s: {e}"),
+            });
+        }
+        said
+    })))
+}
+
 struct Boot<'a> {
     image: &'a Path,
     /// Serial text that means the image is up (or done).

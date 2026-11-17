@@ -37,6 +37,20 @@ pub const PLAY_SECS: u32 = 120;
 pub const LIMIT_SECS: u32 = 1200;
 // The limit leaves the play its time after a slow start.
 const _: () = assert!(LIMIT_SECS >= PLAY_SECS * 5);
+/// The variable for the map a run starts on (R309: the sky and water of
+/// c2a5 in the emulator, not reached by the walk's tour there: R311).
+pub const MAP_VAR: &str = "RETROPANE_XASH_MAP";
+
+/// The run's first map: [`MAP_VAR`]'s if it is a map's name (letters,
+/// digits and `_`, up to 31), else [`MAP`].
+fn map() -> String {
+    std::env::var(MAP_VAR)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| (1..32).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .unwrap_or_else(|| MAP.to_string())
+}
+
 /// The variable for a longer run's seconds of play (a soak: R295's
 /// confirmation at 133.25 / 1); the game reads the first `-rpend` on its
 /// line, so the kit's own number is what changes.
@@ -76,7 +90,8 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +cl_nopred 1 +cl_lw 0 +rp_defaults {LAYOUT}",
+            "+map {} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +cl_nopred 1 +cl_lw 0 +rp_defaults {LAYOUT}",
+            map(),
             play_secs(),
             limit_secs()
         ),

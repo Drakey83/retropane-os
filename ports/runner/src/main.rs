@@ -665,6 +665,89 @@ mod image {
         }
     }
 
+    /// The game modules' integer division (`rp_hal_mem::asm::udiv`,
+    /// `idiv`: R306 after run 51) against the compiler's own (this image
+    /// is built without the `float` feature, so its `/` and `%` are
+    /// `compiler_builtins`'): every quotient and remainder of random
+    /// numbers of every length, every edge against every edge in both
+    /// signs; and the cycles a call, both, on a game's mix of lengths.
+    fn div_bench() {
+        let mut seed = 0x2545_F491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        const EDGES: [u32; 16] = [
+            0, 1, 2, 3, 7, 255, 256, 0xFFFF, 0x1_0000, 0x7FFF_FFFE, 0x7FFF_FFFF, 0x8000_0000,
+            0x8000_0001, 0xFFFF_FFFE, 0xFFFF_FFFF, 0x1234_5678,
+        ];
+        let mut checked = 0u32;
+        let mut differ = 0u32;
+        let mut first = None;
+        let mut check = |n: u32, d: u32| {
+            if d == 0 {
+                return;
+            }
+            checked += 1;
+            let want = (n / d, n % d);
+            let got = rp_hal_mem::asm::udiv(n, d);
+            if got != want {
+                differ += 1;
+                first.get_or_insert((n, d, got.0, want.0, 'u'));
+            }
+            let (sn, sd) = (n as i32, d as i32);
+            if !(sn == i32::MIN && sd == -1) {
+                checked += 1;
+                let want = (sn / sd, sn % sd);
+                let got = rp_hal_mem::asm::idiv(sn, sd);
+                if got != want {
+                    differ += 1;
+                    first.get_or_insert((n, d, got.0 as u32, want.0 as u32, 'i'));
+                }
+            }
+        };
+        for &n in &EDGES {
+            for &d in &EDGES {
+                check(n, d);
+            }
+        }
+        for _ in 0..65_536 {
+            let (a, b) = (next(), next());
+            check(a >> (next() % 32), b >> (next() % 32));
+            check(a, (b >> (next() % 32)) | 1);
+        }
+        let mut pairs = [(0u32, 0u32); FLOAT_PAIRS];
+        for p in &mut pairs {
+            *p = (next() >> (next() % 16), (next() >> (8 + next() % 16)) | 1);
+        }
+        #[inline(never)]
+        fn generic(n: u32, d: u32) -> u32 {
+            core::hint::black_box(n) / core::hint::black_box(d)
+        }
+        #[inline(never)]
+        fn ours(n: u32, d: u32) -> u32 {
+            rp_hal_mem::asm::udiv(n, d).0
+        }
+        let g = cycles_per_call(&pairs, generic);
+        let a = cycles_per_call(&pairs, ours);
+        let _ = writeln!(
+            Out,
+            "div: the generic {}.{} cycles, ours in assembly {}.{}; {checked} results compared, {differ} differ",
+            g / 10,
+            g % 10,
+            a / 10,
+            a % 10
+        );
+        if let Some((n, d, got, want, k)) = first {
+            let _ = writeln!(
+                Out,
+                "div: the first that differs ({k}): {n:#010x} / {d:#010x} gave {got:#010x}, the generic {want:#010x}"
+            );
+        }
+    }
+
     /// The samples onto the card ([`SAMPLE_FILE`]), and what they are in
     /// the run's log.
     fn write_samples(buf: &[u8], taken: u32, full: u32) {
@@ -1172,6 +1255,7 @@ mod image {
         );
         if args[..arg_count].iter().any(|a| a.to_bytes() == FLOAT_WORD) {
             float_bench();
+            div_bench();
         }
         let sampling = args[..arg_count]
             .iter()

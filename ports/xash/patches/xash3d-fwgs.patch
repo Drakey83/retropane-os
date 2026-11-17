@@ -315,6 +315,124 @@ index fe5ece4..f35b8f6 100644
  		} \
  	} \
  
+diff --git a/engine/common/net_encode.c b/engine/common/net_encode.c
+index 64bc35e..c471621 100644
+--- a/engine/common/net_encode.c
++++ b/engine/common/net_encode.c
+@@ -1101,6 +1101,28 @@ static qboolean Delta_CompareField( delta_t *pField, const void *from, const voi
+ 	if( pField->bInactive )
+ 		return true;
+ 
++	// RetroPane (R306 after run 51: this function 1.2% of the play, most
++	// of it the multiplier's float compare and conversions on a field that
++	// had not changed): the same stored bits give the same encoded value
++	// whatever the multiplier and clamp, so a field whose bits are equal is
++	// equal at once; one that differs is worked out as before
++	if( !( pField->flags & DT_STRING ))
++	{
++		const byte *a = (const byte *)from + pField->offset;
++		const byte *b = (const byte *)to + pField->offset;
++		uint32_t    ua = 0, ub = 0;
++
++		if( pField->flags & DT_BYTE )
++			ua = a[0], ub = b[0];
++		else if( pField->flags & DT_SHORT )
++			ua = a[0] | (uint32_t)a[1] << 8, ub = b[0] | (uint32_t)b[1] << 8;
++		else
++			ua = a[0] | (uint32_t)a[1] << 8 | (uint32_t)a[2] << 16 | (uint32_t)a[3] << 24,
++			ub = b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
++		if( ua == ub )
++			return true;
++	}
++
+ 	fromF = toF = 0;
+ 
+ 	if( pField->flags & DT_BYTE )
+diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
+index b1e8e57..cba47d2 100644
+--- a/engine/common/pm_trace.c
++++ b/engine/common/pm_trace.c
+@@ -102,6 +102,38 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
+ 	return &pm_boxhull;
+ }
+ 
++/*
++RetroPane (R306 after run 51: PM_RecursiveHullCheck and PM_HullPointContents
++4.2% and 0.9% of the play with their floats): a float's sign tested on its
++bits, not by a call to the compiler's compare (__aeabi_fcmpge and the rest,
++~20 cycles and a call each, four a node). Exactly C's answers: -0 is >= 0
++and not < 0, and a NaN is neither (it then goes on to the code's own NaN
++check, as before).
++*/
++static inline uint32_t RP_FloatBits( float f )
++{
++	uint32_t u;
++
++	memcpy( &u, &f, sizeof( u ));
++	return u;
++}
++
++/* f >= 0.0f */
++static inline qboolean RP_Ge0( float f )
++{
++	uint32_t u = RP_FloatBits( f );
++
++	return (int32_t)u >= 0 ? u <= 0x7F800000u : u == 0x80000000u;
++}
++
++/* f < 0.0f */
++static inline qboolean RP_Lt0( float f )
++{
++	uint32_t u = RP_FloatBits( f );
++
++	return (int32_t)u < 0 && u != 0x80000000u && u <= 0xFF800000u;
++}
++
+ /*
+ ==================
+ PM_HullPointContents
+@@ -118,7 +150,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+ 		while( num >= 0 )
+ 		{
+ 			mplane_t *plane = &hull->planes[hull->clipnodes32[num].planenum];
+-			num = hull->clipnodes32[num].children[PlaneDiff( p, plane ) < 0];
++			num = hull->clipnodes32[num].children[RP_Lt0( PlaneDiff( p, plane ))];
+ 		}
+ 	}
+ 	else
+@@ -126,7 +158,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+ 		while( num >= 0 )
+ 		{
+ 			mplane_t *plane = &hull->planes[hull->clipnodes16[num].planenum];
+-			num = hull->clipnodes16[num].children[PlaneDiff( p, plane ) < 0];
++			num = hull->clipnodes16[num].children[RP_Lt0( PlaneDiff( p, plane ))];
+ 		}
+ 	}
+ 	return num;
+@@ -242,20 +274,20 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 	t1 = PlaneDiff( p1, plane );
+ 	t2 = PlaneDiff( p2, plane );
+ 
+-	if( t1 >= 0.0f && t2 >= 0.0f )
++	if( RP_Ge0( t1 ) && RP_Ge0( t2 ))
+ 	{
+ 		num = children[0];
+ 		goto loc0;
+ 	}
+ 
+-	if( t1 < 0.0f && t2 < 0.0f )
++	if( RP_Lt0( t1 ) && RP_Lt0( t2 ))
+ 	{
+ 		num = children[1];
+ 		goto loc0;
+ 	}
+ 
+ 	// put the crosspoint DIST_EPSILON pixels on the near side
+-	side = (t1 < 0.0f);
++	side = RP_Lt0( t1 );
+ 
+ 	if( side ) frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );
+ 	else frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );
 diff --git a/engine/common/zone.c b/engine/common/zone.c
 index a0d9c23..b7b36d9 100644
 --- a/engine/common/zone.c
@@ -418,6 +536,92 @@ index 4b1e40c..c2435b8 100644
  void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h );
  #else
  static inline void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h ) { }
+diff --git a/engine/server/server.h b/engine/server/server.h
+index d61e51b..243840c 100644
+--- a/engine/server/server.h
++++ b/engine/server/server.h
+@@ -392,6 +392,10 @@ extern server_t        sv RENAME_SYMBOL( "sv_" );   // local server
+ extern svgame_static_t svgame;                      // persistant game info
+ extern areanode_t      sv_areanodes[];              // AABB dynamic tree
+ 
++extern convar_t		rp_sv_numedicts;
++// RetroPane: rp_sv_numedicts follows svgame.numEntities (the value only: the
++// game DLL reads it through its cvar pointer)
++#define SV_RpEdicts() ( rp_sv_numedicts.value = (float)svgame.numEntities )
+ extern convar_t		mp_logecho;
+ extern convar_t		mp_logfile;
+ extern convar_t		sv_log_onefile;
+diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
+index 37e79df..f3abaff 100644
+--- a/engine/server/sv_game.c
++++ b/engine/server/sv_game.c
+@@ -1050,6 +1050,7 @@ edict_t *GAME_EXPORT SV_AllocEdict( void )
+ 		Host_Error( "%s: no free edicts (max is %d)\n", __func__, GI->max_edicts );
+ 
+ 	svgame.numEntities++;
++	SV_RpEdicts();
+ 	e = SV_EdictNum( i );
+ 	SV_InitEdict( e );
+ 
+@@ -5330,6 +5331,7 @@ qboolean SV_LoadProgs( const char *name )
+ 	svs.static_entities = Z_Calloc( sizeof( entity_state_t ) * MAX_STATIC_ENTITIES );
+ 	svs.baselines = Z_Calloc( sizeof( entity_state_t ) * GI->max_edicts );
+ 	svgame.numEntities = svs.maxclients + 1; // clients + world
++	SV_RpEdicts();
+ 
+ 	for( int i = 0; i < GI->max_edicts; i++ )
+ 		svgame.edicts[i].free = true; // mark all edicts as freed
+diff --git a/engine/server/sv_init.c b/engine/server/sv_init.c
+index 3df187a..f663890 100644
+--- a/engine/server/sv_init.c
++++ b/engine/server/sv_init.c
+@@ -566,6 +566,7 @@ void SV_FreeOldEntities( void )
+ 
+ 	// decrement svgame.numEntities if the highest number entities died
+ 	for( ; ( ent = SV_EdictNum( svgame.numEntities - 1 )) && ent->free; svgame.numEntities-- );
++	SV_RpEdicts();
+ }
+ 
+ /*
+@@ -724,6 +725,7 @@ void SV_DeactivateServer( void )
+ 	svgame.globals->maxEntities = GI->max_edicts;
+ 	svgame.globals->maxClients = svs.maxclients;
+ 	svgame.numEntities = svs.maxclients + 1; // clients + world
++	SV_RpEdicts();
+ 	svgame.globals->startspot = 0;
+ 	svgame.globals->mapname = 0;
+ }
+@@ -837,6 +839,7 @@ static void SV_SetupClients( void )
+ 	// init network stuff
+ 	NET_Config(( svs.maxclients > 1 ), true );
+ 	svgame.numEntities = svs.maxclients + 1; // clients + world
++	SV_RpEdicts();
+ 	ClearBits( sv_maxclients.flags, FCVAR_CHANGED );
+ }
+ 
+diff --git a/engine/server/sv_main.c b/engine/server/sv_main.c
+index 985e438..b79e8b5 100644
+--- a/engine/server/sv_main.c
++++ b/engine/server/sv_main.c
+@@ -19,6 +19,10 @@ GNU General Public License for more details.
+ #include "platform/platform.h"
+ 
+ // server cvars
++// RetroPane (R306 after run 51): the edicts' high-water mark for the game
++// DLL's UTIL_EntitiesInBox (its loop ran to max_edicts, every slot past this
++// one free): kept equal to svgame.numEntities by SV_RpEdicts, never a string
++CVAR_DEFINE_AUTO( rp_sv_numedicts, "0", FCVAR_READ_ONLY, "RetroPane: the server's edict high-water mark (read by the game DLL)" );
+ CVAR_DEFINE_AUTO( sv_lan, "0", 0, "server is a lan server ( no heartbeat, no authentication, no non-class C addresses, 9999.0 rate, etc." );
+ CVAR_DEFINE_AUTO( sv_lan_rate, "20000.0", 0, "rate for lan server" );
+ CVAR_DEFINE_AUTO( sv_nat, "0", 0, "enable NAT bypass for this server" );
+@@ -955,6 +959,7 @@ void SV_Init( void )
+ 	Cvar_RegisterVariable( &sv_hostmap );
+ 	Cvar_DirectSet( &sv_hostmap, GI->startmap );
+ 	Cvar_RegisterVariable( &sv_password );
++	Cvar_RegisterVariable( &rp_sv_numedicts );
+ 	Cvar_RegisterVariable( &sv_lan );
+ 	Cvar_RegisterVariable( &sv_nat );
+ 	Cvar_RegisterVariable( &violence_ablood );
 diff --git a/engine/server/sv_save.c b/engine/server/sv_save.c
 index 54975d6..c74f1d5 100644
 --- a/engine/server/sv_save.c
@@ -508,6 +712,215 @@ index b490cfa..890f096 100644
  	if( chdir( path ) < 0 )
  	{
  		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));
+diff --git a/ref/common/ref_common.h b/ref/common/ref_common.h
+index 32fa799..bbf9025 100644
+--- a/ref/common/ref_common.h
++++ b/ref/common/ref_common.h
+@@ -100,4 +100,50 @@ extern const int vec_to_st[SKYBOX_MAX_SIDES][3];
+ int R_SkyboxAxisFromDir( const vec3_t dir );
+ qboolean R_SkyboxProject( const vec3_t dir, int axis, float *s, float *t );
+ 
++/*
++RetroPane (R306 after run 51): a light's float `die` against the frame's
++double time, `die < time`, made a software double compare and a widening
++(__aeabi_f2d ~1% of the play on the X51v, 61% of it from the models' light
++loops: 64 entity lights and 32 dynamic lights a model a frame). The time
++rounded up to a float once, `ceil_f`, gives exactly C's answer with float
++compares: a float below ceil_f is below the time (ceil_f is the least float
++at or above it), and one at or above it is not. The compare itself on the
++bits (NaN never less, -0 equal to +0).
++*/
++static inline float RP_TimeCeil( double t )
++{
++	float f = (float)t;
++
++	if((double)f < t )
++	{
++		/* the next float up, on the bits (f finite: t is a game time) */
++		uint32_t u;
++
++		memcpy( &u, &f, sizeof( u ));
++		if(( u & 0x7FFFFFFFu ) == 0 )
++			u = 1; /* from either zero: the least positive float */
++		else if( u >> 31 )
++			u--;
++		else
++			u++;
++		memcpy( &f, &u, sizeof( f ));
++	}
++	return f;
++}
++
++static inline qboolean RP_FloatLess( float a, float b )
++{
++	uint32_t ua, ub;
++
++	memcpy( &ua, &a, sizeof( ua ));
++	memcpy( &ub, &b, sizeof( ub ));
++	if(( ua & 0x7FFFFFFFu ) > 0x7F800000u || ( ub & 0x7FFFFFFFu ) > 0x7F800000u )
++		return false;
++	if((( ua | ub ) & 0x7FFFFFFFu ) == 0 )
++		return false;
++	ua = ( ua >> 31 ) ? ~ua : ua | 0x80000000u;
++	ub = ( ub >> 31 ) ? ~ub : ub | 0x80000000u;
++	return ua < ub;
++}
++
+ #endif // REF_COMMON_H
+diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
+index dd01c0f..8a5d385 100644
+--- a/ref/common/ref_light.c
++++ b/ref/common/ref_light.c
+@@ -489,6 +489,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+ 	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
+ }
+ 
++/*
++ref_rp (RetroPane, R306 after run 51): an entity's floor light kept. The
++light under a model is sampled anew every frame (R_LightVec walks every
++brush model's tree, up to five times for the gradient, and a line to the
++sky first): R_RecursiveLightPoint, R_LightVecInternal, R_EntityDynamicLight
++and their floats were ~3.5% of the play on the X51v, mostly for models that
++had not moved. GL's and the software renderer's way is to sample again;
++ours keeps the sample per entity and takes it again only when something
++it reads changed: the entity's origin, model and light effects (exactly,
++as bits), or the frame's light key (every light style's value, the sky's
++colour and vector, the world, and each brush model's place and angles,
++hashed in 64 bits once a frame). The dynamic lights are still added every
++frame, so a muzzle flash or flare lights the model as before; the result
++is the same as sampling again.
++*/
++typedef struct
++{
++	const cl_entity_t *ent;
++	const model_t     *model;
++	uint32_t          org[3];
++	int               effects;
++	uint64_t          key;
++	colorVec          light;
++	vec3_t            dir, spot, vec;
++	qboolean          sampled; /* lightspot and lightvec written */
++} rp_elight_t;
++
++#define RP_ELIGHTS 256
++static rp_elight_t rp_elight[RP_ELIGHTS];
++static uint64_t    rp_elight_key;
++static double      rp_elight_time = -1.0;
++
++static uint64_t RP_Fnv( uint64_t h, const void *p, size_t n )
++{
++	const byte *b = p;
++
++	for( size_t i = 0; i < n; i++ )
++		h = ( h ^ b[i] ) * 0x100000001B3ULL;
++	return h;
++}
++
++static uint64_t RP_LightKey( void )
++{
++	uint64_t h = 0xCBF29CE484222325ULL;
++
++	if( rp_elight_time == gp_cl->time )
++		return rp_elight_key;
++	rp_elight_time = gp_cl->time;
++	h = RP_Fnv( h, g_lightstylevalue, sizeof( g_lightstylevalue ));
++	h = RP_Fnv( h, gp_movevars->skycolor, sizeof( gp_movevars->skycolor ));
++	h = RP_Fnv( h, gp_movevars->skyvec, sizeof( gp_movevars->skyvec ));
++	h = RP_Fnv( h, &gp_cl->models[1], sizeof( gp_cl->models[1] ));
++	h = RP_Fnv( h, &r_lighting_extended.value, sizeof( r_lighting_extended.value ));
++	for( int i = 0; i < MAX_PHYSENTS; i++ )
++	{
++		const physent_t *pe = gEngfuncs.EV_GetPhysent( i );
++
++		if( !pe )
++			break;
++		if( !pe->model || pe->model->type != mod_brush )
++			continue;
++		h = RP_Fnv( h, &pe->model, sizeof( pe->model ));
++		h = RP_Fnv( h, pe->origin, sizeof( pe->origin ));
++		h = RP_Fnv( h, pe->angles, sizeof( pe->angles ));
++	}
++	rp_elight_key = h;
++	return h;
++}
++
+ /*
+ ===============
+ R_EntityDynamicLight
+@@ -520,11 +589,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
+ 
+ 	vec3_t origin = Vec3( ent->origin );
++	rp_elight_t *kept = &rp_elight[( (uintptr_t)ent >> 4 ) % RP_ELIGHTS];
++	uint64_t key = RP_LightKey( );
++	int effects = ent->curstate.effects & EF_INVLIGHT;
++	colorVec light;
++
++	if( kept->ent == ent && kept->model == ent->model && kept->key == key && kept->effects == effects
++		&& !memcmp( kept->org, origin, sizeof( kept->org )))
++	{
++		light = kept->light;
++		VectorCopy( kept->dir, lightDir );
++		if( kept->sampled )
++		{
++			VectorCopy( kept->spot, lightspot );
++			VectorCopy( kept->vec, lightvec );
++		}
++		goto rp_kept;
++	}
+ 
+ 	vec3_t vecSrc = { origin[0], origin[1], origin[2] - lightDir[2] * 8.0f };
+ 	vec3_t vecEnd;
++	qboolean sampled = false;
+ 
+-	colorVec light;
+ 	light.r = light.g = light.b = light.a = 0;
+ 
+ 	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
+@@ -562,6 +648,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 		VectorAdd( vecEnd, vecSrc, vecEnd );
+ 
+ 		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
++		sampled = true;
+ 
+ 		if( VectorIsNull( lightvec ))
+ 		{
+@@ -604,6 +691,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 		}
+ 	}
+ 
++	kept->ent = ent;
++	kept->model = ent->model;
++	kept->key = key;
++	kept->effects = effects;
++	memcpy( kept->org, origin, sizeof( kept->org ));
++	kept->light = light;
++	VectorCopy( lightDir, kept->dir );
++	kept->sampled = sampled;
++	if( sampled )
++	{
++		VectorCopy( lightspot, kept->spot );
++		VectorCopy( lightvec, kept->vec );
++	}
++rp_kept:
+ 	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
+ 	{
+ 		light.r *= ent->curstate.iuser4 / 10.0f;
+@@ -621,11 +722,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 	// scale lightdir by light intentsity
+ 	VectorScale( lightDir, total, lightDir );
+ 
++	float time_f = RP_TimeCeil( time );
++
+ 	for( uint lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
+ 	{
+ 		const dlight_t *dl = &gp_dlights[lnum];
+ 
+-		if( dl->die < time || !r_dynamic->value )
++		if( RP_FloatLess( dl->die, time_f ) || !r_dynamic->value )
+ 			continue;
+ 
+ 		vec3_t dist;
 diff --git a/ref/soft/r_bsp.c b/ref/soft/r_bsp.c
 index 8b213a2..1009537 100644
 --- a/ref/soft/r_bsp.c
@@ -867,10 +1280,25 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..733b3a8 100644
+index 03790d8..4e294de 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1675,6 +1675,107 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1293,11 +1293,13 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+ 	dist2 = 1000000.0f;
+ 	k = 0;
+ 
++	float time_f = RP_TimeCeil( g_studio.time );
++
+ 	for( lnum = 0; lnum < MAX_ELIGHTS; lnum++ )
+ 	{
+ 		el = &tr.elights[lnum];
+ 
+-		if( el->die < g_studio.time || el->radius <= 0.0f )
++		if( RP_FloatLess( el->die, time_f ) || el->radius <= 0.0f )
+ 			continue;
+ 
+ 		if(( el->key & 0xFFF ) == ent->index )
+@@ -1675,6 +1677,115 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -916,6 +1344,14 @@ index 03790d8..733b3a8 100644
 +		{
 +			int    ni = ptricmds[1];
 +			rgba_t color;
++
++			// RetroPane (R306 after run 51): the commands are read in order
++			// from the model's file, a 32-byte line every four corners, each
++			// line an SDRAM miss (~500 ns) on a CPU with no hardware
++			// prefetcher: the line 16 corners on asked for now (PLD never
++			// faults past the end)
++			if( !( k & 3 ))
++				__builtin_prefetch( ptricmds + 64 );
 +
 +			if( rp_lit_part && (unsigned)ni < RP_STUDIO_VERTS )
 +			{
@@ -978,7 +1414,7 @@ index 03790d8..733b3a8 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1787,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1797,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -992,7 +1428,7 @@ index 03790d8..733b3a8 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1827,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1837,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -1006,7 +1442,7 @@ index 03790d8..733b3a8 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1754,6 +1869,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1754,6 +1879,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
  	qboolean glowShell = ( scale > 0.0f ) ? true : false;
  	vec3_t   vert;
  
@@ -1022,7 +1458,7 @@ index 03790d8..733b3a8 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +1936,7 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +1946,7 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -1030,7 +1466,7 @@ index 03790d8..733b3a8 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +1975,32 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +1985,32 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -1065,7 +1501,7 @@ index 03790d8..733b3a8 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1890,6 +2034,29 @@ static void R_StudioDrawPoints( void )
+@@ -1890,6 +2044,29 @@ static void R_StudioDrawPoints( void )
  		{
  			for( i = 0; i < pmesh[j].numnorms; i++, k++, pstudionorms++, pnormbone++ )
  			{
@@ -1095,7 +1531,7 @@ index 03790d8..733b3a8 100644
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1947,14 +2114,16 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2124,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  

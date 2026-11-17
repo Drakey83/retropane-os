@@ -16,6 +16,8 @@
 pub mod float;
 pub mod trig;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
+mod div_arm;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod float_arm;
 
 /// The ARM assembly float routines ([`float_arm`]), for the X51v's
@@ -27,6 +29,27 @@ pub mod asm {
         fn rp_fsub_asm(a: u32, b: u32) -> u32;
         fn rp_fmul_asm(a: u32, b: u32) -> u32;
         fn rp_fdiv_asm(a: u32, b: u32) -> u32;
+        fn rp_udiv_asm(n: u32, d: u32) -> u64;
+        fn rp_idiv_asm(n: i32, d: i32) -> u64;
+    }
+
+    /// `(n / d, n % d)`, unsigned ([`super::div_arm`]); `(0, n)` for a
+    /// zero `d`.
+    #[must_use]
+    pub fn udiv(n: u32, d: u32) -> (u32, u32) {
+        // SAFETY: the routine reads r0 and r1 and returns the quotient and
+        // remainder in r0 and r1 (a 64-bit result's halves, AAPCS); it
+        // touches no memory.
+        let v = unsafe { rp_udiv_asm(n, d) };
+        (v as u32, (v >> 32) as u32)
+    }
+
+    /// `(n / d, n % d)`, signed as C truncates; `(0, n)` for a zero `d`.
+    #[must_use]
+    pub fn idiv(n: i32, d: i32) -> (i32, i32) {
+        // SAFETY: as `udiv`.
+        let v = unsafe { rp_idiv_asm(n, d) };
+        (v as u32 as i32, (v >> 32) as u32 as i32)
     }
 
     /// `a + b`, IEEE single bits.

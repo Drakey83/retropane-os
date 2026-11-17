@@ -3376,6 +3376,28 @@ int RP_StudioSkin( void )
 /* The words of `n` (3 to 255) corners from `c`, in the order `idx`. */
 static void RP_StudioWords( uint32_t prim, const uint32_t ( *c )[RP_VERTEX_WORDS], const uint16_t *idx, int n )
 {
+	/* R306 after run 51: word by word (RP_Put) this was ~8 instructions a
+	   word, the corner's index and address made again and the room checked
+	   for each of its 7; the room is checked once and each corner copied
+	   as one 28-byte block (ldm/stm). The same words. */
+	typedef struct
+	{
+		uint32_t w[RP_VERTEX_WORDS];
+	} rp_corner_t;
+	uint32_t need = 1u + (uint32_t)n * RP_VERTEX_WORDS;
+
+	if( rp_n + need <= RP_BUF_WORDS )
+	{
+		rp_corner_t       *out = (rp_corner_t *)&rp_buf[rp_n + 1];
+		const rp_corner_t *src = (const rp_corner_t *)c;
+
+		rp_buf[rp_n] = prim | (uint32_t)n;
+		for( int k = 0; k < n; k++ )
+			out[k] = src[idx[k]];
+		rp_n += need;
+		RP_Whole();
+		return;
+	}
 	RP_Put( prim | (uint32_t)n );
 	for( int k = 0; k < n; k++ )
 		for( int j = 0; j < RP_VERTEX_WORDS; j++ )
