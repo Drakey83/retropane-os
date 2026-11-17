@@ -72,7 +72,7 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
-static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed;
+static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip;
 /* D_CacheSurface lights into the scratch, not the RAM cache (r_surf.c). */
 int rp_scratch;
 
@@ -89,6 +89,8 @@ static struct
 	uint32_t lit_kib, block_kib, mip[4]; /* the view's lit surfaces (step 1b) */
 	uint32_t uploads, upload_kib, evicted, skipped, refused, models; /* step 3 */
 	uint32_t meshes, meshes_skipped, strips, fans, cmds_near, cmds_skipped, wraps; /* step 4a */
+	uint32_t near_cut, near_gone; /* R299: model triangles cut at the near plane, wholly behind it */
+	uint32_t mipswitch; /* R297: faces drawn at a mip level other than their place's */
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
@@ -105,6 +107,7 @@ void RP_EmitInit( void )
 	rp_gpu = gEngfuncs.Cvar_Get( "rp_gpu", "0", 0, "ref_rp: 1 while the 2700G draws the frames" );
 	rp_fan = gEngfuncs.Cvar_Get( "rp_fan", "1", 0, "ref_rp: 1 a model's fans as the TA's fans, 0 as strips" );
 	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
+	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
 	RP_FixedInit();
 }
 
@@ -115,6 +118,9 @@ uint64_t rp_time_us( void );
 The counts over the last five seconds, one plain line in the run log (the
 same span as `-rpfps`'s frame rate, its own clock), then counted again.
 */
+static int rp_mip_force;
+static uint32_t RP_AtlasFill( void );
+
 static void RP_EmitReport( void )
 {
 	static uint64_t since;
@@ -138,14 +144,17 @@ static void RP_EmitReport( void )
 			rp_count.uploads / f, rp_count.upload_kib / f, (uint32_t)( rp_count.upload_us / f ),
 			rp_count.evicted, rp_count.skipped / f, rp_count.models / f, rp_count.refused );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: models a frame: %u meshes drawn, %u not (blended: step 4c), %u strips and %u fans; %u commands not drawn (a corner behind the near plane), %u too long; %u corners wrapped; %u skins written in all (fans as %s)\n",
+		fprintf( stderr, "rp-emit: models a frame: %u meshes drawn, %u not (blended: step 4c), %u strips and %u fans; %u commands clipped at the near plane (%u triangles cut, %u wholly behind), %u too long; %u corners wrapped; %u skins written in all (fans as %s)\n",
 			rp_count.meshes / f, rp_count.meshes_skipped / f, rp_count.strips / f, rp_count.fans / f,
-			rp_count.cmds_near / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
+			rp_count.cmds_near / f, rp_count.near_cut / f, rp_count.near_gone / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
 			rp_fan->value != 0.0f ? "the TA's fans" : "strips" );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables (%u of them brush entities'), %u by floats; model vertices %u worked and %u used again a frame\n",
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
 			rp_count.mverts / f, rp_count.mreuse / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves\n",
+			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill());
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: bones in integers: %u model parts a frame, %u bones joined with the view, %u normals lit\n",
 			rp_count.bparts / f, rp_count.bones / f, rp_count.lit / f );
@@ -206,7 +215,7 @@ static int RP_ChipOpen( void )
 	return rp_chip > 0;
 }
 
-/* rp_fixed and rp_fan as read at the frame's start. */
+/* rp_fixed, rp_fan and rp_mip as read at the frame's start. */
 static int rp_fixed_on, rp_fan_on;
 
 /* A new frame: the last one's words are let go (sent at its end by
@@ -223,6 +232,7 @@ void RP_EmitFrame( void )
 	   they were software-float compares (run 21's __aeabi_fcmpeq) */
 	rp_fixed_on = rp_fixed->value != 0.0f;
 	rp_fan_on = rp_fan->value != 0.0f;
+	rp_mip_force = (int)rp_mip->value;
 	if(( rp_emit_on == 2 ) != ( rp_gpu->value == 1.0f ))
 		gEngfuncs.Cvar_SetValue( "rp_gpu", rp_emit_on == 2 ? 1.0f : 0.0f );
 	if( !rp_emit_on )
@@ -662,6 +672,16 @@ static void RP_AtlasInit( void )
 	}
 }
 
+/* How full the pages are to their shelves' tops, in percent. */
+static uint32_t RP_AtlasFill( void )
+{
+	uint32_t rows = 0;
+
+	for( int pg = 0; pg < rp_pages; pg++ )
+		rows += rp_page[pg].top;
+	return rp_pages ? rows * 100 / ( rp_pages * RP_PAGE_SQUARES ) : 0;
+}
+
 /* A page emptied: its faces' places stop being valid (their generation). */
 static void RP_PageDrop( rp_page_t *p )
 {
@@ -812,6 +832,11 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 
 	placed = ( loc & RP_VALID ) && (int)( loc >> 24 & 3 ) == miplevel && pg < rp_pages
 		&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen;
+	/* R297: a face still placed at another level (its old place stays
+	   taken until its page drops) */
+	if(( loc & RP_VALID ) && (int)( loc >> 24 & 3 ) != miplevel && pg < rp_pages
+		&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen )
+		rp_count.mipswitch++;
 	stale = !placed || ( RP_GEN( fa ) & 1 ) || fa->dlightframe == tr.framecount
 		|| (image_t *)RP_IMAGE( fa ) != image;
 	for( int maps = 0; !stale && maps < MAXLIGHTMAPS && fa->styles[maps] != 255; maps++ )
@@ -985,6 +1010,8 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	miplevel = nearzi >= rp_view.mip[0] ? 0 : nearzi >= rp_view.mip[1] ? 1 : nearzi >= rp_view.mip[2] ? 2 : 3;
 	if( miplevel < d_minmip )
 		miplevel = d_minmip;
+	if( rp_mip_force >= 0 && rp_mip_force <= 3 )
+		miplevel = rp_mip_force;
 	while( 1 << miplevel > gEngfuncs.Mod_SampleSizeForFace( fa ))
 		miplevel--;
 	w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
@@ -1141,6 +1168,8 @@ static void RP_ChipFace( msurface_t *fa )
 	miplevel = scale >= d_scalemip[0] ? 0 : scale >= d_scalemip[1] ? 1 : scale >= d_scalemip[2] ? 2 : 3;
 	if( miplevel < d_minmip )
 		miplevel = d_minmip;
+	if( rp_mip_force >= 0 && rp_mip_force <= 3 )
+		miplevel = rp_mip_force;
 	while( 1 << miplevel > gEngfuncs.Mod_SampleSizeForFace( fa ))
 		miplevel--;
 	w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
@@ -1218,6 +1247,7 @@ typedef struct
 {
 	int      serial;
 	uint32_t w[3];
+	int32_t  q[3]; /* in view space, 16.16: the near plane's clip reads it */
 } rp_mvert_t;
 
 static rp_mvert_t rp_mv[RP_STUDIO_VERTS];
@@ -1280,6 +1310,9 @@ void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float 
 		a[j] = rp_fixq( p[j], 16 );
 	rp_bone_point( &rp_fbone[bone], a, q );
 	mv->serial = rp_studio_serial;
+	mv->q[0] = q[0];
+	mv->q[1] = q[1];
+	mv->q[2] = q[2];
 	if( q[2] < RP_ONE16 )
 		mv->w[2] = 0;
 	else
@@ -1504,19 +1537,169 @@ static void RP_StudioWords( uint32_t prim, const uint32_t ( *c )[RP_VERTEX_WORDS
 }
 
 /*
+R299, the near plane for the models (run 35: 394 commands a frame lost up
+close, "the top half of a scientist"). Iterate, don't imitate (rule 0):
+GL clips every triangle in clip space with floats, the software renderer
+(R_AliasClip) every triangle a vertex at a time. Here a command clips only
+where it must: its triangles wholly in front go on as runs of the same
+strip or fan (one header a run), a triangle wholly behind is dropped, and
+only a triangle across the plane is cut, in 16.16 integers (the new
+corner's x, y, texels and colour by one 0.16 fraction), into a strip of 3
+or 4 corners. The plane is the fixed path's own (z one unit), so no corner
+is ever projected nearer.
+*/
+static inline int32_t RP_Lerp16( int32_t a, int32_t b, int32_t f )
+{
+	return a + (int32_t)(( (int64_t)( b - a ) * f ) >> 16 );
+}
+
+/* The corner where the edge a-b (a in front, b behind) meets the plane. */
+static void RP_NearCorner( const rp_svert_t *v, const int32_t ( *cq )[3], const int32_t ( *cst )[2],
+	int a, int b, uint32_t out[RP_VERTEX_WORDS] )
+{
+	/* f = (z_a - 1) / (z_a - z_b) as 0.16: z_a >= 1 > z_b, so 0 <= f < 1 */
+	int64_t  num = (int64_t)( cq[a][2] - RP_ONE16 ) << 16;
+	int64_t  den = (int64_t)cq[a][2] - cq[b][2];
+	int32_t  f = (int32_t)( num / den ), p[3];
+	uint32_t rgb = 0xFF000000u;
+
+	p[0] = RP_Lerp16( cq[a][0], cq[b][0], f );
+	p[1] = RP_Lerp16( cq[a][1], cq[b][1], f );
+	p[2] = RP_ONE16;
+	RP_Project( p, out );
+	out[3] = out[2];
+	for( int j = 0; j < 3; j++ )
+		rgb |= (uint32_t)( v[a].rgb[j] + ((( v[b].rgb[j] - v[a].rgb[j] ) * f ) >> 16 )) << ( 16 - 8 * j );
+	out[4] = rgb;
+	out[5] = RP_FixBits( RP_Lerp16( cst[a][0], cst[b][0], f ), 5 + 9 );
+	out[6] = RP_FixBits( RP_Lerp16( cst[a][1], cst[b][1], f ), 5 + 9 );
+}
+
+/* The words of a run of corners `idx[0..m)`, as one primitive in pieces
+   of 255 (a fan's later pieces start with its first corner again). */
+static void RP_StudioRun( int fan, const uint32_t ( *c )[RP_VERTEX_WORDS], uint16_t *idx, int m )
+{
+	uint16_t piece[255];
+
+	if( !fan )
+	{
+		for( int at = 0; at + 2 < m; at += 253 )
+			RP_StudioWords( RP_GFX_STRIP( 0 ), c, idx + at, m - at < 255 ? m - at : 255 );
+		return;
+	}
+	if( !rp_fan_on )
+	{
+		/* fans off (a test switch): the run's triangles one by one */
+		for( int k = 1; k + 1 < m; k++ )
+		{
+			piece[0] = idx[0];
+			piece[1] = idx[k];
+			piece[2] = idx[k + 1];
+			RP_StudioWords( RP_GFX_STRIP( 0 ), c, piece, 3 );
+		}
+		return;
+	}
+	for( int at = 1; at + 1 < m; at += 253 )
+	{
+		int p = m - at < 254 ? m - at : 254;
+
+		piece[0] = idx[0];
+		for( int k = 0; k < p; k++ )
+			piece[1 + k] = idx[at + k];
+		RP_StudioWords( RP_GFX_FAN( 0 ), c, piece, p + 1 );
+	}
+}
+
+static void RP_StudioClipCmd( int fan, int n, const rp_svert_t *v, uint32_t ( *c )[RP_VERTEX_WORDS],
+	const int32_t ( *cq )[3], const int32_t ( *cst )[2] )
+{
+	static uint16_t idx[RP_STUDIO_CMD + 1];
+	int run = -1, tris = n - 2;
+
+	for( int i = 0; i <= tris; i++ )
+	{
+		int t[3] = { 0, 0, 0 }, in[3] = { 0, 0, 0 }, ins = -1; /* -1: the end, close the last run */
+
+		if( i < tris )
+		{
+			t[0] = fan ? 0 : i;
+			t[1] = i + 1;
+			t[2] = i + 2;
+			for( int j = 0; j < 3; j++ )
+				in[j] = cq[t[j]][2] >= RP_ONE16;
+			ins = in[0] + in[1] + in[2];
+		}
+		if( ins == 3 )
+		{
+			if( run < 0 )
+				run = i;
+			continue;
+		}
+		if( run >= 0 )
+		{
+			/* triangles run .. i - 1, all in front */
+			int m = 0;
+
+			if( fan )
+				idx[m++] = 0;
+			for( int k = fan ? run + 1 : run; k <= i + 1; k++ )
+				idx[m++] = (uint16_t)k;
+			RP_StudioRun( fan, (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m );
+			run = -1;
+		}
+		if( ins == 1 || ins == 2 )
+		{
+			/* the triangle cut: its polygon in order (corners in front
+			   kept, a new corner on each edge across), sent as a strip
+			   in zigzag order */
+			uint16_t poly[4], sidx[4];
+			int      pn = 0, slot = n;
+
+			for( int j = 0; j < 3; j++ )
+			{
+				int a = t[j], b = t[( j + 1 ) % 3], bin = in[( j + 1 ) % 3];
+
+				if( in[j] )
+					poly[pn++] = (uint16_t)a;
+				if( in[j] != bin )
+				{
+					if( in[j] )
+						RP_NearCorner( v, cq, cst, a, b, c[slot] );
+					else
+						RP_NearCorner( v, cq, cst, b, a, c[slot] );
+					poly[pn++] = (uint16_t)slot++;
+				}
+			}
+			sidx[0] = poly[0];
+			sidx[1] = poly[1];
+			sidx[2] = poly[pn - 1];
+			if( pn == 4 )
+				sidx[3] = poly[2];
+			RP_StudioWords( RP_GFX_STRIP( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, sidx, pn );
+			rp_count.near_cut++;
+		}
+		else if( ins == 0 )
+			rp_count.near_gone++;
+	}
+	rp_count.tris += n - 2;
+	rp_count.verts += n;
+}
+
+/*
 One stored command of the bound skin's mesh (`n` corners, a fan if `fan`):
 each corner moved into view space, projected and turned as RP_ChipFace's,
 its light the vertex colour, its texels into the skin's place on its page;
-sent as one TA strip or fan (pieces of 255 corners at most), or not at all
-if a corner is behind the near plane (counted; clipped in a later step).
+sent as one TA strip or fan (pieces of 255 corners at most); with a corner
+behind the near plane, by RP_StudioClipCmd.
 */
 void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 {
-	static uint32_t c[RP_STUDIO_CMD][RP_VERTEX_WORDS];
+	static uint32_t c[RP_STUDIO_CMD + 4][RP_VERTEX_WORDS];
 	static uint16_t idx[RP_STUDIO_CMD * 2];
+	static int32_t  cq[RP_STUDIO_CMD][3], cst[RP_STUDIO_CMD][2];
 	const rp_skin_t *e = rp_cur_skin;
 	int32_t u0, v0, smax, tmax;
-	int     m;
+	int     m, behind = 0;
 
 	if( !e || n < 3 )
 		return;
@@ -1551,6 +1734,9 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 				for( int j = 0; j < 3; j++ )
 					p[j] = RP_Fix16( v[k].xyz[j] );
 				RP_ViewPoint( (const int32_t( * )[3] )rp_view.m, rp_view.o, p, q );
+				mv->q[0] = q[0];
+				mv->q[1] = q[1];
+				mv->q[2] = q[2];
 				if( q[2] < RP_ONE16 )
 					mv->w[2] = 0;
 				else
@@ -1559,11 +1745,11 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			}
 			else
 				rp_count.mreuse++;
+			cq[k][0] = mv->q[0];
+			cq[k][1] = mv->q[1];
+			cq[k][2] = mv->q[2];
 			if( !mv->w[2] )
-			{
-				rp_count.cmds_near++;
-				return;
-			}
+				behind++;
 			c[k][0] = mv->w[0];
 			c[k][1] = mv->w[1];
 			c[k][2] = mv->w[2];
@@ -1576,10 +1762,14 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 
 			VectorSubtract( v[k].xyz, RI.rvp.vieworigin, local );
 			TransformVector( local, t );
-			if( t[2] < NEAR_CLIP )
+			for( int j = 0; j < 3; j++ )
+				cq[k][j] = RP_Fix16( t[j] );
+			if( cq[k][2] < RP_ONE16 )
 			{
-				rp_count.cmds_near++;
-				return;
+				/* behind the near plane: its words come from the clip */
+				behind++;
+				c[k][2] = 0;
+				goto texels;
 			}
 			zi = 1.0f / t[2];
 			sx = xcenter + xscale * zi * t[0];
@@ -1589,6 +1779,7 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			c[k][2] = RP_Bits( zi );
 			c[k][3] = RP_Bits( zi );
 		}
+texels:
 		/* a skin's texels past its edges wrap (counted: ref-rp.md "What
 		   would overturn it"), kept inside it as the software renderer
 		   keeps each vertex */
@@ -1609,6 +1800,16 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 		c[k][4] = 0xFF000000u | (uint32_t)v[k].rgb[0] << 16 | (uint32_t)v[k].rgb[1] << 8 | v[k].rgb[2];
 		c[k][5] = RP_FixBits( u0 + s, 5 + 9 );
 		c[k][6] = RP_FixBits( v0 + tt, 5 + 9 );
+		cst[k][0] = u0 + s;
+		cst[k][1] = v0 + tt;
+	}
+	if( behind )
+	{
+		/* some corner behind the near plane (R299): each triangle across
+		   it cut, the rest in runs (rare: only up close) */
+		rp_count.cmds_near++;
+		RP_StudioClipCmd( fan, n, v, c, (const int32_t( * )[3] )cq, (const int32_t( * )[2] )cst );
+		return;
 	}
 
 	if( !fan )
