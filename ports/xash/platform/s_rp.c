@@ -17,6 +17,7 @@ GNU General Public License for more details.
 #include "sound.h"
 #include "platform/platform.h"
 #include <retropane.h>
+#include <stdio.h>
 
 /*
 The engine paints its mix into a ring (snd.buffer) ahead of where the
@@ -117,6 +118,30 @@ void SNDDMA_Submit( void )
 		if( frames > RING_FRAMES - at )
 			frames = RING_FRAMES - at;
 
+		{
+			/* the sound "cant hardly be heard" (the owner, run 37): the
+			   engine's own output peak every 5 s, against full scale
+			   (32767), so the stage that loses level is measured */
+			static int      peak;
+			static uint64_t since;
+			const int16_t  *p = (const int16_t *)snd.buffer + at * 2;
+			uint64_t        now = rp_time_us();
+
+			for( int i = 0; i < frames * 2; i++ )
+			{
+				int a = p[i] < 0 ? -p[i] : p[i];
+
+				if( a > peak )
+					peak = a;
+			}
+			if( now - since >= 5000000u )
+			{
+				fprintf( stderr, "s_rp: the engine's output peak %d of 32767 (%d%%) in the last 5 s, volume %s\n",
+					peak, peak * 100 / 32767, Cvar_VariableString( "volume" ));
+				peak = 0;
+				since = now;
+			}
+		}
 		took = rp_snd_write((const int16_t *)snd.buffer + at * 2, (size_t)frames * 2 );
 		if( took <= 0 )
 			break;

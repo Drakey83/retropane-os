@@ -76,7 +76,7 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} +exec {BINDS_FILE}",
+            "+map {MAP} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +exec {BINDS_FILE}",
             play_secs(),
             limit_secs()
         ),
@@ -93,18 +93,44 @@ pub fn args() -> String {
 /// layout had never been written. A file of the game's own `bind`s,
 /// exec'd after the engine's saved config, so it wins; the command line
 /// cannot carry `+jump` as a bind's argument (a `+` starts a command).
+/// Runs 35-38 (the owner: "no button besides d pad"): the engine's key
+/// codes `K_AUX1`-`K_AUX5` are named `A_BUTTON`, `B_BUTTON`, `X_BUTTON`,
+/// `Y_BUTTON` and `L1_BUTTON` in its table (Xash `in_keys.c`; keydefs.h
+/// `K_A_BUTTON K_AUX1` ...): `bind AUX1` named no key and was refused.
+/// [`KEY_NAMES`] holds the names in_rp.c's keys carry; the test checks
+/// every bind against it. The `echo` line shows in the log that the file
+/// ran (the engine's console reaches the log with `-console`).
 pub const BINDS: &str = "bind UPARROW +forward
 bind DOWNARROW +back
 bind LEFTARROW +left
 bind RIGHTARROW +right
 bind ENTER +attack
-bind AUX1 +jump
-bind AUX2 +use
-bind AUX3 +duck
-bind AUX4 +reload
-bind AUX5 invnext
+bind A_BUTTON +jump
+bind B_BUTTON +use
+bind X_BUTTON +duck
+bind Y_BUTTON +reload
+bind L1_BUTTON invnext
 bind MOUSE1 +attack
+echo rp_binds.cfg: the X51v's buttons bound
 ";
+/// The engine's names (Xash `engine/client/input/in_keys.c` `keynames`)
+/// of the keys `ports/xash/platform/in_rp.c` sends: the D-pad's arrows,
+/// its centre, the four program buttons and Record (`K_AUX1`-`K_AUX5`),
+/// the pen's first button.
+#[cfg(test)]
+const KEY_NAMES: [&str; 11] = [
+    "UPARROW",
+    "DOWNARROW",
+    "LEFTARROW",
+    "RIGHTARROW",
+    "ENTER",
+    "A_BUTTON",
+    "B_BUTTON",
+    "X_BUTTON",
+    "Y_BUTTON",
+    "L1_BUTTON",
+    "MOUSE1",
+];
 /// [`BINDS`]' file in the game's folder on the card.
 pub const BINDS_FILE: &str = "rp_binds.cfg";
 
@@ -343,9 +369,15 @@ mod tests {
         assert_eq!(card[2].1, args().into_bytes());
         // A game with no background in pieces: the kit has none.
         assert_eq!(card_files(&modules, None).len(), 4);
-        // Every button of the owner's layout is bound (in_rp.c's keys).
-        for key in ["ENTER", "AUX1", "AUX2", "AUX3", "AUX4", "AUX5"] {
+        // Every button of the owner's layout is bound (in_rp.c's keys),
+        // and every bind names a key the engine has (runs 35-38: `AUX1`
+        // named none).
+        for key in KEY_NAMES {
             assert!(BINDS.lines().any(|l| l.starts_with(&format!("bind {key} "))), "{key}");
+        }
+        for line in BINDS.lines().filter(|l| l.starts_with("bind ")) {
+            let key = line.split_whitespace().nth(1).unwrap_or("");
+            assert!(KEY_NAMES.contains(&key), "{line}");
         }
     }
 

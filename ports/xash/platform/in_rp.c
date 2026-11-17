@@ -355,6 +355,15 @@ void Platform_RunEvents( void )
 	{
 		if( ev.type == RP_EV_KEY )
 		{
+			static uint32_t seen; // each button's first press, logged once (runs 35-38)
+
+			if( ev.down && ev.code < 32 && !( seen & ( 1u << ev.code )))
+			{
+				seen |= 1u << ev.code;
+				fprintf( stderr, "in_rp: button %d pressed first, the engine's key %d (%s)\n", ev.code,
+					ev.code < ARRAYSIZE( rp_keys ) ? rp_keys[ev.code] : 0,
+					ev.code < ARRAYSIZE( rp_keys ) && rp_keys[ev.code] ? Key_KeynumToString( rp_keys[ev.code] ) : "none" );
+			}
 			if( ev.code < ARRAYSIZE( rp_keys ) && rp_keys[ev.code] )
 				Key_Event( rp_keys[ev.code], ev.down );
 		}

@@ -92,6 +92,7 @@ static struct
 	uint32_t near_cut, near_gone; /* R299: model triangles cut at the near plane, wholly behind it */
 	uint32_t mipswitch; /* R297: faces drawn at a mip level other than their place's */
 	uint32_t blended; /* step 4c: meshes drawn blended */
+	uint32_t oldplace, unjams, coarser; /* the black walls: faces drawn from their old place, pages dropped to unjam, faces taken coarser (too large) */
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
@@ -121,6 +122,7 @@ same span as `-rpfps`'s frame rate, its own clock), then counted again.
 */
 static int rp_mip_force;
 static uint32_t RP_AtlasFill( void );
+static void RP_AtlasUnjam( void );
 
 static void RP_EmitReport( void )
 {
@@ -162,8 +164,8 @@ static void RP_EmitReport( void )
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
 			rp_count.mverts / f, rp_count.mreuse / f );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves\n",
-			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill());
+		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large)\n",
+			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: bones in integers: %u model parts a frame, %u bones joined with the view, %u normals lit\n",
 			rp_count.bparts / f, rp_count.bones / f, rp_count.lit / f );
@@ -256,6 +258,8 @@ void RP_EmitFrame( void )
 		if( rp_n > RP_BUF_WORDS )
 			rp_count.dropped += rp_n - RP_BUF_WORDS;
 	}
+	if( rp_emit_on == 2 )
+		RP_AtlasUnjam();
 	rp_n = 0;
 	rp_good = 0;
 	rp_lit_bytes = rp_block_bytes = 0;
@@ -619,6 +623,7 @@ typedef struct
 	int        shelves, top; /* the first row no shelf has */
 	int        gen;          /* counts the times the page was dropped */
 	int        used;         /* the last frame a face was drawn from it */
+	uint32_t   live;         /* bytes drawn from it this frame (the unjam's choice) */
 } rp_page_t;
 
 static rp_page_t rp_page[RP_MAX_PAGES];
@@ -699,6 +704,39 @@ static void RP_PageDrop( rp_page_t *p )
 	p->gen++;
 }
 
+/*
+The black walls (the owner, runs 37-38; run 37's log: 41 faces a frame
+switched mip level, 41 not drawn, 0 pages dropped, the pages 99% full).
+Each page held a face drawn that frame, so the allocator could drop none,
+and a face needing a new place (its level changed: the old place stays
+taken until its page drops) got none, frame after frame: the cleared
+screen showed through. Two cures, both kept: a face with no new place is
+drawn from the place it has (RP_SurfacePlace), and a frame that ran out
+of room drops, before the next frame's words, the page the frame drew
+least from (its places come back; the faces on it are placed again).
+*/
+static int rp_atlas_short;
+
+static void RP_AtlasUnjam( void )
+{
+	int least = -1;
+
+	if( rp_atlas_short && rp_pages > 1 )
+	{
+		for( int pg = 0; pg < rp_pages; pg++ )
+			if( least < 0 || rp_page[pg].live < rp_page[least].live )
+				least = pg;
+		/* the last frame's render may still read it */
+		rp_gfx_wait();
+		RP_PageDrop( &rp_page[least] );
+		rp_count.evicted++;
+		rp_count.unjams++;
+	}
+	rp_atlas_short = 0;
+	for( int pg = 0; pg < rp_pages; pg++ )
+		rp_page[pg].live = 0;
+}
+
 /* Room for `w` x `h` squares on a shelf of `p`: the column and row. */
 static int RP_ShelfFit( rp_page_t *p, int w, int h, int *x, int *y )
 {
@@ -743,7 +781,10 @@ static int RP_AtlasAlloc( int w, int h, int *x, int *y )
 		if( rp_page[pg].used != tr.framecount && ( oldest < 0 || rp_page[pg].used < rp_page[oldest].used ))
 			oldest = pg;
 	if( oldest < 0 )
+	{
+		rp_atlas_short = 1;
 		return -1;
+	}
 	/* the last frame's render may still read the page */
 	rp_gfx_wait();
 	RP_PageDrop( &rp_page[oldest] );
@@ -831,7 +872,7 @@ The face's lit surface in video memory at `miplevel`, built if it is not
 there or its light or texture frame changed (D_CacheSurface's own tests);
 its page, and its place in `*x`, `*y` (squares), or -1 (not drawn).
 */
-static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, int *y )
+static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, int *y, int *oldmip )
 {
 	uint32_t     loc = (uint32_t)RP_LOC( fa );
 	image_t     *image = R_GetTexture( R_TextureAnimation( fa )->gl_texturenum );
@@ -859,11 +900,28 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 	}
 	else
 	{
-		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, x, y );
-		if( pg < 0 )
+		int npg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, x, y );
+
+		if( npg < 0 )
+		{
+			/* no room: drawn from the place it has at its old level,
+			   never left out (the caller takes the level back) */
+			if(( loc & RP_VALID ) && pg < rp_pages && (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen )
+			{
+				rp_count.oldplace++;
+				rp_page[pg].used = tr.framecount;
+				rp_page[pg].live += w * h * 2;
+				*x = loc & 0xFF;
+				*y = loc >> 8 & 0xFF;
+				*oldmip = (int)( loc >> 24 & 3 );
+				return pg;
+			}
 			return -1;
+		}
+		pg = npg;
 	}
 	rp_page[pg].used = tr.framecount;
+	rp_page[pg].live += w * h * 2;
 	if( !stale )
 		return pg;
 
@@ -985,7 +1043,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	const uint32_t   *cw[RP_MAX_CORNERS];
 	const int32_t    *st[RP_MAX_CORNERS];
 	uint32_t          nearzi = 0;
-	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh;
+	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh, oldmip = -1;
 
 	for( int i = 0; i < n; i++ )
 	{
@@ -1025,6 +1083,15 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 		miplevel--;
 	w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
 	h = ( luxels ? fa->extents[1] : fa->info->lightextents[1] ) >> miplevel;
+	/* too large at its level: the next coarser one, never left out */
+	while(( w > RP_PAGE_SIDE || h > RP_PAGE_SIDE || w * h > RP_SCRATCH_TEXELS ) && miplevel < 3
+		&& 2 << miplevel <= gEngfuncs.Mod_SampleSizeForFace( fa ))
+	{
+		miplevel++;
+		w >>= 1;
+		h >>= 1;
+		rp_count.coarser++;
+	}
 	if( w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE || w * h > RP_SCRATCH_TEXELS )
 	{
 		rp_count.skipped++;
@@ -1033,11 +1100,18 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	rp_count.mip[miplevel & 3]++;
 	rp_lit_bytes += w * h * 2;
 	rp_block_bytes += RP_Pow2( w ) * RP_Pow2( h ) * 2;
-	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy );
+	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy, &oldmip );
 	if( pg < 0 )
 	{
 		rp_count.skipped++;
 		return 1;
+	}
+	if( oldmip >= 0 )
+	{
+		/* drawn from its old place, at that place's level */
+		miplevel = oldmip;
+		w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
+		h = ( luxels ? fa->extents[1] : fa->info->lightextents[1] ) >> miplevel;
 	}
 	RP_PageState( pg );
 
@@ -1085,7 +1159,7 @@ static void RP_ChipFace( msurface_t *fa )
 	const model_t *mod = RI.currentmodel;
 	const mtexinfo_t *tex = fa->texinfo;
 	const float *sv, *tv;
-	int n = 0, m = 0, lo, hi, miplevel, k, w, h, qx, qy, pg, luxels;
+	int n = 0, m = 0, lo, hi, miplevel, k, w, h, qx, qy, pg, luxels, oldmip = -1;
 	float nearzi = 0.0f, smin, tmin, scale, ks, kt, u0, v0;
 
 	if( fa->flags & ( SURF_DRAWSKY | SURF_DRAWTURB | SURF_CONVEYOR ))
@@ -1183,6 +1257,15 @@ static void RP_ChipFace( msurface_t *fa )
 		miplevel--;
 	w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
 	h = ( luxels ? fa->extents[1] : fa->info->lightextents[1] ) >> miplevel;
+	/* too large at its level: the next coarser one, never left out */
+	while(( w > RP_PAGE_SIDE || h > RP_PAGE_SIDE || w * h > RP_SCRATCH_TEXELS ) && miplevel < 3
+		&& 2 << miplevel <= gEngfuncs.Mod_SampleSizeForFace( fa ))
+	{
+		miplevel++;
+		w >>= 1;
+		h >>= 1;
+		rp_count.coarser++;
+	}
 	if( w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE || w * h > RP_SCRATCH_TEXELS )
 	{
 		rp_count.skipped++;
@@ -1191,11 +1274,18 @@ static void RP_ChipFace( msurface_t *fa )
 	rp_count.mip[miplevel & 3]++;
 	rp_lit_bytes += w * h * 2;
 	rp_block_bytes += RP_Pow2( w ) * RP_Pow2( h ) * 2;
-	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy );
+	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy, &oldmip );
 	if( pg < 0 )
 	{
 		rp_count.skipped++;
 		return;
+	}
+	if( oldmip >= 0 )
+	{
+		/* drawn from its old place, at that place's level */
+		miplevel = oldmip;
+		w = ( luxels ? fa->extents[0] : fa->info->lightextents[0] ) >> miplevel;
+		h = ( luxels ? fa->extents[1] : fa->info->lightextents[1] ) >> miplevel;
 	}
 	RP_PageState( pg );
 
@@ -1588,6 +1678,7 @@ int RP_StudioSkin( void )
 		rp_count.upload_us += rp_time_us() - t0;
 	}
 	rp_page[e->pg].used = tr.framecount;
+	rp_page[e->pg].live += (uint32_t)e->w * e->h * 2;
 	rp_cur_skin = e;
 
 	/* a model's state block differs from the world's on its page (Gouraud,
