@@ -979,7 +979,7 @@ mod image {
         files.remember(Names::new(names));
 
         // The modules' memory and this runner's identity.
-        let Some(pool) = devices::take_ram_pool_bytes() else {
+        let Some(pool) = devices::take_port_pool() else {
             rp_image::fail("the RAM pool was taken twice")
         };
         if pool.as_ptr().addr() != module::POOL as usize || pool.len() != module::POOL_LEN as usize

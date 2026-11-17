@@ -134,9 +134,9 @@ void SNDDMA_Submit( void )
 				if( a > peak )
 					peak = a;
 			}
-			if( now - since >= 5000000u )
+			if( now - since >= 60000000u ) /* a minute: each line is a card write (the hitches) */
 			{
-				fprintf( stderr, "s_rp: the engine's output peak %d of 32767 (%d%%) in the last 5 s, volume %s\n",
+				fprintf( stderr, "s_rp: the engine's output peak %d of 32767 (%d%%) in the last minute, volume %s\n",
 					peak, peak * 100 / 32767, Cvar_VariableString( "volume" ));
 				peak = 0;
 				since = now;

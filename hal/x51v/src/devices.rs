@@ -845,6 +845,34 @@ pub fn take_ram_pool() -> Option<&'static mut [u32]> {
     Some(unsafe { core::slice::from_raw_parts_mut(RAM_POOL_BASE as *mut u32, RAM_POOL_SIZE / 4) })
 }
 
+/// Start of the port runner's pool ([`take_port_pool`]): right after the
+/// scratch region, 4 MiB below [`RAM_POOL_BASE`]. Half-Life ran out of heap
+/// at 35 of the X51v's 64 MiB (R298, runs 37-41) while the 4 MiB between
+/// the scratch region and the pool sat unused: a port's modules and heap
+/// take it (nothing else is placed there while the runner runs: the
+/// loader's resident copy and its log blocks sit below 0xA8800000).
+pub const PORT_POOL_BASE: usize = SCRATCH_BASE + SCRATCH_SIZE;
+/// Size of the port runner's pool: from [`PORT_POOL_BASE`] to the top of
+/// SDRAM (52 MiB).
+pub const PORT_POOL_SIZE: usize = RAM_POOL_BASE + RAM_POOL_SIZE - PORT_POOL_BASE;
+
+/// The port runner's pool as bytes: [`RAM_POOL_BASE`]'s pool and the 4 MiB
+/// below it, under the same one-owner flag as [`take_ram_pool`] (the two
+/// never both handed out).
+pub fn take_port_pool() -> Option<&'static mut [u8]> {
+    // SAFETY: single core; called from main code before any interrupt
+    // handler touches the flag.
+    let taken = unsafe { core::ptr::addr_of_mut!(POOL_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: PORT_POOL_BASE..+PORT_POOL_SIZE is SDRAM (64 MiB from
+    // 0xA8000000) past the scratch region and every image section, stack,
+    // loader copy and log block (all below 0xA8800000); identity-mapped;
+    // the flag guarantees one owner (the RAM pool is the same flag's).
+    Some(unsafe { core::slice::from_raw_parts_mut(PORT_POOL_BASE as *mut u8, PORT_POOL_SIZE) })
+}
+
 /// [`take_ram_pool`] as bytes, for test images that need large buffers
 /// (storage soaks): the same pool, the same one owner.
 pub fn take_ram_pool_bytes() -> Option<&'static mut [u8]> {

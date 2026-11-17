@@ -72,7 +72,7 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
-static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull;
+static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes;
 /* D_CacheSurface lights into the scratch, not the RAM cache (r_surf.c). */
 int rp_scratch;
 
@@ -110,6 +110,7 @@ void RP_EmitInit( void )
 	rp_gpu = gEngfuncs.Cvar_Get( "rp_gpu", "0", 0, "ref_rp: 1 while the 2700G draws the frames" );
 	rp_fan = gEngfuncs.Cvar_Get( "rp_fan", "1", 0, "ref_rp: 1 a model's fans as the TA's fans, 0 as strips" );
 	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
+	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
 	rp_cull = gEngfuncs.Cvar_Get( "rp_cull", "1", 0, "ref_rp: 1 the models' triangles facing away or off the screen not sent (Half-Life's GL rule), 0 all sent, -1 the other winding" );
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
 	RP_FixedInit();
@@ -126,7 +127,9 @@ static int rp_mip_force, rp_cull_on, rp_chip;
 static uint32_t RP_AtlasFill( void );
 static void RP_HoleCheck( void );
 static void RP_AtlasUnjam( void );
-#define RP_UPLOAD_BUDGET ( 24 * 1024 ) /* bytes lit and written a frame: the hitches (RP_SurfacePlace) */
+#define RP_UPLOAD_BUDGET ( 48 * 1024 ) /* bytes lit and written a frame: the hitches (RP_SurfacePlace) */
+#define RP_FIRST_VIEW    45 /* frames after a map's tables are made with no budget: its first view whole */
+static int rp_map_frames;
 #define RP_PROVISIONAL 0x40000000u /* a place coarser than wanted (the upload budget) */
 static int32_t rp_upload_left;
 
@@ -138,7 +141,10 @@ static void RP_EmitReport( void )
 
 	if( !since )
 		since = now;
-	if( now - since < 5000000u || !f )
+	/* every 30 s, not 5: each report is a dozen lines to the SD card, and
+	   run 41's slowest card write took 108 ms (the owner: "still
+	   hitching"); the runner's own fps line stays every 5 s */
+	if( now - since < 30000000u || !f )
 		return;
 	fprintf( stderr, "rp-emit: a frame %u words, %u faces, %u triangles, %u vertices, %u state blocks, %u near-clipped; %u words past the buffer (%u frames)\n",
 		rp_count.words / f, rp_count.faces / f, rp_count.tris / f, rp_count.verts / f,
@@ -167,7 +173,7 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: culling (rp_cull %d): %u model triangles a frame not sent (facing away or off the screen)\n",
 			rp_cull_on, rp_count.culled / f );
-	if( rp_emit_on == 2 && rp_chip > 0 )
+	if( rp_emit_on == 2 && rp_chip > 0 && rp_holes->value != 0.0f )
 		RP_HoleCheck();
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: bones in integers: %u model parts a frame, %u bones joined with the view, %u normals lit\n",
@@ -264,7 +270,10 @@ void RP_EmitFrame( void )
 	}
 	if( rp_emit_on == 2 )
 		RP_AtlasUnjam();
-	rp_upload_left = RP_UPLOAD_BUDGET;
+	/* a map's first view goes in whole while the map comes up (the
+	   owner, run 41: the opening door pixelated for seconds), then the
+	   budget */
+	rp_upload_left = rp_map_frames++ < RP_FIRST_VIEW ? 0x7FFFFFFF : RP_UPLOAD_BUDGET;
 	rp_n = 0;
 	rp_good = 0;
 	rp_lit_bytes = rp_block_bytes = 0;
@@ -799,7 +808,8 @@ static void RP_AtlasUnjam( void )
 			if( least < 0 || rp_page[pg].live < rp_page[least].live )
 				least = pg;
 		/* the last frame's render may still read it */
-		rp_gfx_wait();
+		if( rp_page[least].used >= tr.framecount - 1 )
+			rp_gfx_wait();
 		RP_PageDrop( &rp_page[least] );
 		rp_count.evicted++;
 		rp_count.unjams++;
@@ -857,8 +867,11 @@ static int RP_AtlasAlloc( int w, int h, int *x, int *y )
 		rp_atlas_short = 1;
 		return -1;
 	}
-	/* the last frame's render may still read the page */
-	rp_gfx_wait();
+	/* the render in flight (the last frame's) may read the page: waited for
+	   only then (it is up to a whole render: the hitches, run 41); the
+	   least recently drawn page is mostly older than that */
+	if( rp_page[oldest].used >= tr.framecount - 1 )
+		rp_gfx_wait();
 	RP_PageDrop( &rp_page[oldest] );
 	rp_count.evicted++;
 	return RP_ShelfFit( &rp_page[oldest], w, h, x, y ) ? oldest : -1;
@@ -1070,6 +1083,7 @@ static int RP_WorldTables( void )
 	if( mod == rp_wmodel )
 		return rp_wst != NULL;
 	rp_wmodel = mod;
+	rp_map_frames = 0;
 	free( rp_wpos );
 	free( rp_wst );
 	free( rp_wv );

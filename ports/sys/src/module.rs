@@ -32,13 +32,14 @@ pub const VERSION: u32 = 1;
 /// The header's size in bytes. The file's first byte is the header's, and
 /// the header is loaded with the rest: a loaded module is its own record.
 pub const HEADER: usize = 72;
-/// Where modules are placed: the X51v's RAM pool
-/// (`rp_hal_x51v::devices::RAM_POOL_BASE`, 48 MiB; the runner checks the
-/// two agree). The build places them from its first byte; the game's heap
-/// is what the set leaves.
-pub const POOL: u32 = 0xA900_0000;
+/// Where modules are placed: the X51v's port pool
+/// (`rp_hal_x51v::devices::PORT_POOL_BASE`, 52 MiB: the RAM pool and the 4
+/// MiB below it that sat unused, R298; the runner checks the two agree).
+/// The build places them from its first byte; the game's heap is what the
+/// set leaves.
+pub const POOL: u32 = 0xA8C0_0000;
 /// The pool's length in bytes.
-pub const POOL_LEN: u32 = 48 * 1024 * 1024;
+pub const POOL_LEN: u32 = 52 * 1024 * 1024;
 /// One entry of the by-name table: the name's offset in the names, then
 /// the function's address.
 pub const EXPORT: usize = 8;
