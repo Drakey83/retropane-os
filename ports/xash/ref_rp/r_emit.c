@@ -91,6 +91,7 @@ static struct
 	uint32_t meshes, meshes_skipped, strips, fans, cmds_near, cmds_skipped, wraps; /* step 4a */
 	uint32_t near_cut, near_gone; /* R299: model triangles cut at the near plane, wholly behind it */
 	uint32_t mipswitch; /* R297: faces drawn at a mip level other than their place's */
+	uint32_t blended; /* step 4c: meshes drawn blended */
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
@@ -131,6 +132,14 @@ static void RP_EmitReport( void )
 		since = now;
 	if( now - since < 5000000u || !f )
 		return;
+	{
+		/* R298: who holds the heap, once, 20 s into play (the engine's
+		   own pool list, blocks of 256 KiB or more) */
+		static int reports;
+
+		if( ++reports == 4 )
+			gEngfuncs.Cbuf_AddText( "memlist 256\n" );
+	}
 	fprintf( stderr, "rp-emit: a frame %u words, %u faces, %u triangles, %u vertices, %u state blocks, %u near-clipped; %u words past the buffer (%u frames)\n",
 		rp_count.words / f, rp_count.faces / f, rp_count.tris / f, rp_count.verts / f,
 		rp_count.states / f, rp_count.nearclipped / f, rp_count.dropped, f );
@@ -144,8 +153,8 @@ static void RP_EmitReport( void )
 			rp_count.uploads / f, rp_count.upload_kib / f, (uint32_t)( rp_count.upload_us / f ),
 			rp_count.evicted, rp_count.skipped / f, rp_count.models / f, rp_count.refused );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: models a frame: %u meshes drawn, %u not (blended: step 4c), %u strips and %u fans; %u commands clipped at the near plane (%u triangles cut, %u wholly behind), %u too long; %u corners wrapped; %u skins written in all (fans as %s)\n",
-			rp_count.meshes / f, rp_count.meshes_skipped / f, rp_count.strips / f, rp_count.fans / f,
+		fprintf( stderr, "rp-emit: models a frame: %u meshes drawn (%u of them blended), %u not (no room), %u strips and %u fans; %u commands clipped at the near plane (%u triangles cut, %u wholly behind), %u too long; %u corners wrapped; %u skins written in all (fans as %s)\n",
+			rp_count.meshes / f, rp_count.blended / f, rp_count.meshes_skipped / f, rp_count.strips / f, rp_count.fans / f,
 			rp_count.cmds_near / f, rp_count.near_cut / f, rp_count.near_gone / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
 			rp_fan->value != 0.0f ? "the TA's fans" : "strips" );
 	if( rp_emit_on == 2 )
@@ -1320,7 +1329,45 @@ void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float 
 	rp_count.mverts++;
 }
 
-/* A mesh not drawn on the 2700G yet (chrome: step 4c), counted. */
+/*
+A chrome mesh's texels (R299: barney's helmet top; the owner, 2026-11-16:
+every mesh drawn). R_StudioSetupChrome makes each bone's two vectors in
+floats once an entity a frame, then two float dot products a normal; here
+the vectors are made 2.30 once a bone and each normal's texels come from
+two integer dot products, (n + 1) x 32 texels as 27.5.
+*/
+static int32_t rp_fchrome[RP_BONES][2][3];
+
+void RP_StudioChromeBone( int bone, const float *right, const float *up )
+{
+	if(( unsigned )bone >= RP_BONES )
+		return;
+	for( int j = 0; j < 3; j++ )
+	{
+		rp_fchrome[bone][0][j] = rp_fixq( right[j], 30 );
+		rp_fchrome[bone][1][j] = rp_fixq( up[j], 30 );
+	}
+}
+
+void RP_StudioChromeFixed( int bone, const float *normal, int st[2] )
+{
+	int32_t n[3];
+
+	if(( unsigned )bone >= RP_BONES )
+		bone = 0;
+	for( int j = 0; j < 3; j++ )
+		n[j] = rp_fixq( normal[j], 30 );
+	for( int c = 0; c < 2; c++ )
+	{
+		const int32_t *v = rp_fchrome[bone][c];
+		int64_t        d = ( (int64_t)n[0] * v[0] + (int64_t)n[1] * v[1] + (int64_t)n[2] * v[2] ) >> 30;
+
+		/* (d + 1) x 32 texels, as 27.5: (d30 + 2^30) x 1024 / 2^30 */
+		st[c] = (int)(( d + ( 1 << 30 )) >> 20 );
+	}
+}
+
+/* A mesh not drawn on the 2700G (none now: kept for counting). */
 void RP_StudioSkipped( int tris )
 {
 	rp_count.models += tris;
@@ -1442,8 +1489,32 @@ static void RP_SkinUpload( const pixel_t *src, int w, int h, int pg, int qx, int
 /*
 The skin the triangle interface has bound (GL_Bind: `r_affinetridesc`) in
 video memory, written there at its first use, and its state block: 1, or
-0 when the mesh is not drawn (a blended render mode: step 4c; no room).
+0 when the mesh is not drawn (no room).
+
+Step 4c, the blended models (the owner, 2026-11-16: no mesh skipped; they
+were, 12 a frame in run 35's busy view): the render mode the triangle
+interface was given (`vid.rendermode`, GL_SetRenderMode's) and the mesh's
+additive bit pick the 2700G's blend in the state block (drivers/mbx3d
+`blend`, `depth_test`: measured, rp-mbx3d version 23): a see-through mode
+the source's alpha over 1 minus it, the alpha `tr.blend` in every corner's
+colour (TEX2's alpha from the vertex); the additive ones (TransAdd, Glow,
+an additive texture) 1 plus 1, their colours already scaled by the
+engine; both with the depth compared and not written. Iterate, don't
+imitate: `ref_soft` blends each pixel on the CPU through its tables and
+`ref_gl` makes a GL state change a mesh; here the chip blends while it
+draws, and the state block goes only when the blend or page changes.
 */
+#define RP_BLEND_OPAQUE 0
+#define RP_BLEND_ALPHA  1
+#define RP_BLEND_ADD    2
+static int      rp_mesh_flags;
+static uint32_t rp_vert_alpha = 0xFF000000u;
+
+void RP_StudioMeshFlags( int flags )
+{
+	rp_mesh_flags = flags;
+}
+
 int RP_StudioSkin( void )
 {
 	const pixel_t *px = r_affinetridesc.pskin;
@@ -1452,11 +1523,25 @@ int RP_StudioSkin( void )
 	rp_skin_t     *e;
 	const void    *what;
 
+	int            blend = RP_BLEND_OPAQUE;
+	uint32_t       tsp;
+
 	rp_cur_skin = NULL;
-	if( vid.rendermode != kRenderNormal || !px || w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE )
+	if( !px || w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE )
 	{
 		rp_count.meshes_skipped++;
 		return 0;
+	}
+	if(( rp_mesh_flags & STUDIO_NF_ADDITIVE ) || vid.rendermode == kRenderTransAdd || vid.rendermode == kRenderGlow )
+		blend = RP_BLEND_ADD;
+	else if( vid.rendermode != kRenderNormal )
+		blend = RP_BLEND_ALPHA;
+	rp_vert_alpha = 0xFF000000u;
+	if( blend == RP_BLEND_ALPHA )
+	{
+		int32_t a = rp_fixq( tr.blend, 8 );
+
+		rp_vert_alpha = (uint32_t)( a < 0 ? 0 : a > 255 ? 255 : a ) << 24;
 	}
 	if( rp_skin_world != WORLDMODEL )
 	{
@@ -1507,13 +1592,23 @@ int RP_StudioSkin( void )
 
 	/* a model's state block differs from the world's on its page (Gouraud,
 	   the format, the alpha test): its own key beside the page's */
-	what = (const uint8_t *)&rp_page[e->pg] + 1 + e->masked;
+	what = (const uint8_t *)&rp_page[e->pg] + 1 + e->masked + 2 * blend;
+	tsp = RP_TSP_WORLD | RP_TSP_GOURAUD;
+	if( blend != RP_BLEND_OPAQUE )
+	{
+		/* the factors (bits 31-29 source, 28-26 destination: 4 the
+		   source's alpha, 5 one minus it, 1 one), blending on (bit 13),
+		   depth not written (bit 7) */
+		tsp = ( tsp & 0x03FFFFFFu ) | ( blend == RP_BLEND_ADD ? 1u << 29 | 1u << 26 : 4u << 29 | 5u << 26 )
+			| 1u << 13 | 1u << 7;
+		rp_count.blended++;
+	}
 	if( what != rp_state )
 	{
 		rp_state = what;
 		rp_count.states++;
 		RP_Put( RP_GFX_STATE );
-		RP_Put( RP_TSP_WORLD | RP_TSP_GOURAUD );
+		RP_Put( tsp );
 		RP_Put( e->masked ? RP_ISP_ALPHA : RP_ISP_ALWAYS );
 		RP_Put( e->masked ? RP_TEX0_PAGE_1555 : RP_TEX0_PAGE );
 		RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)e->pg * RP_PAGE_BYTES ));
@@ -1561,7 +1656,7 @@ static void RP_NearCorner( const rp_svert_t *v, const int32_t ( *cq )[3], const 
 	int64_t  num = (int64_t)( cq[a][2] - RP_ONE16 ) << 16;
 	int64_t  den = (int64_t)cq[a][2] - cq[b][2];
 	int32_t  f = (int32_t)( num / den ), p[3];
-	uint32_t rgb = 0xFF000000u;
+	uint32_t rgb = rp_vert_alpha;
 
 	p[0] = RP_Lerp16( cq[a][0], cq[b][0], f );
 	p[1] = RP_Lerp16( cq[a][1], cq[b][1], f );
@@ -1797,7 +1892,7 @@ texels:
 			s = smax;
 		if( tt > tmax )
 			tt = tmax;
-		c[k][4] = 0xFF000000u | (uint32_t)v[k].rgb[0] << 16 | (uint32_t)v[k].rgb[1] << 8 | v[k].rgb[2];
+		c[k][4] = rp_vert_alpha | (uint32_t)v[k].rgb[0] << 16 | (uint32_t)v[k].rgb[1] << 8 | v[k].rgb[2];
 		c[k][5] = RP_FixBits( u0 + s, 5 + 9 );
 		c[k][6] = RP_FixBits( v0 + tt, 5 + 9 );
 		cst[k][0] = u0 + s;

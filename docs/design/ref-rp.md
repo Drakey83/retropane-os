@@ -364,8 +364,16 @@ pieces of 255 corners at most, corners turned as `RP_ChipFace`'s, the
 light's own colour Gouraud shaded and multiplied into the texel (the
 software renderer kept a grey in 32 steps; `ref_gl`'s look). `rp_fan 0`
 sends fans as strips, unused. A command with a corner behind the near
-plane is not drawn (counted: 0 in c1a0's play); blended render modes and
-chrome are 4c's.
+plane was not drawn (counted: 0 in c1a0's start view, 394-467 a frame up
+close in run 35); since run 36 (R299) it is clipped: its triangles wholly
+in front go on as runs, a triangle across the plane is cut in 16.16
+integers into a 3- or 4-corner strip. Blended render modes are 4c's.
+**Chrome is drawn (the owner's ruling, 2026-11-16: "Dont do that", no mesh
+skipped):** the guards' helmet tops (barneyt.mdl `BX_Chrome1`, chrome and
+flat shade, 40 triangles) were missing under the integer path. A chrome
+mesh now goes as every mesh, its texels `R_StudioSetupChrome`'s in
+integers (each bone's vectors 2.30 once an entity a frame, two integer dot
+products a normal: `RP_StudioChromeFixed`), run 37.
 
 In the emulator (`emu-xash-kit`, rp-v0.33.0): the 2700G's end shot has
 the scientists behind the desk as the software renderer's does, 95% of
@@ -421,9 +429,8 @@ within 0.008 pixel, the light's gamma index one step off in 3 of 100,000.
 66.5). Its samples showed `memcpy` at 1.8%: the build is `-ffreestanding`,
 so the float-to-bits `memcpy` in every fixed-point helper was a call; now
 `__builtin_memcpy` (inline) in all four. They also showed parts with a
-chrome mesh kept on floats; chrome is not drawn on the 2700G until 4c, so
-under the integer path a chrome mesh is skipped and counted with the
-model triangles not drawn. **Run 15 (port-runner-0015): 56.6 ms, 17.7 a
+chrome mesh kept on floats; chrome was then skipped under the integer
+path (undone 2026-11-16 by the owner's ruling: chrome is drawn, above). **Run 15 (port-runner-0015): 56.6 ms, 17.7 a
 second**: 454 of 467 world faces a frame by the tables (82 of them brush
 entities'), 13 by floats (corners nearer than a unit); 8 model parts, 67
 bones and 1,806 normals a frame in integers. The software-float helpers

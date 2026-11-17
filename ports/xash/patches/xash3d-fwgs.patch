@@ -139,6 +139,76 @@ index fe5ece4..f35b8f6 100644
  		} \
  	} \
  
+diff --git a/engine/common/zone.c b/engine/common/zone.c
+index a0d9c23..b7b36d9 100644
+--- a/engine/common/zone.c
++++ b/engine/common/zone.c
+@@ -22,6 +22,8 @@ GNU General Public License for more details.
+ #define MEMHEADER_SENTINEL_SMALL 0xAD1EU
+ #define MEMHEADER_SENTINEL2      0xDFU
+ 
++
++static void Mem_OutOfMemory( size_t size ); // RetroPane (R298): the pools on a refused allocation
+ #define MEM_SMALL_MAX UINT8_MAX
+ 
+ #ifdef XASH_CUSTOM_SWAP
+@@ -258,6 +260,7 @@ void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory( size );
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -278,6 +281,7 @@ void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory( size );
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -424,6 +428,7 @@ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clea
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory( size );
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -467,6 +472,7 @@ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clea
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory( size );
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -625,6 +631,24 @@ void _Mem_Check( const char *filename, int fileline )
+ 	}
+ }
+ 
++void Mem_PrintStats( void );
++static void Mem_PrintList( size_t minallocationsize );
++
++/*
++RetroPane (R298): an allocation refused prints who holds the heap (each
++pool, and every block of 256 KiB or more) before the error ends the game.
++*/
++static void Mem_OutOfMemory( size_t size )
++{
++	static int once;
++
++	if( once++ )
++		return;
++	Con_Printf( "out of memory asking %s: the pools and their blocks of 256 KiB or more\n", Q_memprint( size ));
++	Mem_PrintList( 256 << 10 );
++	Mem_PrintStats();
++}
++
+ void Mem_PrintStats( void )
+ {
+ 	size_t count = 0, size = 0, realsize = 0;
 diff --git a/engine/platform/platform.h b/engine/platform/platform.h
 index 4b1e40c..41d0718 100644
 --- a/engine/platform/platform.h
@@ -227,10 +297,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..955034f 100644
+index 1a7efd6..3570e79 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,37 @@ typedef struct
+@@ -992,6 +992,42 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -264,6 +334,11 @@ index 1a7efd6..955034f 100644
 +void RP_StudioSkipped( int tris );
 +void RP_StudioLightBegin( const float *color, float ambient, float shade );
 +void RP_StudioLightFixed( int bone, const float *blight, int flags, const float *normal, byte *out );
++// ref_rp: a chrome mesh's texels in integers (R299: barney's helmet top)
++void RP_StudioChromeBone( int bone, const float *right, const float *up );
++void RP_StudioChromeFixed( int bone, const float *normal, int st[2] );
++// ref_rp step 4c: the next mesh's texture flags (its additive bit)
++void RP_StudioMeshFlags( int flags );
 +
  
  extern int   r_aliasblendcolor;
@@ -347,15 +422,19 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..22a7ead 100644
+index 03790d8..733b3a8 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1675,6 +1675,88 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1675,107 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
 +// ref_rp 4d's rest: this part's normals lit in integers (R_StudioDrawPoints)
 +static byte rp_ncol[RP_STUDIO_VERTS][3];
++// ref_rp: a chrome mesh's texels a normal (27.5), made in integers with
++// its colour (rp_lit_part), and each bone's chrome vectors' age
++static int  rp_chrome_st[RP_STUDIO_VERTS][2];
++static int  rp_chrome_age[MAXSTUDIOBONES];
 +static int  rp_lit_part;
 +
 +/*
@@ -367,7 +446,7 @@ index 03790d8..22a7ead 100644
 +lights them; 0 when the mesh is not drawn there
 +===============
 +*/
-+static void RP_StudioMesh( short *ptricmds, vec3_t *pstudionorms, qboolean half )
++static void RP_StudioMesh( short *ptricmds, vec3_t *pstudionorms, qboolean half, qboolean chrome )
 +{
 +	static rp_svert_t v[RP_STUDIO_CMD];
 +	// each normal's colour once a part when no local light is on (step 4b),
@@ -421,7 +500,22 @@ index 03790d8..22a7ead 100644
 +			}
 +			v[k].xyz = g_studio.verts[ptricmds[0]];
 +			v[k].idx = ptricmds[0];
-+			if( half )
++			if( chrome )
++			{
++				// R_StudioDrawChromeMesh's texels: the normal's against the
++				// bone's chrome vectors (in integers when lit so)
++				if( rp_lit_part && (unsigned)ni < RP_STUDIO_VERTS )
++				{
++					v[k].s = rp_chrome_st[ni][0];
++					v[k].t = rp_chrome_st[ni][1];
++				}
++				else
++				{
++					v[k].s = (int)( g_studio.chrome[ni][0] * 32.0f );
++					v[k].t = (int)( g_studio.chrome[ni][1] * 32.0f );
++				}
++			}
++			else if( half )
 +			{
 +				v[k].s = (int)( HalfToFloat( ptricmds[2] ) * w * 32.0f );
 +				v[k].t = (int)( HalfToFloat( ptricmds[3] ) * h * 32.0f );
@@ -439,13 +533,13 @@ index 03790d8..22a7ead 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1768,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1787,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
 +	if( rp_emit_on == 2 )
 +	{
-+		RP_StudioMesh( ptricmds, pstudionorms, false );
++		RP_StudioMesh( ptricmds, pstudionorms, false, false );
 +		if( !rp_both )
 +			return;
 +	}
@@ -453,13 +547,13 @@ index 03790d8..22a7ead 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1808,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1827,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
 +	if( rp_emit_on == 2 )
 +	{
-+		RP_StudioMesh( ptricmds, pstudionorms, true );
++		RP_StudioMesh( ptricmds, pstudionorms, true, false );
 +		if( !rp_both )
 +			return;
 +	}
@@ -467,7 +561,23 @@ index 03790d8..22a7ead 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +1908,7 @@ static void R_StudioDrawPoints( void )
+@@ -1754,6 +1869,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+ 	qboolean glowShell = ( scale > 0.0f ) ? true : false;
+ 	vec3_t   vert;
+ 
++	// ref_rp: chrome on the 2700G as every mesh (the owner, 2026-11-16: no
++	// mesh skipped); the glowing shell is a blended mode (step 4c)
++	if( rp_emit_on == 2 && !glowShell )
++	{
++		RP_StudioMesh( ptricmds, pstudionorms, false, true );
++		if( !rp_both )
++			return;
++	}
++
+ 	while(( i = *( ptricmds++ )))
+ 	{
+ 		if( i < 0 )
+@@ -1812,6 +1936,7 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -475,7 +585,7 @@ index 03790d8..22a7ead 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +1947,32 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +1975,32 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -510,7 +620,7 @@ index 03790d8..22a7ead 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1890,6 +2006,13 @@ static void R_StudioDrawPoints( void )
+@@ -1890,6 +2034,29 @@ static void R_StudioDrawPoints( void )
  		{
  			for( i = 0; i < pmesh[j].numnorms; i++, k++, pstudionorms++, pnormbone++ )
  			{
@@ -519,21 +629,52 @@ index 03790d8..22a7ead 100644
 +					// ref_rp 4d's rest: the colour bytes in integers
 +					RP_StudioLightFixed( *pnormbone, g_studio.blightvec[*pnormbone], g_nFaceFlags,
 +						(float *)pstudionorms, rp_ncol[k] );
++					if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
++					{
++						// the bone's chrome vectors once an entity a frame
++						// (R_StudioSetupChrome's floats), each normal's
++						// texels in integers
++						if( rp_chrome_age[*pnormbone] != g_studio.framecount )
++						{
++							vec2_t first;
++
++							g_studio.chromeage[*pnormbone] = 0;
++							R_StudioSetupChrome( first, *pnormbone, (float *)pstudionorms );
++							RP_StudioChromeBone( *pnormbone, g_studio.chromeright[*pnormbone], g_studio.chromeup[*pnormbone] );
++							rp_chrome_age[*pnormbone] = g_studio.framecount;
++						}
++						RP_StudioChromeFixed( *pnormbone, (float *)pstudionorms, rp_chrome_st[k] );
++					}
 +					continue;
 +				}
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1947,6 +2070,9 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2114,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  
-+		if( rp_fix && FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
-+			RP_StudioSkipped( pmesh->numtris ); // ref_rp: chrome is step 4c's
+-		{
+-			if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
+-				R_StudioDrawChromeMesh( ptricmds, pstudionorms, s, t, shellscale );
+-			else if( FBitSet( g_nFaceFlags, STUDIO_NF_UV_COORDS ))
+-				R_StudioDrawFloatMesh( ptricmds, pstudionorms );
+-			else
+-				R_StudioDrawNormalMesh( ptricmds, pstudionorms, s, t );
+-		}
++		// ref_rp: chrome drawn as every mesh (R299: barney's helmet top
++		// was skipped under the integer path); an additive mesh blended
++		// (step 4c)
++		RP_StudioMeshFlags( g_nFaceFlags );
++		if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
++			R_StudioDrawChromeMesh( ptricmds, pstudionorms, s, t, shellscale );
++		else if( FBitSet( g_nFaceFlags, STUDIO_NF_UV_COORDS ))
++			R_StudioDrawFloatMesh( ptricmds, pstudionorms );
 +		else
++			R_StudioDrawNormalMesh( ptricmds, pstudionorms, s, t );
+ 
+ 		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
  		{
- 			if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
- 				R_StudioDrawChromeMesh( ptricmds, pstudionorms, s, t, shellscale );
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
 index e47e115..86c7a3a 100644
 --- a/ref/soft/r_surf.c
