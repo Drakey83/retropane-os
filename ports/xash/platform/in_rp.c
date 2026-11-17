@@ -311,7 +311,7 @@ static void RP_Walk( uint64_t played_us )
 	if( !started )
 	{
 		started = 1;
-		Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 100\n+forward\n" ); // the flashlight on (R308: its dynamic light every frame)
+		Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 100\nvolume 0.05\nMP3Volume 0\n+forward\n" ); // quiet: nobody is listening (the owner, 2026-11-16: "my daughter is trying to sleep") // the flashlight on (R308: its dynamic light every frame)
 		VectorCopy( cl.simorg, last );
 		stuck_check = ms + 1000;
 	}
