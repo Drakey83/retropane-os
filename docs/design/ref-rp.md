@@ -625,6 +625,44 @@ level change). E, last: `-rp4f 20`, `-rpend 45`, the owner told it may
 freeze the X51v. Each run's log, samples and the mixer's stage cycles
 read against A.
 
+**Run 52 (2026-11-17, kit 54, logs in `local/half-life/run52`).** The
+walk does not see the same views each run (where it looks depends on
+timing), so the runs are read over lines 3-25 (after the map's start)
+with each run's load beside it, as frame time against words a frame (A
+and A2 give ~25.6 ms + 0.67 ms a thousand words):
+
+| Run | fps | Words a frame | Against the default at the same load |
+|---|---|---|---|
+| run 51 (kit 51) | 24.6 | 15,400 | kit 54 ~12% faster |
+| A, the default | 28.2 | 14,700 | |
+| A2, the default | 26.2 | 18,700 | |
+| B, `-rpwalloc` | **29.3** | 20,300 | **~13% faster** |
+| C, `-rpmix22` | 24.8 | 17,500 | ~8% slower: the OS mixer's 2x upsampling took ~600 cycles a sound frame adding the stream (A: ~125), its wakes ~950 (A: ~490) |
+
+A ended in a data abort in the end picture's software render (R312:
+`-rpendshot` left out after it); B, C, A2 and E returned. D (c2a5) drew
+the sky (4 sides) and water (7 faces, 57 cells, nothing cut) at 14-26
+fps, then hung in `R_CreateDecalList` at the tour's reload of c2a5 (R313).
+
+**The probe (E, c1a0's walk, nothing froze):**
+
+| Phase | Words a frame | Feed by DMA / by CPU | CPU free while pieces ran | CPU's memory walk meanwhile | Pictures | Hangs |
+|---|---|---|---|---|---|---|
+| A, paced | 26,876 (19,402 by DMA in 738 pieces) | 9.2 / 5.0 ms | 3.3 ms | 65.9% of idle | 16 of 16 the same | none |
+| B, unpaced | 9,715 (6,714 by DMA in 265 pieces) | 3.6 / 2.3 ms | 1.2 ms | 64.6% of idle | 16 of 16 the same | none |
+
+The answers: (a) the TA takes the game's runs by DMA with no room check,
+the FIFO full (510 words) without a hang, the pictures exact; (b) the CPU
+keeps ~65% of its memory speed while the DMA writes, paced or not, so the
+bus share is the cost, not a stall; (c) a piece a run costs more than it
+frees: arming, cleaning and polling ~740 pieces took 9.2 ms against the
+CPU's 5.0. So 4f is built as **one descriptor chain a frame, unpaced**:
+each strip's corners straight from the emitter's buffer, its strip word
+and end window write from a side table of constants, the CPU armed once
+and free while the chain runs (~65% of its memory speed, all of its
+cached work). On run B's load (~5 ms of feed a frame) that is ~3-4 ms back
+a 34 ms frame: ~29 -> ~32 fps, with write-allocate on.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
