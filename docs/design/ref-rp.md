@@ -545,6 +545,28 @@ the device before building: whether the TA takes a frame's strips with
 their ends in a chain at the bus's pace without a FIFO check (Dell's GLES
 lets the bus stall), and what the CPU loses to the stalls meanwhile.
 
+**Kit 53 (2026-11-17, built, emulator-run, not on the X51v).** Picked
+from run 51's samples, all exact (the same words, the same bits):
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A lit part's corners (`RP_StudioCmdLit`) | ref_soft and ref_gl: a triangle-interface call a corner; kits 49-52: each corner staged in a table (`RP_StudioMesh`'s `v[]`) and read back by `RP_StudioCmd` | one pass from the model's four shorts a corner (vertex, normal, s, t) to the TA's seven words; the near plane's new corner takes its colour from the corners' colour words | no ~24-byte staging write and read a corner on a cache that allocates on reads only (run 51: `RP_StudioMesh` 3.0%) |
+| `rp_mv`'s records | Linux and WM leave the PXA270's read-allocate cache to the hardware | `RP_StudioVertFixed` asks for each record's line four vertices before writing it (PLD), the clip's `rp_mq` copy a few corners ahead | the stores land in the cache and the corners read them there; the fills overlap the transform (run 51: ~600 samples on these misses) |
+| The client's light transforms (`StudioSetupBones`) | the SDK: a second `ConcatTransforms` a child bone for the light transform | copied from the bone transform when the bone's root came through `StudioFxTransform` unchanged (a byte compare) | Xash's hardware path makes them the same bits; half the concatenations go (run 51: 1.7%) |
+
+Emulator (c1a0, 70 s, `+rp_lit 2`): 984,058 corners built both ways, 0
+differed in a word; the near-plane cut was not exercised (no command
+clipped there in c1a0). Estimate from run 51's samples: ~2,100 of 57,227 samples (~3.7% of the
+sampled play) on top of kit 52's ~9-10%. **How to read the samples
+(found for kit 53):** the runner's port-layer calls run with interrupts
+masked (`with()`), so a masked call collapses to about one sample: the
+TA feed (`rp_gfx_frame_parts`) shows as 3.0% while the log measures 4.2
+ms of a 43 ms frame (~10%), about 1.3 samples a frame. The mixer's own
+meter agrees with its samples (3.2-3.7%: its calls are short). So the
+sampled shares of unmasked code are ~7% high against the wall clock, and
+the feed is the largest single cost left on the CPU: step 4f (above)
+would take most of it off.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

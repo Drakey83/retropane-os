@@ -1,3 +1,53 @@
+diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
+index 97ac1fb..3e0a81a 100644
+--- a/cl_dll/StudioModelRenderer.cpp
++++ b/cl_dll/StudioModelRenderer.cpp
+@@ -921,6 +921,15 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 	}
+ 
+ 
++	// RetroPane kit 53 (run 51: ConcatTransforms 1.7% of the play): with
++	// the hardware path (Xash's IsHardware is 1) a root's light transform is
++	// its bone transform copied, and a child's both are its parent's times
++	// the same bone matrix: the same bits, worked twice. A bone whose root
++	// StudioFxTransform left as it was (no distort, hologram or explode
++	// change) has its light transform copied, not worked again; exact.
++	byte rp_same[MAXSTUDIOBONES];
++	int rp_hw = IEngineStudio.IsHardware();
++
+ 	for( i = 0; i < m_pStudioHeader->numbones; i++ )
+ 	{
+ 		QuaternionMatrix( q[i], bonematrix );
+@@ -931,7 +940,7 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 
+ 		if( pbones[i].parent == -1 )
+ 		{
+-			if( IEngineStudio.IsHardware() )
++			if( rp_hw )
+ 			{
+ 				ConcatTransforms( (*m_protationmatrix), bonematrix, (*m_pbonetransform)[i] );
+ 
+@@ -947,11 +956,18 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 
+ 			// Apply client-side effects to the transformation matrix
+ 			StudioFxTransform( m_pCurrentEntity, (*m_pbonetransform)[i] );
++			rp_same[i] = rp_hw && !memcmp( (*m_pbonetransform)[i], (*m_plighttransform)[i], sizeof( float[3][4] ));
+ 		} 
+ 		else 
+ 		{
+-			ConcatTransforms( (*m_pbonetransform)[pbones[i].parent], bonematrix, (*m_pbonetransform)[i] );
+-			ConcatTransforms( (*m_plighttransform)[pbones[i].parent], bonematrix, (*m_plighttransform)[i] );
++			int parent = pbones[i].parent;
++
++			ConcatTransforms( (*m_pbonetransform)[parent], bonematrix, (*m_pbonetransform)[i] );
++			rp_same[i] = ( parent >= 0 && parent < i ) ? rp_same[parent] : 0;
++			if( rp_same[i] )
++				memcpy( (*m_plighttransform)[i], (*m_pbonetransform)[i], sizeof( float[3][4] ));
++			else
++				ConcatTransforms( (*m_plighttransform)[parent], bonematrix, (*m_plighttransform)[i] );
+ 		}
+ 	}
+ }
 diff --git a/cl_dll/studio_util.cpp b/cl_dll/studio_util.cpp
 index 441aca8..88c8291 100644
 --- a/cl_dll/studio_util.cpp

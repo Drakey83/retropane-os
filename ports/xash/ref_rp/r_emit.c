@@ -73,7 +73,7 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
-static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes, *rp_lm;
+static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes, *rp_lm, *rp_lit;
 static void RP_LmFlush( void );
 static void RP_LmFrame( void );
 /* D_CacheSurface lights into the scratch, not the RAM cache (r_surf.c). */
@@ -111,6 +111,11 @@ static uint32_t rp_skins_total; /* step 4a: skins written since the start */
 
 static void RP_FixedInit( void );
 static int      rp_lm_on;
+/* rp_lit as read at the frame's start; its check (2): the one-pass words
+   kept (1), then the staged ones compared with them (2); corners compared
+   and corners that differed */
+static int      rp_lit_on, rp_lit_cap, rp_lit_capn;
+static uint32_t rp_lit_corners, rp_lit_differ;
 static uint32_t rp_tex_used, rp_tex_room; /* R297 B: the texture pool's bytes */
 
 void RP_EmitInit( void )
@@ -123,6 +128,7 @@ void RP_EmitInit( void )
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
 	rp_cull = gEngfuncs.Cvar_Get( "rp_cull", "1", 0, "ref_rp: 1 the models' triangles facing away or off the screen not sent (Half-Life's GL rule), 0 all sent, -1 the other winding" );
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
+	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	RP_FixedInit();
 }
@@ -174,6 +180,9 @@ static void RP_EmitReport( void )
 			rp_count.meshes / f, rp_count.blended / f, rp_count.meshes_skipped / f, rp_count.strips / f, rp_count.fans / f,
 			rp_count.cmds_near / f, rp_count.near_cut / f, rp_count.near_gone / f, rp_count.cmds_skipped, rp_count.wraps / f, rp_skins_total,
 			rp_fan->value != 0.0f ? "the TA's fans" : "strips" );
+	if( rp_emit_on == 2 && rp_lit_on == 2 )
+		fprintf( stderr, "rp-emit: rp_lit 2 (kit 53's check): %u corners built both ways, %u differed in a word\n",
+			rp_lit_corners, rp_lit_differ );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables (%u of them brush entities'), %u by floats; model vertices %u worked and %u used again a frame\n",
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
@@ -258,7 +267,8 @@ static int RP_ChipOpen( void )
 	return rp_chip > 0;
 }
 
-/* rp_fixed, rp_fan and rp_mip as read at the frame's start. */
+/* rp_fixed, rp_fan and rp_mip as read at the frame's start (rp_lit's
+   with the report, above). */
 static int rp_fixed_on, rp_fan_on;
 
 /* A new frame: the last one's words are let go (sent at its end by
@@ -275,6 +285,7 @@ void RP_EmitFrame( void )
 	   they were software-float compares (run 21's __aeabi_fcmpeq) */
 	rp_fixed_on = rp_fixed->value != 0.0f;
 	rp_fan_on = rp_fan->value != 0.0f;
+	rp_lit_on = (int)rp_lit->value;
 	rp_mip_force = (int)rp_mip->value;
 	rp_cull_on = (int)rp_cull->value;
 	RP_LmFrame();
@@ -3050,6 +3061,9 @@ int RP_StudioFixedBegin( int numverts )
 	RP_ViewFixed();
 	rp_studio_serial++;
 	rp_count.bparts++;
+	/* the first records' lines (RP_StudioVertFixed asks four on) */
+	for( int k = 0; k < 4 && k < numverts; k++ )
+		__builtin_prefetch( &rp_mv[k] );
 	return 1;
 }
 
@@ -3069,6 +3083,13 @@ void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float 
 	/* the model's vertices are read in order and miss (read-allocate,
 	   no hardware prefetch): ask for the ones eight vertices on */
 	__builtin_prefetch( p + 24 );
+	/* kit 53 (run 51: RP_StudioCmd's first read of each record a miss,
+	   ~1,500 a frame): the PXA270's cache allocates on reads only, so the
+	   record's stores below went past it to memory and the corners read
+	   them back from there. Its line asked for four vertices ahead (one
+	   record a line), the stores land in the cache and the corners find
+	   them there; the line is filled meanwhile, the CPU not waiting. */
+	__builtin_prefetch( &rp_mv[( idx + 4 ) & ( RP_STUDIO_VERTS - 1 )] );
 	for( int j = 0; j < 3; j++ )
 		a[j] = rp_fixq( p[j], 16 );
 	rp_bone_point( &rp_fbone[bone], a, q );
@@ -3423,8 +3444,10 @@ static inline int32_t RP_Lerp16( int32_t a, int32_t b, int32_t f )
 	return a + (int32_t)(( (int64_t)( b - a ) * f ) >> 16 );
 }
 
-/* The corner where the edge a-b (a in front, b behind) meets the plane. */
-static void RP_NearCorner( const rp_svert_t *v, const int32_t ( *cq )[3], const int32_t ( *cst )[2],
+/* The corner where the edge a-b (a in front, b behind) meets the plane.
+   Its colour from the two corners' colour words (kit 53: the same bytes
+   the staged corners held, so the fused pass needs no staging). */
+static void RP_NearCorner( const uint32_t ( *c )[RP_VERTEX_WORDS], const int32_t ( *cq )[3], const int32_t ( *cst )[2],
 	int a, int b, uint32_t out[RP_VERTEX_WORDS], int32_t xy[2] )
 {
 	/* f = (z_a - 1) / (z_a - z_b) as 0.16: z_a >= 1 > z_b, so 0 <= f < 1 */
@@ -3439,7 +3462,11 @@ static void RP_NearCorner( const rp_svert_t *v, const int32_t ( *cq )[3], const 
 	RP_ProjectS( p, out, xy );
 	out[3] = out[2];
 	for( int j = 0; j < 3; j++ )
-		rgb |= (uint32_t)( v[a].rgb[j] + ((( v[b].rgb[j] - v[a].rgb[j] ) * f ) >> 16 )) << ( 16 - 8 * j );
+	{
+		int ca = (int)( c[a][4] >> ( 16 - 8 * j ) & 0xFFu ), cb = (int)( c[b][4] >> ( 16 - 8 * j ) & 0xFFu );
+
+		rgb |= (uint32_t)( ca + ((( cb - ca ) * f ) >> 16 )) << ( 16 - 8 * j );
+	}
 	out[4] = rgb;
 	out[5] = RP_FixBits( RP_Lerp16( cst[a][0], cst[b][0], f ), 5 + 9 );
 	out[6] = RP_FixBits( RP_Lerp16( cst[a][1], cst[b][1], f ), 5 + 9 );
@@ -3517,7 +3544,7 @@ static inline int RP_OffScreen( const int32_t a[2], const int32_t b[2], const in
 		|| ( a[1] < 0 && b[1] < 0 && c[1] < 0 ) || ( a[1] > h && b[1] > h && c[1] > h );
 }
 
-static void RP_StudioClipCmd( int fan, int n, const rp_svert_t *v, uint32_t ( *c )[RP_VERTEX_WORDS],
+static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 	const int32_t ( *cq )[3], const int32_t ( *cst )[2], int32_t ( *cxy )[2] )
 {
 	static uint16_t idx[RP_STUDIO_CMD + 1];
@@ -3604,9 +3631,9 @@ static void RP_StudioClipCmd( int fan, int n, const rp_svert_t *v, uint32_t ( *c
 				if( in[j] != bin )
 				{
 					if( in[j] )
-						RP_NearCorner( v, cq, cst, a, b, c[slot], cxy[slot] );
+						RP_NearCorner( (const uint32_t( * )[RP_VERTEX_WORDS] )c, cq, cst, a, b, c[slot], cxy[slot] );
 					else
-						RP_NearCorner( v, cq, cst, b, a, c[slot], cxy[slot] );
+						RP_NearCorner( (const uint32_t( * )[RP_VERTEX_WORDS] )c, cq, cst, b, a, c[slot], cxy[slot] );
 					poly[pn++] = (uint16_t)slot++;
 				}
 			}
@@ -3638,14 +3665,47 @@ its light the vertex colour, its texels into the skin's place on its page;
 sent as one TA strip or fan (pieces of 255 corners at most); with a corner
 behind the near plane, by RP_StudioClipCmd.
 */
+/* A command's corners as the TA's words (`c`), with what the culling and
+   the near plane read: the view-space points (`cq`, made only for a cut),
+   the page texels as 27.5 (`cst`), the TA's x, y as 28.4 (`cxy`), and on
+   the fixed path each corner's vertex in rp_mv (`cvi`, 0xFFFF: none). */
+static uint32_t rp_sc[RP_STUDIO_CMD + 4][RP_VERTEX_WORDS];
+static uint16_t rp_sidx[RP_STUDIO_CMD * 2];
+static int32_t  rp_scq[RP_STUDIO_CMD][3], rp_scst[RP_STUDIO_CMD][2], rp_scxy[RP_STUDIO_CMD + 4][2];
+static uint16_t rp_scvi[RP_STUDIO_CMD];
+
+static void RP_StudioCmdSend( int fan, int n, int behind );
+
+/* rp_lit 2's kept corners (set once, then read back) */
+static const uint32_t( *RP_LitKeep( const uint32_t ( *set )[RP_VERTEX_WORDS + 5] ))[RP_VERTEX_WORDS + 5]
+{
+	static const uint32_t( *kept )[RP_VERTEX_WORDS + 5];
+
+	if( set )
+		kept = set;
+	return kept;
+}
+
+/* What RP_StudioMesh asks of rp_lit: 0 staged, 1 one pass, 2 both. */
+int RP_StudioLitMode( void )
+{
+	return rp_lit_on;
+}
+
+/* rp_lit 2: 1 keep the next command's one-pass corners, 2 compare the
+   next staged command with them, 0 neither. */
+void RP_StudioLitCheck( int step )
+{
+	rp_lit_cap = step == 2 && rp_lit_cap != 3 ? 0 : step;
+}
+
 void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 {
-	static uint32_t c[RP_STUDIO_CMD + 4][RP_VERTEX_WORDS];
-	static uint16_t idx[RP_STUDIO_CMD * 2];
-	static int32_t  cq[RP_STUDIO_CMD][3], cst[RP_STUDIO_CMD][2], cxy[RP_STUDIO_CMD + 4][2];
+	uint32_t( *c )[RP_VERTEX_WORDS] = rp_sc;
+	int32_t( *cq )[3] = rp_scq, ( *cst )[2] = rp_scst, ( *cxy )[2] = rp_scxy;
 	const rp_skin_t *e = rp_cur_skin;
 	int32_t u0, v0, smax, tmax;
-	int     m, behind = 0;
+	int     behind = 0;
 
 	if( !e || n < 3 )
 		return;
@@ -3678,6 +3738,7 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			/* each vertex of the model's part worked once (step 4b) */
 			rp_mvert_t *mv = &rp_mv[v[k].idx];
 
+			rp_scvi[k] = (uint16_t)v[k].idx;
 			if( k + RP_MV_AHEAD < n )
 				__builtin_prefetch( &rp_mv[v[k + RP_MV_AHEAD].idx & ( RP_STUDIO_VERTS - 1 )] );
 			if( mv->serial != rp_studio_serial )
@@ -3705,6 +3766,7 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			vec3_t local, t;
 			float  zi, sx, sy;
 
+			rp_scvi[k] = 0xFFFFu;
 			VectorSubtract( v[k].xyz, RI.rvp.vieworigin, local );
 			TransformVector( local, t );
 			for( int j = 0; j < 3; j++ )
@@ -3750,6 +3812,56 @@ texels:
 		cst[k][0] = u0 + s;
 		cst[k][1] = v0 + tt;
 	}
+	RP_StudioCmdSend( fan, n, behind );
+}
+
+/* The command's corners built (rp_sc and beside it): culled, cut at the
+   near plane, sent as strips and fans. */
+static void RP_StudioCmdSend( int fan, int n, int behind )
+{
+	uint32_t( *c )[RP_VERTEX_WORDS] = rp_sc;
+	int32_t( *cq )[3] = rp_scq, ( *cxy )[2] = rp_scxy;
+	const int32_t( *cst )[2] = (const int32_t( * )[2] )rp_scst;
+	uint16_t *idx = rp_sidx;
+	int       m;
+
+	if( rp_lit_cap == 1 )
+	{
+		/* rp_lit 2: the one-pass corners kept, not sent */
+		static uint32_t keep[RP_STUDIO_CMD][RP_VERTEX_WORDS + 5];
+
+		for( int k = 0; k < n; k++ )
+		{
+			memcpy( keep[k], c[k], sizeof( c[k] ));
+			keep[k][7] = (uint32_t)cst[k][0];
+			keep[k][8] = (uint32_t)cst[k][1];
+			keep[k][9] = (uint32_t)cxy[k][0];
+			keep[k][10] = (uint32_t)cxy[k][1];
+			keep[k][11] = rp_scvi[k];
+		}
+		rp_lit_capn = n + ( behind << 16 );
+		rp_lit_cap = 3;
+		RP_LitKeep( keep );
+		return;
+	}
+	if( rp_lit_cap == 2 )
+	{
+		/* rp_lit 2: the staged corners against the kept ones */
+		const uint32_t( *keep )[RP_VERTEX_WORDS + 5] = RP_LitKeep( NULL );
+
+		for( int k = 0; k < n; k++ )
+		{
+			int d = (( rp_lit_capn & 0xFFFF ) != n ) || ( rp_lit_capn >> 16 ) != behind
+				|| memcmp( keep[k], c[k], sizeof( c[k] )) || keep[k][7] != (uint32_t)cst[k][0]
+				|| keep[k][8] != (uint32_t)cst[k][1] || keep[k][9] != (uint32_t)cxy[k][0]
+				|| keep[k][10] != (uint32_t)cxy[k][1] || keep[k][11] != rp_scvi[k];
+
+			rp_lit_differ += (uint32_t)d;
+		}
+		rp_lit_corners += (uint32_t)n;
+		rp_lit_cap = 0;
+	}
+
 	if( behind || rp_cull_on )
 	{
 		/* each triangle sorted (R299's near plane, the culling): the ones
@@ -3761,14 +3873,23 @@ texels:
 			rp_count.cmds_near++;
 			if( rp_fixed_on )
 				for( int k = 0; k < n; k++ )
-					if(( unsigned )v[k].idx < RP_STUDIO_VERTS )
+				{
+					unsigned i = rp_scvi[k];
+
+					/* kit 53: rp_mq was written, not read, so its lines
+					   are not in the cache (read-allocate): the ones a
+					   few corners on asked for now */
+					if( k + RP_MV_AHEAD < n )
+						__builtin_prefetch( rp_mq[rp_scvi[k + RP_MV_AHEAD] & ( RP_STUDIO_VERTS - 1 )] );
+					if( i < RP_STUDIO_VERTS )
 					{
-						cq[k][0] = rp_mq[v[k].idx][0];
-						cq[k][1] = rp_mq[v[k].idx][1];
-						cq[k][2] = rp_mq[v[k].idx][2];
+						cq[k][0] = rp_mq[i][0];
+						cq[k][1] = rp_mq[i][1];
+						cq[k][2] = rp_mq[i][2];
 					}
+				}
 		}
-		RP_StudioClipCmd( fan, n, v, c, (const int32_t( * )[3] )cq, (const int32_t( * )[2] )cst, cxy );
+		RP_StudioClipCmd( fan, n, c, (const int32_t( * )[3] )cq, cst, cxy );
 		return;
 	}
 
@@ -3822,6 +3943,106 @@ texels:
 	}
 	rp_count.tris += n - 2;
 	rp_count.verts += n;
+}
+
+/*
+Kit 53: a lit part's command straight from the model's stored command
+(R_StudioDrawPoints lit its normals in integers: rp_lit_part). Iterate,
+don't imitate (rule 0): ref_soft and ref_gl hand each corner to their
+triangle interface (a call, a colour and a texel conversion a corner);
+kit 49 to 52 staged each corner in a table (RP_StudioMesh: the colour
+bytes, the vertex, the texels) that RP_StudioCmd then read back, a write
+and a read of ~24 bytes a corner, the PXA270's cache allocating on reads
+only (run 51: RP_StudioMesh 3.0% of the play). Here one pass reads the
+command's four shorts (vertex, normal, s, t), the vertex's record and the
+normal's colour, and writes the TA's words: the same words in the same
+order (the staging held exactly these values). `chrome` the chrome
+mesh's texels a normal (27.5), NULL for a skin's own; any corner whose
+vertex or normal is past the tables, or whose vertex was not worked this
+part, sends the command the staged way.
+*/
+int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], const int ( *chrome )[2] )
+{
+	uint32_t( *c )[RP_VERTEX_WORDS] = rp_sc;
+	int32_t( *cst )[2] = rp_scst, ( *cxy )[2] = rp_scxy;
+	const rp_skin_t *e = rp_cur_skin;
+	const int        serial = rp_studio_serial;
+	const uint32_t   alpha = rp_vert_alpha;
+	int32_t          u0, v0, smax, tmax, sw, th;
+	int              behind = 0;
+
+	if( !e || n < 3 || n > RP_STUDIO_CMD || !rp_fixed_on )
+		return 0;
+	u0 = e->qx << 8;
+	v0 = e->qy << 8;
+	sw = e->w << 5;
+	th = e->h << 5;
+	smax = sw - 1;
+	tmax = th - 1;
+	RP_ViewFixed();
+	for( int k = 0; k < RP_MV_AHEAD && k < n; k++ )
+		__builtin_prefetch( &rp_mv[(uint16_t)cmd[4 * k] & ( RP_STUDIO_VERTS - 1 )] );
+
+	for( int k = 0; k < n; k++, cmd += 4 )
+	{
+		unsigned          vi = (unsigned)(int)cmd[0], ni = (unsigned)(int)cmd[1];
+		const rp_mvert_t *mv;
+		int32_t           s, tt;
+
+		/* the command stream: a 32-byte line every four corners, read in
+		   order, ahead of use (as RP_StudioMesh asked) */
+		if( !( k & 3 ))
+			__builtin_prefetch( cmd + 64 );
+		if( k + RP_MV_AHEAD < n )
+			__builtin_prefetch( &rp_mv[(uint16_t)cmd[4 * RP_MV_AHEAD] & ( RP_STUDIO_VERTS - 1 )] );
+		if( vi >= RP_STUDIO_VERTS || ni >= RP_STUDIO_VERTS )
+			return 0;
+		mv = &rp_mv[vi];
+		if( mv->serial != serial )
+			return 0;
+		rp_scvi[k] = (uint16_t)vi;
+		cxy[k][0] = mv->xy[0];
+		cxy[k][1] = mv->xy[1];
+		if( !mv->zi )
+			behind++;
+		c[k][0] = mv->f[0];
+		c[k][1] = mv->f[1];
+		c[k][2] = mv->zi;
+		c[k][3] = mv->zi;
+		if( chrome )
+		{
+			s = chrome[ni][0];
+			tt = chrome[ni][1];
+		}
+		else
+		{
+			s = cmd[2] << 5;
+			tt = cmd[3] << 5;
+		}
+		/* RP_StudioCmd's texels: wrapped past the skin, kept inside it */
+		if( s < 0 || s > sw || tt < 0 || tt > th )
+		{
+			rp_count.wraps++;
+			s %= sw;
+			tt %= th;
+			if( s < 0 )
+				s += sw;
+			if( tt < 0 )
+				tt += th;
+		}
+		if( s > smax )
+			s = smax;
+		if( tt > tmax )
+			tt = tmax;
+		c[k][4] = alpha | (uint32_t)ncol[ni][0] << 16 | (uint32_t)ncol[ni][1] << 8 | ncol[ni][2];
+		c[k][5] = RP_FixBits( u0 + s, 5 + 9 );
+		c[k][6] = RP_FixBits( v0 + tt, 5 + 9 );
+		cst[k][0] = u0 + s;
+		cst[k][1] = v0 + tt;
+	}
+	rp_count.mreuse += n;
+	RP_StudioCmdSend( fan, n, behind );
+	return 1;
 }
 
 /* The 2700G's picture of the frame drawn both ways, turned back to the

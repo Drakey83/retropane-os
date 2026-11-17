@@ -1212,10 +1212,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..a034ff3 100644
+index 1a7efd6..d5a5ae1 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,49 @@ typedef struct
+@@ -992,6 +992,53 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -1248,6 +1248,10 @@ index 1a7efd6..a034ff3 100644
 +} rp_svert_t;
 +int RP_StudioSkin( void );
 +void RP_StudioCmd( int fan, int n, const rp_svert_t *v );
++// kit 53: a lit part's command from its stored shorts, no staging (0: send it staged)
++int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], const int ( *chrome )[2] );
++int RP_StudioLitMode( void ); // rp_lit: 0 staged, 1 one pass, 2 both compared
++void RP_StudioLitCheck( int step );
 +void RP_StudioVerts( void );
 +int RP_StudioSerial( void );
 +// 4d's rest: the bones and the lighting in integers (ref_rp/rp_fixed.h)
@@ -1353,7 +1357,7 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..4e294de 100644
+index 03790d8..babe428 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
 @@ -1293,11 +1293,13 @@ static void R_StudioEntityLight( alight_t *lightinfo )
@@ -1371,7 +1375,7 @@ index 03790d8..4e294de 100644
  			continue;
  
  		if(( el->key & 0xFFF ) == ent->index )
-@@ -1675,6 +1677,115 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1677,135 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -1401,6 +1405,7 @@ index 03790d8..4e294de 100644
 +	static int        nser[RP_STUDIO_VERTS];
 +	int               i, n, w = r_affinetridesc.skinwidth, h = r_affinetridesc.skinheight;
 +	int               serial = RP_StudioSerial( );
++	int               rp_lit_mode = RP_StudioLitMode( );
 +
 +	if( !RP_StudioSkin( ))
 +		return;
@@ -1412,6 +1417,25 @@ index 03790d8..4e294de 100644
 +			RP_StudioCmd( i < 0, n, NULL );
 +			ptricmds += 4 * n;
 +			continue;
++		}
++		// kit 53: a lit part's corners straight into the TA's words (no
++		// staging in v[]: the same words, r_emit.c RP_StudioCmdLit)
++		if( rp_lit_part && !half && rp_lit_mode )
++		{
++			if( rp_lit_mode == 2 )
++				RP_StudioLitCheck( 1 ); // rp_lit 2: kept, then compared below
++			if( RP_StudioCmdLit( i < 0, n, ptricmds,
++				(const byte( * )[3] )rp_ncol, chrome ? (const int( * )[2] )rp_chrome_st : NULL ))
++			{
++				if( rp_lit_mode != 2 )
++				{
++					ptricmds += 4 * n;
++					continue;
++				}
++				RP_StudioLitCheck( 2 );
++			}
++			else
++				RP_StudioLitCheck( 0 );
 +		}
 +		for( int k = 0; k < n; k++, ptricmds += 4 )
 +		{
@@ -1487,7 +1511,7 @@ index 03790d8..4e294de 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1797,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1817,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -1501,7 +1525,7 @@ index 03790d8..4e294de 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1837,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1857,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -1515,7 +1539,7 @@ index 03790d8..4e294de 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1754,6 +1879,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1754,6 +1899,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
  	qboolean glowShell = ( scale > 0.0f ) ? true : false;
  	vec3_t   vert;
  
@@ -1531,7 +1555,7 @@ index 03790d8..4e294de 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +1946,7 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +1966,7 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -1539,7 +1563,7 @@ index 03790d8..4e294de 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +1985,32 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +2005,32 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -1574,7 +1598,7 @@ index 03790d8..4e294de 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1890,6 +2044,29 @@ static void R_StudioDrawPoints( void )
+@@ -1890,6 +2064,29 @@ static void R_StudioDrawPoints( void )
  		{
  			for( i = 0; i < pmesh[j].numnorms; i++, k++, pstudionorms++, pnormbone++ )
  			{
@@ -1604,7 +1628,7 @@ index 03790d8..4e294de 100644
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1947,14 +2124,16 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2144,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  
