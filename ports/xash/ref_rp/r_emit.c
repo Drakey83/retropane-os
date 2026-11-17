@@ -322,7 +322,9 @@ static inline uint32_t RP_Bits( float f )
 
 /* `v / 2^frac` as float bits, from the integer with one clz: exact below
    2^24, truncated above (screen and texture coordinates need far less). */
-static inline uint32_t RP_FixBits( int v, int frac )
+/* always inline (run 49: once kit 49 added callers the compiler made it a
+   call, 828 samples of call overhead) */
+static inline __attribute__(( always_inline )) uint32_t RP_FixBits( int v, int frac )
 {
 	uint32_t s = 0, a = (uint32_t)v, m;
 	int e;
@@ -1763,7 +1765,9 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	   call on the PXA270 (run 46: RP_ChipFaceFixed 4.0% of the play) */
 	int32_t           sx = 0, sy = 0;
 	uint32_t          nearzi = 0;
-	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh, oldmip = -1, wanted;
+	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh, oldmip = -1, wanted, behind = 0;
+	/* a face across the near plane: its corners cut in integers (below) */
+	int32_t           kxy[RP_MAX_CORNERS][2], kst[RP_MAX_CORNERS][2];
 
 	for( int i = 0; i < n; i++ )
 	{
@@ -1785,14 +1789,78 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 			}
 		}
 		if( !c->zi )
-			return 0;
-		if( c->zi > nearzi )
-			nearzi = c->zi;
+			behind = 1;
 		zis[i] = c->zi;
 		cxy[i] = c->xy;
-		sx += c->xy[0] >> 2; /* quarter pixels: 64 far corners can't overflow */
-		sy += c->xy[1] >> 2;
 		st[i] = wc[i].st;
+	}
+	if( behind )
+	{
+		/*
+		Kit 50 (run 49: RP_EmitFace's float path ~2.5% of the play, ~13
+		faces a frame, the tram's own walls around the eye): ref_soft and
+		ref_gl clip such a face in floats (R_ClipEdge, GL's clip space);
+		here the face is cut at the near plane in 16.16 view space, as
+		the models' RP_StudioClipCmd cuts theirs: each corner's view point
+		made again (integers, cheap), a new corner on each edge across
+		(one divide), its texture coordinates carried the same fraction
+		along, then projected as any corner. Never a float.
+		*/
+		int32_t q[RP_MAX_CORNERS][3];
+		int     m2 = 0;
+
+		if( n >= RP_MAX_CORNERS )
+			return 0;
+		for( int i = 0; i < n; i++ )
+			RP_ViewPoint( m, o, rp_wv[wc[i].vi].pos, q[i] );
+		for( int i = 0; i < n; i++ )
+		{
+			int     j = i + 1 == n ? 0 : i + 1;
+			int     ini = q[i][2] >= RP_ONE16, inj = q[j][2] >= RP_ONE16;
+
+			if( ini )
+			{
+				zis[m2] = rp_wv[wc[i].vi].zi;
+				kxy[m2][0] = rp_wv[wc[i].vi].xy[0];
+				kxy[m2][1] = rp_wv[wc[i].vi].xy[1];
+				kst[m2][0] = wc[i].st[0];
+				kst[m2][1] = wc[i].st[1];
+				m2++;
+			}
+			if( ini != inj )
+			{
+				/* t = (1 - z_i) / (z_j - z_i), 0.16 */
+				int64_t  den = (int64_t)q[j][2] - q[i][2];
+				int32_t  t = (int32_t)(( (int64_t)( RP_ONE16 - q[i][2] ) << 16 ) / den );
+				int32_t  p[3];
+				uint32_t wd[3];
+
+				for( int k = 0; k < 2; k++ )
+					p[k] = q[i][k] + (int32_t)(( (int64_t)( q[j][k] - q[i][k] ) * t ) >> 16 );
+				p[2] = RP_ONE16;
+				RP_ProjectS( p, wd, kxy[m2] );
+				zis[m2] = wd[2];
+				kst[m2][0] = wc[i].st[0] + (int32_t)(( (int64_t)( wc[j].st[0] - wc[i].st[0] ) * t ) >> 16 );
+				kst[m2][1] = wc[i].st[1] + (int32_t)(( (int64_t)( wc[j].st[1] - wc[i].st[1] ) * t ) >> 16 );
+				m2++;
+			}
+		}
+		if( m2 < 3 )
+			return 1; /* wholly behind: nothing to draw */
+		n = m2;
+		for( int i = 0; i < n; i++ )
+		{
+			cxy[i] = kxy[i];
+			st[i] = kst[i];
+		}
+		rp_count.nearclipped++;
+	}
+	for( int i = 0; i < n; i++ )
+	{
+		if( zis[i] > nearzi )
+			nearzi = zis[i];
+		sx += cxy[i][0] >> 2; /* quarter pixels: 64 far corners can't overflow */
+		sy += cxy[i][1] >> 2;
 	}
 	sx = RP_DivN( sx, n ) * 4;
 	sy = RP_DivN( sy, n ) * 4;
