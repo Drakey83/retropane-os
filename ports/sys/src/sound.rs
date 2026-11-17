@@ -238,6 +238,16 @@ impl<R: DmaRing> Voice for Sound<'_, R> {
                 per(s.cyc_tick),
                 s.cyc_tick / u64::from(s.wakes.max(1))
             );
+            // Kit 69: where a wake's time goes beyond the stages above.
+            let _ = writeln!(
+                out,
+                "sound: the mixer's cycles a frame mixed, by part of the wake: {} the clock and the clearing of what played, {} the mixing whole, {} moving the ring's end, {} the rest; {} copying the programs' samples in (outside the wakes)",
+                per(s.cyc_clock),
+                per(s.cyc_mix),
+                per(s.cyc_end),
+                per(s.cyc_tick.saturating_sub(s.cyc_clock + s.cyc_mix + s.cyc_end)),
+                per(s.cyc_write)
+            );
         }
     }
 

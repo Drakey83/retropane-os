@@ -302,6 +302,18 @@ pub struct Stats {
     pub cyc_filled: u64,
     /// Each wake whole.
     pub cyc_tick: u64,
+    /// Kit 69 (the ~130 cycles a frame outside the stages above, Half-Life
+    /// runs 54-66): a wake's clock read and the clearing of what played
+    /// ([`Mixer::advance_clock`]).
+    pub cyc_clock: u64,
+    /// A wake's mixing whole ([`Mixer::mix`] and the mix-on loop), its
+    /// stages above included.
+    pub cyc_mix: u64,
+    /// A wake's end of the ring moved ([`Mixer::end_ring`]: the rest of
+    /// the piece cleared and written back, the descriptor moved).
+    pub cyc_end: u64,
+    /// The programs' samples copied into their streams ([`Mixer::write`]).
+    pub cyc_write: u64,
 }
 
 struct Slot<'a> {
@@ -956,18 +968,21 @@ impl<'a> Mixer<'a> {
     /// Copies `samples` (interleaved) into the stream: as much as there is
     /// room for, in whole frames; how many frames.
     pub fn write(&mut self, id: StreamId, samples: &[i16], now_ms: u32) -> Result<u64, WriteError> {
+        let t0 = self.now();
         let ch = self.slot(id).ok_or(WriteError::NoStream)?.ch;
         let (a, b) = self.writable(id).ok_or(WriteError::NoStream)?;
         let n = (samples.len() / ch * ch).min((a.len() + b.len()) / 2);
-        for (d, s) in a
-            .as_chunks_mut::<2>()
-            .0
-            .iter_mut()
-            .chain(b.as_chunks_mut::<2>().0.iter_mut())
-            .zip(&samples[..n])
-        {
+        // Kit 69: the ring's two parts each copied by a plain loop (a
+        // chained iterator tested which part every sample); the same bytes.
+        let (a, b) = (a.as_chunks_mut::<2>().0, b.as_chunks_mut::<2>().0);
+        let na = n.min(a.len());
+        for (d, s) in a[..na].iter_mut().zip(&samples[..na]) {
             *d = s.to_le_bytes();
         }
+        for (d, s) in b.iter_mut().zip(&samples[na..n]) {
+            *d = s.to_le_bytes();
+        }
+        self.stats.cyc_write += u64::from(self.now().wrapping_sub(t0));
         self.commit(id, (n / ch) as u64, now_ms)?;
         Ok((n / ch) as u64)
     }
@@ -1177,7 +1192,9 @@ impl<'a> Mixer<'a> {
         if self.ended && dma.stopped() {
             self.stats.stops += 1;
         }
+        let c0 = self.now();
         self.advance_clock(dma);
+        self.stats.cyc_clock += u64::from(self.now().wrapping_sub(c0));
         let mut tick = Tick::default();
 
         // The earliest frame we may still write.
@@ -1266,6 +1283,7 @@ impl<'a> Mixer<'a> {
             .min(self.max_end())
             .max(self.mixed_to);
         let from = self.mixed_to;
+        let m0 = self.now();
         self.mix(from, target, dma);
         // The end's piece must start past the engine by the margin (it
         // moved while mixing): mix on until it does (only on a nearly-late
@@ -1278,10 +1296,13 @@ impl<'a> Mixer<'a> {
             }
             self.mix(self.mixed_to, next, dma);
         }
+        self.stats.cyc_mix += u64::from(self.now().wrapping_sub(m0));
         tick.mixed = self.mixed_to - from;
         self.stats.mixed += tick.mixed;
         self.stats.rewritten += tick.rewrote;
+        let e0 = self.now();
         self.end_ring(dma);
+        self.stats.cyc_end += u64::from(self.now().wrapping_sub(e0));
 
         self.update_played();
 

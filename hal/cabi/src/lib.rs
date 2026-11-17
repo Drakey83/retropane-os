@@ -490,6 +490,10 @@ pub trait Sys {
     fn gfx_wait(&mut self) -> Result<(), Errno> {
         Err(Errno::NoSys)
     }
+    /// The screen's pump alone (a frame fed by DMA: its render started
+    /// once the chip has taken it), from the runner's tick; nothing else
+    /// of the system runs. The default: nothing.
+    fn screen_pump(&mut self) {}
     /// Gives the screen back (`rp_gfx_close`).
     ///
     /// # Errors
@@ -963,6 +967,17 @@ mod face {
         // while this plain word is written.
         unsafe { core::ptr::addr_of_mut!(errno).write(e as c_int) };
         -1
+    }
+
+    /// The screen's pump from the runner's tick (`rt::set_tick_hook`,
+    /// Half-Life kit 69): the system is held only with IRQs masked, so a
+    /// tick never lands inside a call; before the program's system starts,
+    /// or after it ends, nothing.
+    pub fn pump_screen() {
+        let _ = with(|s| {
+            s.screen_pump();
+            Ok(())
+        });
     }
 
     fn with<R>(f: impl FnOnce(&mut dyn Sys) -> Result<R, Errno>) -> Result<R, Errno> {
@@ -1614,7 +1629,7 @@ mod face {
 }
 
 #[cfg(target_os = "none")]
-pub use face::{ARGS, run, run_module, runner_table, start, with_system};
+pub use face::{ARGS, pump_screen, run, run_module, runner_table, start, with_system};
 
 #[cfg(test)]
 mod big_tests {

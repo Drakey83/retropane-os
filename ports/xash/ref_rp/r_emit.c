@@ -4456,6 +4456,17 @@ plane only (the 2700G clips the screen's sides itself), its surface lit
 into the cache as the software renderer does (the texture it is drawn
 with: docs/design/ref-rp.md choice 2 A), written as one strip.
 */
+/*
+Kit 69 (run 66: 271 of RP_ChipFaceFixed's samples on its first load of a
+face's corner table, a miss each face): the world walk asks for the next
+face's corner line while this face is drawn (a hint only).
+*/
+void RP_FaceAhead( const msurface_t *fa )
+{
+	if( rp_wc )
+		__builtin_prefetch( &rp_wc[fa->firstedge] );
+}
+
 void RP_EmitFace( msurface_t *fa )
 {
 	if( rp_emit_on == 2 )

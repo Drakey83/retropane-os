@@ -117,6 +117,8 @@ mod image {
     const SAMPLE_ROOM: usize = 512 * 1024;
     /// Samples a second.
     const SAMPLE_HZ: u32 = 1000;
+    /// The screen's pump's tick when not sampling (kit 69).
+    const PUMP_HZ: u32 = 1000;
     /// A test run's word for sampling where the program is ([`SAMPLE_ROOM`])
     /// from its start, written at its end to [`SAMPLE_FILE`] in the
     /// runner's folder (R285: where the X51v's time goes, which no
@@ -1510,7 +1512,19 @@ mod image {
             rt::set_sample_window(0xA800_8000, module::POOL + module::POOL_LEN);
             rt::start_sampling(samples, SAMPLE_HZ);
         }
+        // Kit 69 (Half-Life run 66: the CPU waited 0.6-2.9 ms a frame for
+        // the last frame's render, which the pump started only at the
+        // program's next clock read): the tick runs the screen's pump every
+        // millisecond (the sampler's tick when sampling, else its own).
+        rt::set_tick_hook(Some(rp_hal_cabi::pump_screen));
+        if !sampling {
+            rt::start_tick(PUMP_HZ);
+        }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
+        rt::set_tick_hook(None);
+        if !sampling {
+            rt::stop_tick();
+        }
         // C2: Dell's 624 MHz back whatever the program left (its screen's
         // close puts it back first; this is the net under it).
         super::cpu::put_back(gfx_log);

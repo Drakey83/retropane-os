@@ -851,6 +851,8 @@ static mut TICK_PERIOD: u32 = 0;
 static mut TICKS: u32 = 0;
 /// OS timer match 1 is a one-shot alarm (tickless) rather than the tick.
 static mut ALARM_MODE: bool = false;
+/// Run on every tick after the sample ([`set_tick_hook`]).
+static mut TICK_HOOK: Option<fn()> = None;
 /// Interrupt claims and signals (ADR-0007). Written by the IRQ handler and,
 /// with IRQs masked, by main code.
 static mut DISPATCH: crate::soc::Dispatch = crate::soc::Dispatch::new();
@@ -1768,6 +1770,10 @@ fn rp_irq(frame: *const u32) {
             t.write_volatile(t.read_volatile().wrapping_add(1));
         }
         sample(frame);
+        // SAFETY: written only with IRQs masked (`set_tick_hook`).
+        if let Some(h) = unsafe { core::ptr::addr_of!(TICK_HOOK).read() } {
+            h();
+        }
     }
     // Everything else: mask and signal its owner, or mask and record it as
     // unclaimed (ADR-0007). No driver code runs here. That includes the
@@ -2363,6 +2369,17 @@ pub fn stop_tick() {
         intc().disable(crate::soc::irq::OST1);
         ostimer().stop();
     });
+}
+
+/// A function the tick runs after its sample, IRQs masked (Half-Life kit
+/// 69: the screen's pump, so a frame's render starts within a tick of the
+/// chip having taken the frame, not at the program's next clock read).
+/// `None` takes it off. It must be short and must not wait.
+pub fn set_tick_hook(f: Option<fn()>) {
+    let was = irq_save();
+    // SAFETY: IRQs masked: the handler can't read it meanwhile.
+    unsafe { core::ptr::addr_of_mut!(TICK_HOOK).write(f) };
+    irq_restore(was);
 }
 
 /// Ticks since [`start_tick`].

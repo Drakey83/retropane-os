@@ -933,6 +933,36 @@ X51v too). Run 65 -> run 66 samples: `RP_StudioCmdLit` 2,500 -> 1,564,
 From kit 60: 103,808 -> 94,204 ms (9.3%); 30 fps is ~91,700 ms, 2.7%
 still to go.
 
+**Kit 69 (2026-11-17, exact):** run 66's log says what its samples could
+not: `rp_gfx_frame_parts` (2.5% of the play, all of it seen where it turns
+interrupts back on) is mostly the CPU **waiting for the last frame's
+render**, 0.6-2.9 ms a frame, at the start of each frame call. Step 4f's
+render starts when a pump sees the TA done, and the pump ran only at the
+program's clock reads: "the TA done 15-17 ms after the arm" is when the
+pump looked, not when the chip finished (the descriptor count barely
+moves it: 1,681 descriptors 14.8 ms, 2,904 16.6 ms).
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Starting a frame's render after the TA took it (`Screen::pump`) | Dell's GLES driver starts it from the 2700G's interrupt or at the next API call (eglSwapBuffers); step 4f's pump at the program's clock reads | the runner's OS-timer tick (1 kHz; the sampler's when sampling) runs the screen's pump alone (`rt::set_tick_hook`, `rp_hal_cabi::pump_screen`): the render starts within a millisecond of the chip being done; the system is held only with interrupts masked, so a tick never lands inside a call | no unknown hardware (the 2700G's interrupt line on the X51v is not mapped yet), a register read a millisecond while a frame is in flight; the same frames drawn, sooner, so the next frame's start waits less |
+| The OS mixer's wake (R306's ~130 cycles a frame outside the measured stages) | measured as a whole | timed by part: the clock and the clearing of what played, the mixing whole, the ring's end moved, the rest, and the programs' samples copied in; the copy itself in two plain loops (a chained iterator tested which part of the ring every sample went to) | the next lever named by a run, not guessed; the same bytes |
+| A world face's corner table (`RP_ChipFaceFixed`) | read when the face is drawn | the next face's line asked for while this one is drawn (`RP_FaceAhead`) | run 66: 271 samples on that first load; a hint only |
+
+**Run 67 (2026-11-17, kit 69, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **91,856 ms (29.9 fps) against kit 68's 94,204 ms
+(29.1 fps): 2.5% less time**, ten of eleven 250-frame windows faster (by
+4-711 ms; frames 2,001-2,250 8 ms slower) and every one
+of the thirteen marks at the same place (the emulator first: its marks
+the same). The wait for the last render, 0.6-2.9 ms a frame in run 66,
+is 0.0-0.6 ms; `rp_gfx_frame_parts` 1,436 -> 1,020 samples,
+`RP_ChipFaceFixed` 1,837 -> 1,718. The mixer's wake on the X51v, cycles
+a frame mixed: the clock and the clearing of what played 16, the mixing
+whole 306 (its stages 74 adding, 189 the chain, 6 writing back), the
+ring's end 38, the rest 53, the programs' samples copied in 10: the
+chain (speaker filter, limiter, dither) is the mixer's cost, not its
+book-keeping. From kit 60: 103,808 -> 91,856 ms (11.5%); 30 fps is
+91,667 ms: 189 ms (0.2%) still to go.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

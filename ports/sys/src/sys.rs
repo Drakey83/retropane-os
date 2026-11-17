@@ -537,6 +537,12 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         self.screen.as_mut().ok_or(Errno::NoSys)?.frame(parts)
     }
 
+    fn screen_pump(&mut self) {
+        if let Some(g) = self.screen.as_mut() {
+            g.pump();
+        }
+    }
+
     fn gfx_wait(&mut self) -> Result<(), Errno> {
         self.screen.as_mut().ok_or(Errno::NoSys)?.wait()
     }

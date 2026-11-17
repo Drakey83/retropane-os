@@ -1538,7 +1538,7 @@ index dd01c0f..9221e8d 100644
  
  		vec3_t dist;
 diff --git a/ref/soft/r_bsp.c b/ref/soft/r_bsp.c
-index 8b213a2..1009537 100644
+index 8b213a2..026bdee 100644
 --- a/ref/soft/r_bsp.c
 +++ b/ref/soft/r_bsp.c
 @@ -369,6 +369,13 @@ void R_DrawSolidClippedSubmodelPolygons( model_t *pmodel, mnode_t *topnode )
@@ -1673,7 +1673,7 @@ index 8b213a2..1009537 100644
  
  		if( dot >= 0 )
  			side = 0;
-@@ -581,7 +613,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+@@ -581,13 +613,15 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
  		{
  			msurface_t *surf = WORLDMODEL->surfaces + firstsurface;
  
@@ -1682,7 +1682,15 @@ index 8b213a2..1009537 100644
  			{
  				do
  				{
-@@ -595,7 +627,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ 					if(( surf->flags & SURF_PLANEBACK )
+ 					   && ( surf->visframe == tr.framecount ))
+ 					{
++						if( c > 1 )
++							RP_FaceAhead( surf + 1 ); // RetroPane kit 69: a hint
+ 						R_RenderFace( surf, clipflags );
+ 					}
+ 
+@@ -595,13 +629,15 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
  				}
  				while( --c );
  			}
@@ -1691,7 +1699,15 @@ index 8b213a2..1009537 100644
  			{
  				do
  				{
-@@ -637,5 +669,6 @@ void R_RenderWorld( void )
+ 					if( !( surf->flags & SURF_PLANEBACK )
+ 					    && ( surf->visframe == tr.framecount ))
+ 					{
++						if( c > 1 )
++							RP_FaceAhead( surf + 1 ); // RetroPane kit 69: a hint
+ 						R_RenderFace( surf, clipflags );
+ 					}
+ 
+@@ -637,5 +673,6 @@ void R_RenderWorld( void )
  	RI.currentmodel = WORLDMODEL;
  	r_pcurrentvertbase = RI.currentmodel->vertexes;
  
@@ -1755,10 +1771,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..c4c3479 100644
+index 1a7efd6..bb27449 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,56 @@ typedef struct
+@@ -992,6 +992,57 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -1773,6 +1789,7 @@ index 1a7efd6..c4c3479 100644
 +void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const struct image_s *pic );
 +void RP_EmitFill( int x, int y, int w, int h );
 +void RP_EmitFace( msurface_t *fa );
++void RP_FaceAhead( const msurface_t *fa ); // kit 69
 +void RP_EmitTriangle( void );
 +void RP_EmitSurfBuilt( qboolean relit );
 +void RP_EmitSubmit( void );
