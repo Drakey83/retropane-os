@@ -17,6 +17,9 @@
 //! `rp_fdiv_asm(a, b)`: IEEE
 //! single bits in r0 and r1, the result in r0 (AAPCS, soft-float).
 //!
+//! `rp_fcmp{eq,lt,le,gt,ge}_asm(a, b)` (kit 70): the compares, 1 or 0,
+//! the AEABI's answers (a NaN: 0), for the modules' `__aeabi_fcmp*`.
+//!
 //! `rp_fdot3_asm(a, b)` (R316, kit 65): C's `(a[0] * b[0] + a[1] * b[1])
 //! + a[2] * b[2]` for two `float[3]` (pointers in r0 and r1), bit for bit,
 //! in one call: each operand unpacked once, the three products and two
@@ -526,5 +529,41 @@ rp_fdot3_asm:
     bl      rp_fadd_asm
     pop     {{r4, r5, r6, pc}}
     .size rp_fdot3_asm, . - rp_fdot3_asm
+
+    @ ---- the compares (kit 70) ----
+    @ IEEE single bits in r0, r1; 1 if the relation holds, else 0 (a NaN:
+    @ never). Both zeros are equal; otherwise each float's bits made an
+    @ ordered signed integer (a negative's magnitude bits flipped), one
+    @ signed compare. Common prefix: NaN out, zeros apart.
+    .macro RP_FCMP name, zero, cond
+    .global \name
+    .type \name, %function
+    .p2align 2
+\name:
+    mov     r2, r0, lsl #1
+    mov     r3, r1, lsl #1
+    cmp     r2, #0xFF000000
+    cmpls   r3, #0xFF000000
+    movhi   r0, #0                      @ unordered
+    bxhi    lr
+    orrs    r12, r2, r3
+    moveq   r0, #\zero                  @ +-0 and +-0: equal
+    bxeq    lr
+    mov     r12, r0, asr #31
+    eor     r0, r0, r12, lsr #1
+    mov     r12, r1, asr #31
+    eor     r1, r1, r12, lsr #1
+    cmp     r0, r1
+    mov     r0, #0
+    mov\cond r0, #1
+    bx      lr
+    .size \name, . - \name
+    .endm
+
+    RP_FCMP rp_fcmplt_asm, 0, lt
+    RP_FCMP rp_fcmple_asm, 1, le
+    RP_FCMP rp_fcmpgt_asm, 0, gt
+    RP_FCMP rp_fcmpge_asm, 1, ge
+    RP_FCMP rp_fcmpeq_asm, 1, eq
 "#
 );

@@ -963,6 +963,41 @@ chain (speaker filter, limiter, dither) is the mixer's cost, not its
 book-keeping. From kit 60: 103,808 -> 91,856 ms (11.5%); 30 fps is
 91,667 ms: 189 ms (0.2%) still to go.
 
+**Kit 70 (2026-11-17, exact):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The float compares (`__aeabi_fcmp{eq,lt,le,gt,ge}`) | compiler-rt and libgcc: unpack, test the special cases one by one; ours since R282 a Rust wrapper round `float::compare` | ARM assembly (`rp_fcmp*_asm`), the AEABI names aliased straight to it: a NaN out and both zeros equal in four instructions, then each float's bits made an ordered integer (a negative's magnitude bits flipped) and one signed compare, no branch but the rare exits | run 67: the five compares 1,255 samples, 2.2% of the play (`VectorIsNull`, the traces' plane tests, lighting); the same answer for every pair (IEEE's order is the integers' order on sign-and-magnitude bits): `-rpfloat` checks every edge pair in every sign and 2^21 random and neighbouring pairs against the compiler's own compares |
+| The OS mixer's divisions | the frame counters are 64-bit (a ring never wraps them in a lifetime), so `% RING_FRAMES`, `% cap`, a piece's multiple and `Ratio::locate`'s `/ 44100` were 64-bit divides: library calls on the PXA270, about five a 32-frame block | a 32-bit divide whenever both numbers fit (the first 27 hours of sound); by a constant it is a multiply | the same quotient and remainder for every value (the 64-bit way stays past 2^32) |
+
+**Run 68 (2026-11-17, kit 70, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **91,692 ms (29.99 fps) against kit 69's 91,856 ms
+(29.9 fps): 0.2% less time**, every mark the same; `-rpfloat`'s compares
+2,098,752 results, 0 differ (the emulator and the X51v). The compares
+gave less than their share promised (1,255 -> 1,166 samples): most of
+their samples are the callers' argument loads missing, which land on the
+routine's first instruction. 30 fps is 91,667 ms: 25 ms still to go.
+
+**Kit 71 (2026-11-17, exact, from run 68's hottest instructions):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The bulk copy (`rp-hal-mem`'s `memcpy`, `__aeabi_memcpy4`) | newlib and compiler-rt: no prefetch; ours since C7 a `PLD` 128 bytes ahead in the loop (the X51v's sweep: 47 -> 109 MB/s on 256 KiB) | also the first four lines asked for before the loop (the game modules' build only: the OS images keep their size budgets) | run 68: 551 samples on the copy loop's first use of a load, most copies 340 to 2,352 bytes (entity states, the client's prediction state): their first lines missed one after another; a hint only |
+| A model command's vertex records (`RP_StudioCmdLit`) | kit 53's `PLD` four corners ahead | eight ahead in this loop | kit 68 left the loop a third as long, so four corners is no longer a miss's time; run 68: 218 samples on the record's first load |
+| The server's entity walk (`SV_Physics`) | kit 66's hints (the edict, its movetype's and flags' lines) | the velocity's line too | run 68: 250 samples on its first load (the physics' first test) |
+
+**Run 69 (2026-11-17, kit 71, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **91,454 ms (30.07 fps) against kit 70's 91,692 ms
+(29.99 fps): 0.3% less time, over 30 fps**, every 250-frame window faster
+(by 10-30 ms) and every one of the thirteen marks at the same place; the
+emulator first, its marks the same, `-rpfloat`'s checks 0 differ on both.
+Run 68 -> run 69 samples: `__aeabi_memcpy4` 873 -> 828, `memcpy` 824 ->
+717, `RP_StudioCmdLit` 1,528 -> 1,508, `SV_Physics` 767 -> 758. From kit
+60: 103,808 -> 91,454 ms (11.9%); from kit 64 (28.0 fps) seven kits.
+The margin over 30 fps is 213 ms (0.2%) on this walk; the 5-second
+frame-rate lines over the whole run (the map's start and the corner where
+the walk turns included) average 27.85.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

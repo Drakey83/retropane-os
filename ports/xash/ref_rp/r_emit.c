@@ -3044,6 +3044,10 @@ typedef struct
 static rp_mvert_t rp_mv[RP_STUDIO_VERTS];
 /* each vertex in view space, 16.16: the near plane's clip reads it */
 static int32_t    rp_mq[RP_STUDIO_VERTS][3];
+/* kit 71 (run 68: RP_StudioCmdLit's hottest load, 218 samples, the record's
+   first use: kit 68 left its loop a third as long, so four corners ahead is
+   no longer a miss's time ahead): eight there */
+#define RP_MV_AHEAD_LIT 8
 #define RP_MV_AHEAD 4 /* corners: ~300 cycles a miss against ~100 a corner;
                          the PXA270 keeps four line fills going at once */
 static int        rp_studio_serial = 1;
@@ -4263,7 +4267,7 @@ int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], 
 	if( !e || n < 3 || n > RP_STUDIO_CMD || !rp_fixed_on )
 		return 0;
 	RP_ViewFixed();
-	for( int k = 0; k < RP_MV_AHEAD && k < n; k++ )
+	for( int k = 0; k < RP_MV_AHEAD_LIT && k < n; k++ )
 		__builtin_prefetch( &rp_mv[(uint16_t)cmd[4 * k] & ( RP_STUDIO_VERTS - 1 )] );
 
 	/* kit 68: the positions here; the texels and colours (RP_LitFill) only
@@ -4277,8 +4281,8 @@ int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], 
 		   order, ahead of use (as RP_StudioMesh asked) */
 		if( !( k & 3 ))
 			__builtin_prefetch( cmd + 64 );
-		if( k + RP_MV_AHEAD < n )
-			__builtin_prefetch( &rp_mv[(uint16_t)cmd[4 * RP_MV_AHEAD] & ( RP_STUDIO_VERTS - 1 )] );
+		if( k + RP_MV_AHEAD_LIT < n )
+			__builtin_prefetch( &rp_mv[(uint16_t)cmd[4 * RP_MV_AHEAD_LIT] & ( RP_STUDIO_VERTS - 1 )] );
 		if( vi >= RP_STUDIO_VERTS || ni >= RP_STUDIO_VERTS )
 			return 0;
 		mv = &rp_mv[vi];

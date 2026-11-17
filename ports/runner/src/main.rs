@@ -845,6 +845,68 @@ mod image {
         }
     }
 
+    /// The compares (kit 70, `rp_hal_mem::asm::compares`, the modules'
+    /// `__aeabi_fcmp*`) against the compiler's generic ones on every edge
+    /// pair in every sign and `rounds` times 2^20 pairs of any bits and of
+    /// near values; said in the run's log.
+    fn cmp_bench(rounds: u32) {
+        let mut seed = 0xBB67_AE85_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        #[inline(never)]
+        fn generic(a: u32, b: u32) -> [i32; 5] {
+            let (x, y) = (f32::from_bits(a), f32::from_bits(b));
+            [
+                i32::from(x == y),
+                i32::from(x < y),
+                i32::from(x <= y),
+                i32::from(x > y),
+                i32::from(x >= y),
+            ]
+        }
+        let mut checked = 0u64;
+        let mut differ = 0u64;
+        let mut first = None;
+        let mut check = |a: u32, b: u32| {
+            checked += 1;
+            if rp_hal_mem::asm::compares(a, b) != generic(a, b) {
+                differ += 1;
+                first.get_or_insert((a, b));
+            }
+        };
+        for &x in &FLOAT_EDGES {
+            for &y in &FLOAT_EDGES {
+                for (sx, sy) in [(0, 0), (1 << 31, 0), (0, 1 << 31), (1 << 31, 1 << 31)] {
+                    check(x | sx, y | sy);
+                }
+            }
+        }
+        for _ in 0..rounds.saturating_mul(1 << 20) {
+            let a = next();
+            check(a, next());
+            // near: the same, a neighbour, the sign flipped
+            let k = next();
+            let b = match k & 3 {
+                0 => a,
+                1 => a.wrapping_add(1),
+                2 => a.wrapping_sub(1),
+                _ => a ^ 0x8000_0000,
+            };
+            check(a, b);
+        }
+        let _ = writeln!(
+            Out,
+            "float: cmp: the generic and ours in assembly; {checked} results compared, {differ} differ"
+        );
+        if let Some((a, b)) = first {
+            let _ = writeln!(Out, "float: cmp: the first that differs: {a:#010x}, {b:#010x}");
+        }
+    }
+
     /// The game modules' integer division (`rp_hal_mem::asm::udiv`,
     /// `idiv`: R306 after run 51) against the compiler's own (this image
     /// is built without the `float` feature, so its `/` and `%` are
@@ -1487,6 +1549,7 @@ mod image {
         if args[..arg_count].iter().any(|a| a.to_bytes() == FLOAT_WORD) {
             float_bench();
             dot_bench(seconds_after(&args[..arg_count], DOT_WORD).unwrap_or(1));
+            cmp_bench(seconds_after(&args[..arg_count], DOT_WORD).unwrap_or(1));
             div_bench();
         }
         if args[..arg_count].iter().any(|a| a.to_bytes() == WALLOC_WORD) {

@@ -30,6 +30,11 @@ pub mod asm {
         fn rp_fmul_asm(a: u32, b: u32) -> u32;
         fn rp_fdiv_asm(a: u32, b: u32) -> u32;
         fn rp_fdot3_asm(a: *const u32, b: *const u32) -> u32;
+        fn rp_fcmpeq_asm(a: u32, b: u32) -> i32;
+        fn rp_fcmplt_asm(a: u32, b: u32) -> i32;
+        fn rp_fcmple_asm(a: u32, b: u32) -> i32;
+        fn rp_fcmpgt_asm(a: u32, b: u32) -> i32;
+        fn rp_fcmpge_asm(a: u32, b: u32) -> i32;
         fn rp_udiv_asm(n: u32, d: u32) -> u64;
         fn rp_idiv_asm(n: i32, d: i32) -> u64;
     }
@@ -90,6 +95,22 @@ pub mod asm {
         // borrowed arrays, aligned) and writes r0, as the AAPCS says; it
         // touches no other memory but its own stack.
         unsafe { rp_fdot3_asm(a.as_ptr(), b.as_ptr()) }
+    }
+
+    /// The compares (kit 70): `[a == b, a < b, a <= b, a > b, a >= b]`,
+    /// each 1 or 0 as the AEABI's `__aeabi_fcmp*` (a NaN: all 0).
+    #[must_use]
+    pub fn compares(a: u32, b: u32) -> [i32; 5] {
+        // SAFETY: each routine reads r0 and r1 and writes r0; no memory.
+        unsafe {
+            [
+                rp_fcmpeq_asm(a, b),
+                rp_fcmplt_asm(a, b),
+                rp_fcmple_asm(a, b),
+                rp_fcmpgt_asm(a, b),
+                rp_fcmpge_asm(a, b),
+            ]
+        }
     }
 
     /// The rare cases of `rp_fdiv_asm` (a subnormal, an infinity, a NaN,
@@ -514,6 +535,21 @@ unsafe fn copy_aligned_32(dst: *mut u32, src: *const u32, bytes: usize) {
         // SAFETY: both buffers are word-aligned and valid for `bytes`, a
         // non-zero multiple of 32; `pld` is a hint and never faults.
         unsafe {
+            // Kit 71 (Half-Life run 68: `__aeabi_memcpy4`'s copy loop 551
+            // samples on one instruction, mostly copies of 340 to 2,352
+            // bytes): the first four lines asked for at once, so their fills
+            // overlap instead of each waiting on the one before (the loop's
+            // own hint reaches only the fifth on). The game modules' build
+            // only (the `float` feature, ADR-0039 rule 6): the OS images keep
+            // the copy their size budgets were set with.
+            #[cfg(feature = "float")]
+            core::arch::asm!(
+                "pld [{s}, #32]",
+                "pld [{s}, #64]",
+                "pld [{s}, #96]",
+                s = in(reg) src,
+                options(nostack, readonly, preserves_flags),
+            );
             core::arch::asm!(
                 "2:",
                 // 128 bytes ahead: the C7 sweep on the X51v (2026-10-22,
@@ -689,37 +725,26 @@ mod float_exports {
         asm::div(a, b)
     }
 
-    // The compares (`float::compare`, one integer compare), under the
-    // ARM EABI names (1 if true, 0 if not or unordered) and libgcc's
-    // (a sign; a NaN gives the answer that makes the test false).
-    use core::cmp::Ordering::{Equal, Greater, Less};
-
+    // The compares, under the ARM EABI names (1 if true, 0 if not or
+    // unordered) and libgcc's (`float::compare`: a sign; a NaN gives the
+    // answer that makes the test false).
     use super::float::compare;
 
-    #[unsafe(no_mangle)]
-    extern "C" fn __aeabi_fcmpeq(a: u32, b: u32) -> i32 {
-        i32::from(compare(a, b) == Some(Equal))
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn __aeabi_fcmplt(a: u32, b: u32) -> i32 {
-        i32::from(compare(a, b) == Some(Less))
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn __aeabi_fcmple(a: u32, b: u32) -> i32 {
-        i32::from(matches!(compare(a, b), Some(Less | Equal)))
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn __aeabi_fcmpgt(a: u32, b: u32) -> i32 {
-        i32::from(compare(a, b) == Some(Greater))
-    }
-
-    #[unsafe(no_mangle)]
-    extern "C" fn __aeabi_fcmpge(a: u32, b: u32) -> i32 {
-        i32::from(matches!(compare(a, b), Some(Greater | Equal)))
-    }
+    // Kit 70: the AEABI's ordered compares are the assembly routines
+    // themselves (`float_arm`, the same answers as `compare`, checked by
+    // `-rpfloat`), under the names the compiler calls, no wrapper's call.
+    core::arch::global_asm!(
+        ".global __aeabi_fcmpeq",
+        ".set __aeabi_fcmpeq, rp_fcmpeq_asm",
+        ".global __aeabi_fcmplt",
+        ".set __aeabi_fcmplt, rp_fcmplt_asm",
+        ".global __aeabi_fcmple",
+        ".set __aeabi_fcmple, rp_fcmple_asm",
+        ".global __aeabi_fcmpgt",
+        ".set __aeabi_fcmpgt, rp_fcmpgt_asm",
+        ".global __aeabi_fcmpge",
+        ".set __aeabi_fcmpge, rp_fcmpge_asm",
+    );
 
     #[unsafe(no_mangle)]
     extern "C" fn __aeabi_fcmpun(a: u32, b: u32) -> i32 {

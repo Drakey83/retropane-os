@@ -512,7 +512,7 @@ impl Slot<'_> {
             // the add was ~128 cycles a frame in run 53): the block's
             // samples written in a run at a time up to the ring's wrap.
             let cap = self.cap as usize;
-            let mut pos = (i0 % self.cap) as usize;
+            let mut pos = rem(i0, self.cap) as usize;
             let mut f = 0;
             while f < BLOCK {
                 let n = (BLOCK - f).min(cap - pos);
@@ -527,7 +527,7 @@ impl Slot<'_> {
         }
         if bypass {
             // Straight from the ring, a frame at a time.
-            let mut pos = (i0 % self.cap) as usize;
+            let mut pos = rem(i0, self.cap) as usize;
             for f in 0..BLOCK {
                 let at = pos * self.ch * 2;
                 for c in 0..self.ch {
@@ -554,7 +554,7 @@ impl Slot<'_> {
         // Each channel's window 16-bit and 8-aligned, with room past it
         // for the dot product's padded reads (`rp-hal-simd`).
         let mut win = [Aligned([0i16; WINDOW + ROW]); 2];
-        let mut pos = (w0 % self.cap) as usize;
+        let mut pos = rem(w0, self.cap) as usize;
         for k in 0..n {
             let at = pos * self.ch * 2;
             for (c, w) in win.iter_mut().enumerate().take(self.ch) {
@@ -725,7 +725,28 @@ fn align_up(v: u64, a: u64) -> u64 {
 }
 
 fn align_down(v: u64, a: u64) -> u64 {
-    v / a * a
+    v - rem(v, a)
+}
+
+/// `v % d`, by a 32-bit divide when both fit (kit 70, Half-Life run 67:
+/// the mixer made about five 64-bit divides a 32-frame block, each a
+/// library call on the PXA270; a 32-bit one by a constant is a multiply).
+/// The same remainder.
+#[inline]
+fn rem(v: u64, d: u64) -> u64 {
+    match (u32::try_from(v), u32::try_from(d)) {
+        (Ok(v), Ok(d)) => u64::from(v % d),
+        _ => v % d,
+    }
+}
+
+/// `v % RING_FRAMES` ([`rem`]'s constant case).
+#[inline]
+fn ring_rem(v: u64) -> u64 {
+    match u32::try_from(v) {
+        Ok(v) => u64::from(v % RING_FRAMES as u32),
+        Err(_) => v % RING_FRAMES,
+    }
 }
 
 fn min_opt(a: Option<u64>, b: u64) -> Option<u64> {
@@ -1354,7 +1375,7 @@ impl<'a> Mixer<'a> {
     /// written for its time, the rest of its piece silence).
     fn set_end(&mut self, dma: &mut dyn DmaRing, at: u64) {
         self.end_frame = at;
-        match dma.end_at((at % RING_FRAMES) as usize * 4) {
+        match dma.end_at(ring_rem(at) as usize * 4) {
             RingEnd::Running | RingEnd::Stopped => {}
             RingEnd::Restarted => self.stats.restarts += 1,
             RingEnd::Raced => {
@@ -1455,7 +1476,7 @@ impl<'a> Mixer<'a> {
                 fresh = false;
             }
             let t1 = self.now();
-            let at = (b % RING_FRAMES) as usize * 4;
+            let at = ring_rem(b) as usize * 4;
             let out = &mut self.ring[at..at + 4 * BLOCK];
             let r = self.state.run(&mut acc, self.speaker, out);
             let t2 = self.clock.map_or(0, |c| c());
@@ -1479,7 +1500,7 @@ impl<'a> Mixer<'a> {
             // in the old end's piece again and again after a restart, and
             // waited for it every time: found by emu-audio-e3).
             if self.ended
-                && b.is_multiple_of(self.piece)
+                && rem(b, self.piece) == 0
                 && b > self.piece_end(self.end_frame)
                 && dma.stopped()
             {
@@ -1495,7 +1516,7 @@ impl<'a> Mixer<'a> {
     fn each_piece(&mut self, from: u64, to: u64, f: &mut dyn FnMut(&mut [u8])) {
         let mut t = from;
         while t < to {
-            let at = (t % RING_FRAMES) as usize;
+            let at = ring_rem(t) as usize;
             let n = ((to - t) as usize).min(RING_FRAMES as usize - at);
             f(&mut self.ring[at * 4..(at + n) * 4]);
             t += n as u64;

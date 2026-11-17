@@ -290,6 +290,12 @@ impl Ratio {
     #[must_use]
     pub fn locate(&self, n: u64) -> (u64, u32) {
         let num = n * u64::from(self.rate);
+        // Kit 70: by a 32-bit divide when it fits (a multiply by the
+        // constant's reciprocal; a 64-bit one is a library call on the
+        // PXA270, twice a block a stream); the same quotient and remainder.
+        if let Ok(m) = u32::try_from(num) {
+            return (u64::from(m / OUT), m % OUT);
+        }
         (num / u64::from(OUT), (num % u64::from(OUT)) as u32)
     }
 

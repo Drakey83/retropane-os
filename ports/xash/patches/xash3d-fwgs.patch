@@ -1043,7 +1043,7 @@ index 985e438..b79e8b5 100644
  	Cvar_RegisterVariable( &sv_nat );
  	Cvar_RegisterVariable( &violence_ablood );
 diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
-index bfd679b..7ce1534 100644
+index bfd679b..4c4ea3a 100644
 --- a/engine/server/sv_phys.c
 +++ b/engine/server/sv_phys.c
 @@ -1754,20 +1754,38 @@ static void SV_Physics_Entity( edict_t *ent )
@@ -1088,7 +1088,7 @@ index bfd679b..7ce1534 100644
  	}
  }
  
-@@ -1791,6 +1809,22 @@ void SV_Physics( void )
+@@ -1791,6 +1809,25 @@ void SV_Physics( void )
  	{
  		edict_t *ent = SV_EdictNum( i );
  
@@ -1106,6 +1106,9 @@ index bfd679b..7ce1534 100644
 +			// first load): its flags' line too (kit 67: three hints a
 +			// step, the PXA270 has four fill buffers)
 +			__builtin_prefetch( &next->v.flags );
++			// kit 71 (run 68: 250 samples on the velocity's first load,
++			// the physics' first test): its line too
++			__builtin_prefetch( &next->v.velocity );
 +		}
 +
  		if( !SV_IsValidEdict( ent ))
