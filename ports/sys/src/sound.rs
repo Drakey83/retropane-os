@@ -135,6 +135,11 @@ impl<'a, R: DmaRing> Sound<'a, R> {
         self.mixer.stats()
     }
 
+    /// Times the mixer's stages with a core cycle counter (R306 item 3).
+    pub fn set_clock(&mut self, clock: fn() -> u32) {
+        self.mixer.set_clock(clock);
+    }
+
     /// The DMA engine (tests look at what it played).
     pub fn dma(&mut self) -> &mut R {
         &mut self.dma
@@ -221,6 +226,19 @@ impl<R: DmaRing> Voice for Sound<'_, R> {
             "sound: the mixer woke {} times, mixed {} frames ({} of them re-mixed by {} rewrites), {} late, {} dry, {} samples clipped",
             s.wakes, s.mixed, s.rewritten, s.rewrites, s.late, s.starved, s.clipped
         );
+        if s.cyc_tick > 0 {
+            // Cycles a frame mixed, by stage (R306 item 3).
+            let per = |c: u64| c / s.mixed.max(1);
+            let _ = writeln!(
+                out,
+                "sound: the mixer's cycles a frame mixed: {} adding the streams, {} the chain (speaker filter, limiter, dither), {} writing the cache back; {} a frame for its wakes whole ({} cycles a wake)",
+                per(s.cyc_add),
+                per(s.cyc_chain),
+                per(s.cyc_filled),
+                per(s.cyc_tick),
+                s.cyc_tick / u64::from(s.wakes.max(1))
+            );
+        }
     }
 
     fn shut(&mut self) {

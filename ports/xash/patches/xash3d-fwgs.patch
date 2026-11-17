@@ -212,6 +212,53 @@ index 61de1f4..041bb8e 100644
  		{
  			if( cl.frames[j & CL_UPDATE_MASK].receivedtime >= 0.0 )
  			{
+diff --git a/engine/client/sound/s_dsp.c b/engine/client/sound/s_dsp.c
+index 4a8e2c5..91398ed 100644
+--- a/engine/client/sound/s_dsp.c
++++ b/engine/client/sound/s_dsp.c
+@@ -223,7 +223,9 @@ void SX_Init( void )
+ 	idsp_dma_speed = SOUND_11k;
+ 
+ 	Cvar_RegisterVariable( &hisound );
+-	sxhires = 2;
++	// RetroPane: the room's delays sized for the mix's own rate (2 at
++	// 44.1 kHz as before; 1 under -rpmix22, the cvar's own 22k setting)
++	sxhires = snd.format.speed >= SOUND_44k ? 2 : snd.format.speed >= SOUND_22k ? 1 : 0;
+ 
+ 	sxmod1cur = sxmod1 = 350 * ( idsp_dma_speed / SOUND_11k );
+ 	sxmod2cur = sxmod2 = 450 * ( idsp_dma_speed / SOUND_11k );
+diff --git a/engine/client/sound/s_main.c b/engine/client/sound/s_main.c
+index 2cd7030..7f02b39 100644
+--- a/engine/client/sound/s_main.c
++++ b/engine/client/sound/s_main.c
+@@ -1236,7 +1236,8 @@ uint S_RawSamplesStereo( portable_samplepair_t *rawsamples, uint rawend, uint ma
+ 	if( rawend < snd.paintedtime )
+ 		rawend = snd.paintedtime;
+ 
+-	uint fracstep = ((double) rate / (double)SOUND_DMA_SPEED) * (double)(1 << S_RAW_SAMPLES_PRECISION_BITS);
++	uint fracstep = ((double) rate / (double)snd.format.speed) // RetroPane: the mix's own rate (-rpmix22)
++		 * (double)(1 << S_RAW_SAMPLES_PRECISION_BITS);
+ 	uint samplefrac = 0;
+ 
+ 	if( width == 2 )
+@@ -1337,7 +1338,7 @@ static void S_FreeIdleRawChannels( void )
+ 				Voice_StopChannel( ch->entnum );
+ 		}
+ 
+-		if(( snd.paintedtime - ch->s_rawend ) / SOUND_DMA_SPEED >= S_RAW_SOUND_IDLE_SEC )
++		if(( snd.paintedtime - ch->s_rawend ) / (int)snd.format.speed >= S_RAW_SOUND_IDLE_SEC )
+ 		{
+ 			snd.raw_channels[i] = NULL;
+ 			Mem_Free( ch );
+@@ -1549,7 +1550,7 @@ static void S_UpdateChannels( void )
+ 	// soundtime - total samples that have been played out to hardware at dmaspeed
+ 	// paintedtime - total samples that have been mixed at speed
+ 	// endtime - target for samples in mixahead buffer at speed
+-	endtime = snd.soundtime + s_mixahead.value * SOUND_DMA_SPEED;
++	endtime = snd.soundtime + s_mixahead.value * snd.format.speed; // RetroPane: the mix's own rate
+ 	samps = snd.samples >> 1;
+ 
+ 	if((int)(endtime - snd.soundtime) > samps )
 diff --git a/engine/client/sound/s_mix.c b/engine/client/sound/s_mix.c
 index fe5ece4..f35b8f6 100644
 --- a/engine/client/sound/s_mix.c
@@ -315,6 +362,20 @@ index fe5ece4..f35b8f6 100644
  		} \
  	} \
  
+diff --git a/engine/client/sound/s_stream.c b/engine/client/sound/s_stream.c
+index e74a4d2..ced56e1 100644
+--- a/engine/client/sound/s_stream.c
++++ b/engine/client/sound/s_stream.c
+@@ -257,7 +257,8 @@ void S_StreamBackgroundTrack( void )
+ 		int bufferSamples = ch->max_samples - (ch->s_rawend - snd.soundtime);
+ 
+ 		// decide how much data needs to be read from the file
+-		int fileSamples = bufferSamples * ((float)info->rate / SOUND_DMA_SPEED );
++		int fileSamples = bufferSamples * ((float)info->rate / snd.format.speed ) // RetroPane: the mix's own rate
++		;
+ 		if( fileSamples <= 1 ) return; // no more samples need
+ 
+ 		// our max buffer size
 diff --git a/engine/common/net_encode.c b/engine/common/net_encode.c
 index 64bc35e..c471621 100644
 --- a/engine/common/net_encode.c

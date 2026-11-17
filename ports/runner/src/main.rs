@@ -132,6 +132,14 @@ mod image {
     /// (`rp_hal_mem::float`, what the modules link), on numbers of a
     /// game's range, every result compared (R282).
     const FLOAT_WORD: &[u8] = b"-rpfloat";
+    /// A test run's word for write-allocate on the game modules' memory
+    /// (R306 item 2, measured against the default read-allocate in the
+    /// same batch of runs): [`WALLOC_FROM`]..[`WALLOC_TO`], the server's,
+    /// client's and engine's code, data and tables (kit 53's ELFs: the
+    /// server's text at 0xA8C00048, the engine's bss ending 0xA99F6284).
+    const WALLOC_WORD: &[u8] = b"-rpwalloc";
+    const WALLOC_FROM: u32 = 0xA8C0_0000;
+    const WALLOC_TO: u32 = 0xA9A0_0000;
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
     /// can be quiet (its run log holds 64 KiB) and the emulator's check
@@ -1056,6 +1064,14 @@ mod image {
                 scratch = Some(rest);
                 rt::take_dma(rp_hal_pxa27x::dma_map::AUDIO)
                     .and_then(|dma| Sound::new(mem, dma, speaker))
+                    .map(|mut s| {
+                        // The mixer's stages timed in core cycles (R306
+                        // item 3: inside the masked calls the samples
+                        // can't see).
+                        rt::cycle_counter_start();
+                        s.set_clock(rt::cycles);
+                        s
+                    })
                     .and_then(|s| SOUND.put_with(move || s))
             }
             (_, ram, _) => {
@@ -1256,6 +1272,13 @@ mod image {
         if args[..arg_count].iter().any(|a| a.to_bytes() == FLOAT_WORD) {
             float_bench();
             div_bench();
+        }
+        if args[..arg_count].iter().any(|a| a.to_bytes() == WALLOC_WORD) {
+            let n = rt::write_allocate_sections(WALLOC_FROM, WALLOC_TO);
+            let _ = writeln!(
+                uart,
+                "runner: -rpwalloc: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
+            );
         }
         let sampling = args[..arg_count]
             .iter()

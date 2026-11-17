@@ -2010,6 +2010,48 @@ pub fn take_kdata_page() -> Option<&'static mut [u32; 1024]> {
     Some(page)
 }
 
+/// Turns the bring-up map's ordinary-RAM sections in `[from, to)` (whole
+/// MiBs of SDRAM, mapped as [`crate::mmu::Memory::Normal`]) to write-back
+/// with read **and write** allocate: the XScale's X bit (bit 12, TEX[0])
+/// with C and B (Intel's XScale core developer's manual, the X bit's
+/// table). The PXA270's cache otherwise allocates a line on a read only,
+/// so a table one stage writes and the next reads (Half-Life's model
+/// records, R306) goes to SDRAM and back. Only the allocation policy
+/// changes: the lines stay valid and write-back, so no cache maintenance
+/// of the data is needed; the table words are cleaned and the TLB
+/// invalidated. Returns the sections changed (0: refused, nothing done).
+/// Unmeasured on the X51v until the run that asks for it (`-rpwalloc`).
+pub fn write_allocate_sections(from: u32, to: u32) -> u32 {
+    const MIB: u32 = 1 << 20;
+    let normal = crate::mmu::section(0, crate::mmu::Memory::Normal) & 0xFFFFF;
+    if from % MIB != 0 || to % MIB != 0 || from >= to {
+        return 0;
+    }
+    if !crate::mmu::SDRAM.contains(&from) || !crate::mmu::SDRAM.contains(&(to - 1)) {
+        return 0;
+    }
+    let mut n = 0;
+    for mib in (from >> 20)..(to >> 20) {
+        // SAFETY: L1_TABLE is the bring-up table (reserved SDRAM, identity
+        // mapped, boot/link.x); each word read and changed only where it
+        // is an identity-mapped normal section of SDRAM (checked), its
+        // address and access bits kept: nothing moves.
+        unsafe {
+            let e = (crate::mmu::L1_TABLE as *mut u32).add(mib as usize);
+            let v = e.read_volatile();
+            if v & 0xFFFFF != normal || v >> 20 != mib {
+                continue;
+            }
+            e.write_volatile(v | 1 << 12);
+            crate::cpu::clean_range(e as u32, 4);
+        }
+        n += 1;
+    }
+    crate::cpu::drain_write_buffer();
+    crate::cpu::invalidate_tlb_all();
+    n
+}
+
 /// Maps the 1 MiB at `virt` to SDRAM at `phys` in the bring-up map (normal
 /// memory, as the RAM sections), for self-tests of addresses no bring-up
 /// region covers: the native process slots (`0xC0000000`-`0xFDFFFFFF`,

@@ -289,6 +289,15 @@ pub struct Stats {
     /// The ring's end couldn't be moved as meant (registers making no
     /// sense, or the rule broken): never expected, never hidden.
     pub ring_failed: u32,
+    /// Core cycles in each stage, when a clock was given
+    /// ([`Mixer::set_clock`]; R306 item 3, Half-Life run 51: the mixer
+    /// took ~520 cycles a frame and the samples can't see inside it): the
+    /// streams added into a block, the chain (speaker filter, limiter,
+    /// dither), the cache written back for the DMA, and each wake whole.
+    pub cyc_add: u64,
+    pub cyc_chain: u64,
+    pub cyc_filled: u64,
+    pub cyc_tick: u64,
 }
 
 struct Slot<'a> {
@@ -716,6 +725,7 @@ pub struct Mixer<'a> {
     /// The output frame the ring's end was last put at.
     end_frame: u64,
     stats: Stats,
+    clock: Option<fn() -> u32>,
 }
 
 impl<'a> Mixer<'a> {
@@ -747,7 +757,19 @@ impl<'a> Mixer<'a> {
             piece: 0,
             end_frame: 0,
             stats: Stats::default(),
+            clock: None,
         }
+    }
+
+    /// A free-running core cycle counter to time the mix's stages with
+    /// ([`Stats::cyc_add`] and on); none by default (nothing read).
+    pub fn set_clock(&mut self, clock: fn() -> u32) {
+        self.clock = Some(clock);
+    }
+
+    #[inline]
+    fn now(&self) -> u32 {
+        self.clock.map_or(0, |c| c())
     }
 
     /// Opens a stream over `buf` (its ring, sized by [`min_ring_bytes`]: a
@@ -1111,6 +1133,13 @@ impl<'a> Mixer<'a> {
     /// again. Call it on that timer and after every commit, volume change,
     /// pause or open (ADR-0010's events, later).
     pub fn tick(&mut self, dma: &mut dyn DmaRing, now_ms: u32) -> Tick {
+        let t0 = self.now();
+        let t = self.tick_inner(dma, now_ms);
+        self.stats.cyc_tick += u64::from(self.now().wrapping_sub(t0));
+        t
+    }
+
+    fn tick_inner(&mut self, dma: &mut dyn DmaRing, now_ms: u32) -> Tick {
         self.stats.wakes += 1;
         if !self.running {
             return Tick {
@@ -1372,15 +1401,22 @@ impl<'a> Mixer<'a> {
                 self.keep(b);
             }
             let mut acc = [0i32; 2 * BLOCK];
+            let t0 = self.now();
             for s in self.slots.iter_mut().flatten() {
                 s.add(b, &mut acc);
             }
+            let t1 = self.now();
             let at = (b % RING_FRAMES) as usize * 4;
             let out = &mut self.ring[at..at + 4 * BLOCK];
             let r = self.state.run(&mut acc, self.speaker, out);
+            let t2 = self.clock.map_or(0, |c| c());
             // Handed to the engine at once, nearest first: the margin need
             // only cover one block's mixing, however long the stretch.
             dma.filled(out);
+            let t3 = self.now();
+            self.stats.cyc_add += u64::from(t1.wrapping_sub(t0));
+            self.stats.cyc_chain += u64::from(t2.wrapping_sub(t1));
+            self.stats.cyc_filled += u64::from(t3.wrapping_sub(t2));
             self.stats.clipped += r.clipped;
             self.stats.limited += u32::from(r.limited);
             b += BLOCK as u64;

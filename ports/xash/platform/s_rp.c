@@ -62,13 +62,21 @@ static struct
 
 qboolean SNDDMA_Init( void )
 {
-	if( rp_snd_open( SOUND_DMA_SPEED, 2 ) != 0 )
+	/* -rpmix22 (the owner's go, 2026-11-17, R306): the engine mixes at
+	   22,050 Hz, half the work of its mixer and room effects, and the OS
+	   mixer upsamples to the codec's 44.1 kHz (most of Half-Life's sounds
+	   are 22 or 11 kHz; a 44.1 kHz sound loses its top octave). Measured
+	   against 44.1 kHz on the device before it is a default. */
+	const int rate = Sys_CheckParm( "-rpmix22" ) ? SOUND_22k : SOUND_DMA_SPEED;
+
+	if( rp_snd_open( rate, 2 ) != 0 )
 	{
 		Con_Printf( S_ERROR "%s: the OS gave no sound stream\n", __func__ );
 		return false;
 	}
 
-	snd.format.speed = SOUND_DMA_SPEED;
+	snd.format.speed = rate;
+	Con_Printf( "sound: the engine mixes at %d Hz\n", rate );
 	snd.format.channels = 2;
 	snd.format.width = 2;
 	snd.samples = RING_FRAMES * 2;

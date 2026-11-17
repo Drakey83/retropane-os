@@ -567,6 +567,29 @@ sampled shares of unmasked code are ~7% high against the wall clock, and
 the feed is the largest single cost left on the CPU: step 4f (above)
 would take most of it off.
 
+**Kit 54 (2026-11-17, the owner: "keep going with 1-4"; built,
+emulator-run, not on the X51v).** Three switches for one batched device
+run, each measured against the default in the same run:
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins (or what the run decides) |
+|---|---|---|---|
+| Write-allocate (`-rpwalloc`) | Linux on the PXA27x and Dell's WM: write-back, read-allocate (Linux's `cachepolicy=writealloc` is opt-in) | the game modules' 14 MiB (0xA8C00000-0xA9A00000: code, data and every ref_rp table) remapped X=1, C=1, B=1 (`rt::write_allocate_sections`) | a table one stage writes and the next reads stays in the cache; the cost is a line fill on a first write: the run decides |
+| The OS mixer's stages (always on) | none: the samples can't see inside a masked call | the core's cycle counter around each stage (`Stats::cyc_*`), a log line beside the mixer's counts | the ~520 cycles a frame split into adding, the chain and the write-back, so the next change is aimed |
+| The engine mix at 22,050 Hz (`-rpmix22`) | Xash mixes at 44.1 kHz; its room effects still offer 22 kHz (`room_hires` 1, from the older engines' lower mix rates) | the engine's mixer and room effects at 22,050 Hz (the room's delays at `room_hires` 1's sizes), the OS mixer upsampling 2x to the codec | half the engine's mixing (S_PaintChannels, S_MixChannelToBuffer, SX_RoomFX: ~4.5% of the play) against the OS mixer's filter path: the run decides; a 44.1 kHz sound loses its top octave (most of Half-Life's are 22 or 11 kHz) |
+
+**Step 4f's probe before the build (kit 54's finding).** The feed by DMA
+pays only if the chip is fed while the CPU makes the next frame, which
+needs the frame's words in two buffers (+512 KiB while R310 shows the
+heap tight) and the render started from a pump; and an unpaced DMA write
+into a full TA FIFO may hold the shared bus (the CPU's SDRAM then waits,
+and a TA that never drains would freeze the X51v). So the next run asks
+first, last in its batch with the owner told: (a) a frame's runs sent by
+DMA with no room check, the strip ends by the CPU: does the TA take them
+(TA done, no hang, the same picture); (b) a cache-missing loop's progress
+during those pieces against idle: what the CPU keeps; (c) the paced way
+(P4's) on the game's real frames: CPU free time a frame. Then 4f is built
+on the answers.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
