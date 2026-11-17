@@ -807,6 +807,9 @@ pub struct Chip {
     /// The frame-rate bar asked for (`-rpfpsbar`).
     bar: bool,
     ladder: Option<Ladder>,
+    /// C2: the core's turbo multiplier while the program has the screen
+    /// (`-rpcpu`), or Dell's 624 MHz.
+    cpu: Option<u8>,
 }
 
 impl Chip {
@@ -836,7 +839,16 @@ impl Chip {
             ladder_on: false,
             ladder: None,
             bar: false,
+            cpu: None,
         }
+    }
+
+    /// C2 (`crate::cpu`): the core past 624 MHz while the program has the
+    /// screen (`-rpcpu 7` or `8`).
+    #[must_use]
+    pub const fn with_cpu(mut self, n2: Option<u8>) -> Self {
+        self.cpu = n2;
+        self
     }
 
     /// The frame-rate bar along the bottom (`-rpfpsbar`).
@@ -1336,6 +1348,9 @@ impl Screen for Chip {
                 }
             }
         }
+        if let Some(n2) = self.cpu {
+            crate::cpu::step(n2, self.log);
+        }
         let ready = match ta::set_up(
             regs,
             vram,
@@ -1421,6 +1436,8 @@ impl Screen for Chip {
         let (Some(o), true) = (self.open.as_mut(), self.regs.is_some()) else {
             return Err(Errno::BadHandle);
         };
+        // C2: the core's known answer every frame while past 624 MHz.
+        crate::cpu::check(self.log);
         let c = &mut self.counts;
         let counts = match check(words, &o.gfx) {
             Ok(n) => n,
@@ -1603,6 +1620,7 @@ impl Screen for Chip {
         let Some(mut o) = self.open.take() else {
             return Err(Errno::BadHandle);
         };
+        crate::cpu::put_back(self.log);
         let _ = o.wait_render(regs);
         if o.stepped {
             // Windows Mobile's clock and bus timing back (ADR-0035 rule 2),

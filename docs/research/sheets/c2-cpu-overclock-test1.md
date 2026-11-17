@@ -75,3 +75,34 @@ fail, as it needs the owner's ruling on the RAM rule.
 
 **Asked of the owner:** the go to build the stage (code and emulator
 check); a separate go for the device run (you watching).
+
+## 7. Test 1 again, in the port runner (2026-11-16, the owner: "Yes, start C2")
+
+`rp-clocks`' C2b never reached the overclock (runs 1-3 hung on its card log
+and the loader's restart, R123; parked with two items open). The port
+runner has since run Half-Life on this X51v for hours with its log on the
+CF card throughout, and it is the program the overclock is for, so test 1
+moves there (`ports/runner/src/cpu.rs`, a test run's `-rpcpu 7` or `8`):
+
+- **Route A, unchanged:** L 16 x 2N 7 (728 MHz) or 8 (832); run, bus,
+  memory and the SDRAM's timing exactly Dell's 624 point. The step is
+  refused unless the core is at Dell's 624 point as found (its voltage
+  pattern then the top one); the voltage pins are never touched.
+- **The latch and the speed:** `CCSR` read back (a PLL that refuses 2N 7
+  puts 624 back), the core's clock counted against the OS timer.
+- **The core checked as it runs, not trusted:** `rp-clocks`' integer mix
+  (xorshift, multiply-add, rotate, 64-bit product) with its answer worked
+  out at 624 before the step, run every frame and before every card write.
+  One wrong answer puts 624 back for the rest of the run; a card write is
+  refused while the answer is wrong (the card is shared: the owner's game files are on it).
+- **The stress is the game:** Half-Life's frames load every part of the
+  core for minutes, with the integer check each frame.
+- **Back to 624** when the program closes its screen, and again after it
+  returns (a net under it); the run's counts logged (checks, wrong).
+- **The owner watches the first run** (a new clock region): a hang is the
+  hardware watchdog's (Dell's restore screen: Mail, then the loader).
+
+What would overturn it: the PLL refusing 2N 7 (route C next: L 14-15 x
+2N 8, 728 / 780 MHz with the bus and memory a little slower); a wrong
+answer or a hang at 728 (this unit's core can't run past 624 at Dell's top
+voltage by route A).

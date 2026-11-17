@@ -48,6 +48,8 @@ pub const PROGRAM: &str = "engine.rpm";
 pub const BANNER: &str = "RetroPane: the module runner (a test image: ADR-0039)";
 
 #[cfg(target_os = "none")]
+mod cpu;
+#[cfg(target_os = "none")]
 mod gfx;
 #[cfg(target_os = "none")]
 mod panel;
@@ -166,6 +168,11 @@ mod image {
     /// waited for and counted.
     const LADDER_WORD: &[u8] = b"-rpladder";
 
+    /// A test run's word for C2 (`cpu`): the core's turbo multiplier past
+    /// 624 MHz while the program has the screen, `-rpcpu 7` (728 MHz) or
+    /// `-rpcpu 8` (832), every frame and card write checked.
+    const CPU_WORD: &[u8] = b"-rpcpu";
+
     /// A test run's word for the frame-rate bar along the screen's bottom
     /// (`gfx::BAR_ROWS`): frames a second, the 2700G's clock, the hangs.
     const BAR_WORD: &[u8] = b"-rpfpsbar";
@@ -258,6 +265,11 @@ mod image {
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
             alive(rt::ticks(), true);
+            // C2: a core past 624 MHz writes to the shared card only while
+            // its known answer is right this moment (`cpu`).
+            if !super::cpu::may_write() {
+                return Err(BlockError::Device);
+            }
             self.0.write_blocks(lba, buf)
         }
     }
@@ -1132,11 +1144,20 @@ mod image {
         let rung = clock_rung(&args[..arg_count]);
         let ladder = args[..arg_count].iter().any(|a| a.to_bytes() == LADDER_WORD);
         let bar = args[..arg_count].iter().any(|a| a.to_bytes() == BAR_WORD);
+        let cpu_n2 = args[..arg_count]
+            .iter()
+            .rposition(|a| a.to_bytes() == CPU_WORD)
+            .and_then(|at| args[..arg_count].get(at + 1))
+            .and_then(|v| match number(v.to_bytes()) {
+                Some((n, [])) => u8::try_from(n).ok(),
+                _ => None,
+            });
         match CHIP.put_with(|| {
             super::gfx::Chip::new(gfx_log, mbx)
                 .with_rung(rung)
                 .with_ladder(ladder)
                 .with_bar(bar)
+                .with_cpu(cpu_n2)
         }) {
             Some(c) => s.set_screen(c),
             None => {
@@ -1166,6 +1187,9 @@ mod image {
             rt::start_sampling(samples, SAMPLE_HZ);
         }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
+        // C2: Dell's 624 MHz back whatever the program left (its screen's
+        // close puts it back first; this is the net under it).
+        super::cpu::put_back(gfx_log);
         // Stopped at once: what follows is the runner's, not the program's.
         if let Some((buf, taken, full)) = rt::stop_sampling() {
             write_samples(buf, taken, full);
