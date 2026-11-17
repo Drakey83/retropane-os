@@ -706,11 +706,22 @@ levers first": yes), all exact:**
 
 | Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
 |---|---|---|---|
-| The game's C flags | `-ffreestanding` for everything built for the X51v (bare metal's textbook: the C library must not call itself) | the game's modules hosted (builtins on); picolibc keeps `-ffreestanding` | clang lets no flag bring builtins back under freestanding, so every small `memcpy`/`memset` was a call: the traces' 4-byte float-bit copies (`RP_Lt0`, `RP_Ge0`) and the rest, `memcpy` + `memset` + `__aeabi_memcpy4` ~4.7% of run 53 N's play |
+| The traces' float-bit copies | `memcpy` under `-ffreestanding` (a call each: builtins off) | `__builtin_memcpy` from the aligned local (`RP_FloatBits` in pm_trace.c, ref_common.h), inline at any flags | ~2% of run 53 N's play in those calls. **Kit 57 first built all the game hosted (builtins on): the X51v faulted at once** (run 54: the menu's `MurmurHash3_32`, a `memcpy` from a misaligned `uint32_t *` inlined as a word load; the emulator does not trap misaligned loads, R280), so freestanding stays and only copies from aligned locals are builtins |
 | The OS mixer's add (one stereo stream at 44.1 kHz, full volume: Half-Life's) | a general per-sample add with a saturating sum, a gain test and a channel test | the block's first stream written into the empty mix a run at a time | run 53: 128 cycles a frame for the add; the same values (`0 + v` never saturates; the test holds the fast and the reference paths equal both ways) |
 | The speaker's high-pass | the RBJ cookbook's direct form, five products a sample | its numerator is `b0 (1, -2, 1)` exactly in the stored Q30 words (asserted at build): three products | bit for bit the same (200,000 samples compared) |
 | The test walk | `impulse 100` without the suit (ignored by the game: no flashlight, no HUD in runs to 53) | `give item_suit` first | every run measures what the player sees: HUD and flashlight light |
 | The touch keys (LIGHT, FIRE 2) | shown whenever a map is played | only with the HEV suit (the owner, 2026-11-17), as the game's own HUD: `WEAPON_SUIT`, bit 31 of the weapons the server sends | no flashlight key before the suit has a flashlight |
+
+**Run 54 (2026-11-17, kit 57 with the fix, the suit on: the HUD and the
+flashlight in every run, sound up in every run; c1a0's walk, lines 3-25):**
+A 41.0 ms a frame at 17,300 words, A2 37.4 at 16,200; with `-rpchain` B
+34.7 at 15,100, B2 39.5 at 18,200. The OS mixer, by its own meter: the
+add 128 -> 76 cycles a frame, the chain 221 -> 191, the whole wake 487 ->
+410; its share of the time 3.8% -> 3.2%. **Two runs of the same kit differ
+by up to ~10% (A against A2): the walk's views and timing differ run to
+run, so changes of a few percent cannot be told apart this way.** Next:
+a fixed measurement, the engine's `timedemo` of one recorded demo (the
+same frames every run), before the next levers are judged.
 
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either

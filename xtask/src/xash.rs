@@ -673,18 +673,12 @@ fn compile(
     let dir = out.join(part.name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // Hosted, not `-ffreestanding` (R306, run 53's samples): freestanding
-    // turns every builtin off in clang (no later `-fbuiltin` brings them
-    // back), so each small `memcpy`/`memset` in the game's code was a call:
-    // the float sign tests' 4-byte bit copies in the player's traces alone
-    // were ~2% of the play. The game's code defines none of the C library's
-    // functions (checked 2026-11-17), so the compiler may treat them as the
-    // standard ones, as every hosted build of the engine does; picolibc
-    // itself keeps `-ffreestanding` (cc.rs).
-    let mut common: Vec<String> = cc::flag_strings(cc::TARGET_FLAGS)
-        .into_iter()
-        .filter(|f| f != "-ffreestanding")
-        .collect();
+    // Freestanding (builtins off) stays: kit 57 built the game hosted and
+    // the X51v faulted at once (run 54: MurmurHash3_32 in the menu, a
+    // `memcpy` from a misaligned `uint32_t *` inlined as a word load; the
+    // emulator does not trap misaligned loads, R280). Small copies that
+    // matter are `__builtin_memcpy` from aligned locals instead.
+    let mut common = cc::flag_strings(cc::TARGET_FLAGS);
     // The engine's own code is not ours to make warning-free.
     common.push("-w".into());
     // A literal like `0.5` is a float, not a double (ref-rp.md "Lever 2"):

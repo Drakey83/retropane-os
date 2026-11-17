@@ -410,7 +410,7 @@ index 64bc35e..c471621 100644
  
  	if( pField->flags & DT_BYTE )
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
-index b1e8e57..cba47d2 100644
+index b1e8e57..ec374c1 100644
 --- a/engine/common/pm_trace.c
 +++ b/engine/common/pm_trace.c
 @@ -102,6 +102,38 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
@@ -429,7 +429,7 @@ index b1e8e57..cba47d2 100644
 +{
 +	uint32_t u;
 +
-+	memcpy( &u, &f, sizeof( u ));
++	__builtin_memcpy( &u, &f, sizeof( u )); // inline under -ffreestanding (a call per sign test otherwise)
 +	return u;
 +}
 +
@@ -847,7 +847,7 @@ index b490cfa..890f096 100644
  	{
  		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));
 diff --git a/ref/common/ref_common.h b/ref/common/ref_common.h
-index 32fa799..bbf9025 100644
+index 32fa799..c017e24 100644
 --- a/ref/common/ref_common.h
 +++ b/ref/common/ref_common.h
 @@ -100,4 +100,50 @@ extern const int vec_to_st[SKYBOX_MAX_SIDES][3];
@@ -873,7 +873,7 @@ index 32fa799..bbf9025 100644
 +		/* the next float up, on the bits (f finite: t is a game time) */
 +		uint32_t u;
 +
-+		memcpy( &u, &f, sizeof( u ));
++		__builtin_memcpy( &u, &f, sizeof( u ));
 +		if(( u & 0x7FFFFFFFu ) == 0 )
 +			u = 1; /* from either zero: the least positive float */
 +		else if( u >> 31 )
