@@ -125,3 +125,6 @@ asks the same core speed or more, so it is unlikely to hold where route A
 did not; route B (L 17 x 2N 6: 663 MHz, +6%) raises the bus to 221 MHz and
 the SDRAM to 110 MHz, past Intel's and the memory's ratings (the owner's
 RAM rule); or C2 closed for this unit at 624.
+
+**The owner's ruling (2026-11-16): "Close C2 at 624".** This unit runs 624
+MHz; the `-rpcpu` test stays in the port runner for other units.
