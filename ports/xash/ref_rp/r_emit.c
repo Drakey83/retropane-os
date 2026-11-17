@@ -72,7 +72,9 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
-static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes;
+static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes, *rp_lm;
+static void RP_LmFlush( void );
+static void RP_LmFrame( void );
 /* D_CacheSurface lights into the scratch, not the RAM cache (r_surf.c). */
 int rp_scratch;
 
@@ -99,11 +101,14 @@ static struct
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
+	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
 
 static void RP_FixedInit( void );
+static int      rp_lm_on;
+static uint32_t rp_tex_used, rp_tex_room; /* R297 B: the texture pool's bytes */
 
 void RP_EmitInit( void )
 {
@@ -115,6 +120,7 @@ void RP_EmitInit( void )
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
 	rp_cull = gEngfuncs.Cvar_Get( "rp_cull", "1", 0, "ref_rp: 1 the models' triangles facing away or off the screen not sent (Half-Life's GL rule), 0 all sent, -1 the other winding" );
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
+	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	RP_FixedInit();
 }
 
@@ -184,6 +190,10 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: 2D: %u quads a frame (the HUD, text, fills), %u tiles not drawn (no room); %u see-through faces a frame (R303)\n",
 			rp_count.pics / f, rp_count.pics_skipped / f, rp_count.masked / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: R297 B (rp_lm %d): %u faces a frame as texture and lightmap, %u lightmaps written a frame (%u for a dynamic light), %u second-pass words a frame, %u faces with no second-pass room; %u textures written (%u KiB), the texture pool %u of %u KiB, %u pool resets\n",
+			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
+			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -260,6 +270,7 @@ void RP_EmitFrame( void )
 	rp_fan_on = rp_fan->value != 0.0f;
 	rp_mip_force = (int)rp_mip->value;
 	rp_cull_on = (int)rp_cull->value;
+	RP_LmFrame();
 	if(( rp_emit_on == 2 ) != ( rp_gpu->value == 1.0f ))
 		gEngfuncs.Cvar_SetValue( "rp_gpu", rp_emit_on == 2 ? 1.0f : 0.0f );
 	if( !rp_emit_on )
@@ -333,6 +344,7 @@ static void RP_State( const void *what, uint32_t tsp )
 {
 	if( what == rp_state )
 		return;
+	RP_LmFlush(); /* the lit walls before the sprites, beams and particles */
 	rp_state = what;
 	rp_count.states++;
 	RP_Put( RP_TA_STATE_MASK );
@@ -729,6 +741,13 @@ typedef struct
 static rp_page_t rp_page[RP_MAX_PAGES];
 static int       rp_pages;
 
+/* R297 option B's own (the texture pool, a texel's twiddle) */
+#define RP_TEX_PAGES 6           /* 3 MiB for the map's textures */
+#define RP_LMAP      0x20000000u /* RP_LOC: the place holds the face's lightmap (B), not its lit surface */
+static int      rp_tex_pages;
+static uint16_t rp_spread[256];  /* a byte's bits to the even bits */
+static int      rp_upload_raw;   /* RP_Upload's texels are RGB565 already */
+
 /* A face's place in the atlas, kept in its extra data's spare words
    (com_model.h `mextrasurf_t.reserved`; 0-3 are the RAM cache's spots):
    4: valid (bit 31), mip << 24, page << 16, square row << 8, column;
@@ -745,7 +764,7 @@ static uint32_t RP_Loc( msurface_t *fa )
 	uint32_t loc = (uint32_t)RP_LOC( fa );
 	int      pg = loc >> 16 & 0xFF;
 
-	if( !( loc & RP_VALID ) || pg >= rp_pages || (int)( RP_GEN( fa ) >> 1 ) != rp_page[pg].gen )
+	if( !( loc & RP_VALID ) || ( loc & RP_LMAP ) || pg >= rp_pages || (int)( RP_GEN( fa ) >> 1 ) != rp_page[pg].gen )
 		return 0;
 	return loc;
 }
@@ -787,6 +806,20 @@ static void RP_AtlasInit( void )
 	rp_pages = rp_g.tex_bytes / RP_PAGE_BYTES;
 	if( rp_pages > RP_MAX_PAGES )
 		rp_pages = RP_MAX_PAGES;
+	/* R297 B: the top pages hold the map's textures (with their mip
+	   chains), the rest stay the atlas (lightmaps, skins, the faces still
+	   lit on the CPU) */
+	rp_tex_pages = rp_pages >= RP_TEX_PAGES + 4 ? RP_TEX_PAGES : 0;
+	rp_pages -= rp_tex_pages;
+	rp_tex_room = (uint32_t)rp_tex_pages * RP_PAGE_BYTES;
+	for( int b = 0; b < 256; b++ )
+	{
+		uint32_t v = 0;
+
+		for( int k = 0; k < 8; k++ )
+			v |= ( (uint32_t)b >> k & 1 ) << ( 2 * k );
+		rp_spread[b] = (uint16_t)v;
+	}
 	memset( rp_page, 0, sizeof( rp_page ));
 	for( int k = 0; k < 64; k++ )
 	{
@@ -925,6 +958,8 @@ static inline uint32_t RP_FaceTexel( pixel_t p )
 {
 	uint32_t c;
 
+	if( rp_upload_raw )
+		return p;
 	if( !rp_face_masked )
 		return vid.screen[p];
 	if( p == TRANSPARENT_COLOR )
@@ -1030,6 +1065,8 @@ static void RP_PageState( int pg )
 	if( what == rp_state )
 		return;
 	if( rp_face_blend )
+		RP_LmFlush(); /* the lit walls before what blends over them */
+	if( rp_face_blend )
 	{
 		tsp = ( tsp & 0x03FFFFFFu ) | ( rp_face_blend == 2 ? 1u << 29 | 1u << 26 : 4u << 29 | 5u << 26 )
 			| 1u << 13 | 1u << 7;
@@ -1090,6 +1127,8 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 	uint64_t     t0;
 	int          over, dlit;
 
+	if( loc & RP_LMAP )
+		loc = 0; /* its lightmap's place (B): its lit surface gets its own */
 	placed = ( loc & RP_VALID ) && (int)( loc >> 24 & 3 ) == miplevel && pg < rp_pages
 		&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen;
 	/* R297: a face still placed at another level (its old place stays
@@ -1186,6 +1225,426 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 }
 
 /*
+R297 option B (the owner's pick, 2026-11-16: docs/research/sheets/r297-mip-popping.md).
+The world's faces as the map's own textures and their lightmaps, two
+passes on the 2700G. Iterate, don't imitate (rule 0): `ref_soft` lights
+each face's texels on the CPU at one mip level a face (the pops, the
+atlas's churn, the flashlight's relights: runs 34-48); `ref_gl` draws the
+texture and the lightmap with GL's mips and filtering, its textures
+resampled to powers of two at load. Ours keeps ref_gl's split (the chip
+picks a level a pixel and filters: no pops, no CPU lighting of texels),
+and beats it on this machine: each texture goes into video memory once,
+at its first use, in the chip's own twiddled order with its chain down to
+1 x 1 (layout B, rp-mbx3d T12b), from the map's four stored levels where
+they fit (no resampling of a power-of-two texture); the lightmaps are
+ref_soft's own light levels (R_BuildLightMap's scale and gamma, a channel
+at a time) in the atlas at one texel a sample, and only those are written
+again when a light changes (a lightmap is a 256th of its face's texels);
+every face's second pass waits in its own buffer and goes after the
+opaque world in a few state blocks (the TBDR multiplies whole tiles), so
+the walls' words go twice but no texel is lit on the CPU.
+Faces with decals, see-through or blended textures, the conveyors and
+any face whose texture or lightmap has no room stay on choice 2 A (their
+lit surface), so nothing is ever left out.
+*/
+#define RP_TEX_SLOTS 512
+#define RP_LM_WORDS  ( 32 * 1024 ) /* the second pass's words (c1a0's view: ~19 Ki) */
+#define RP_LM_TEXELS 1024          /* a lightmap's samples at most (HL's: 18 x 18) */
+/* pass 1: the texture, opaque, depth written; pass 2: the lightmap,
+   the destination's colour times the texel (the 2D layer's case 3),
+   depth "greater or equal" and not written; TEX1 bilinear with the
+   nearest level (T12b's mip bit, ref_gl's GL_LINEAR_MIPMAP_NEAREST), LOD 7 */
+#define RP_TSP_LMAP ( ( RP_TSP_WORLD & 0x03FFFFFFu ) | 2u << 29 | 0u << 26 | 1u << 13 | 1u << 7 )
+#define RP_TEX1_LINEAR( addr ) ( 0x8E000000u | (( addr ) >> 7 ))
+#define RP_TEX1_MIP( addr )    ( 0xAE000000u | (( addr ) >> 7 ))
+
+typedef struct
+{
+	const image_t *image;
+	uint32_t       tex0, tex1;
+	int            gen; /* rp_tex_gen when it was written */
+} rp_tex_t;
+
+static rp_tex_t rp_tex[RP_TEX_SLOTS];
+static int      rp_tex_gen = 1, rp_tex_full;
+static uint32_t rp_lm_buf[RP_LM_WORDS];
+static uint32_t rp_lm_n;
+static int      rp_lm_page = -1;
+static uint16_t rp_lm_texels[RP_LM_TEXELS];
+
+static void RP_TexReset( void )
+{
+	rp_tex_gen++;
+	rp_tex_used = 0;
+	rp_tex_full = 0;
+}
+
+/* Once a frame, before any face: the switch, and a pool that filled last
+   frame emptied (the render in flight may read it: waited for). */
+static void RP_LmFrame( void )
+{
+	rp_lm_on = rp_lm->value != 0.0f && rp_tex_pages > 0;
+	rp_lm_n = 0;
+	rp_lm_page = -1;
+	if( rp_tex_full )
+	{
+		rp_gfx_wait();
+		RP_TexReset();
+		rp_count.tex_resets++;
+	}
+}
+
+/* The second pass's words into the frame, after what was drawn so far. */
+static void RP_LmFlush( void )
+{
+	if( !rp_lm_n )
+		return;
+	if( rp_n + rp_lm_n <= RP_BUF_WORDS )
+		memcpy( &rp_buf[rp_n], rp_lm_buf, rp_lm_n * sizeof( uint32_t ));
+	rp_n += rp_lm_n;
+	RP_Whole();
+	rp_count.lm_words += rp_lm_n;
+	rp_lm_n = 0;
+	rp_lm_page = -1;
+	rp_state = NULL; /* the main stream's state changed */
+}
+
+static inline void RP_LmPut( uint32_t w )
+{
+	rp_lm_buf[rp_lm_n++] = w; /* room checked a face at a time */
+}
+
+/* A texel's place in a w x h (powers of two) twiddled texture: squares of
+   the short side along the long one, x in a square's odd bits (2700g.md
+   "Texture shapes", tex::twiddle_rect). */
+static inline uint32_t RP_TexAt( uint32_t x, uint32_t y, int lw, int lh, int sb )
+{
+	uint32_t m = ( 1u << sb ) - 1u, sq = lw > lh ? x >> sb : y >> sb;
+	uint32_t in = rp_spread[y & m & 0xFF] | (uint32_t)rp_spread[x & m & 0xFF] << 1;
+
+	if( sb > 8 )
+		in |= ( (uint32_t)rp_spread[( y & m ) >> 8] | (uint32_t)rp_spread[( x & m ) >> 8] << 1 ) << 16;
+	return ( sq << ( 2 * sb )) + in;
+}
+
+static inline uint32_t RP_565Avg4( uint32_t a, uint32_t b, uint32_t c, uint32_t d )
+{
+	uint32_t r = (( a >> 11 ) + ( b >> 11 ) + ( c >> 11 ) + ( d >> 11 ) + 2 ) >> 2;
+	uint32_t g = (( a >> 5 & 63 ) + ( b >> 5 & 63 ) + ( c >> 5 & 63 ) + ( d >> 5 & 63 ) + 2 ) >> 2;
+	uint32_t bl = (( a & 31 ) + ( b & 31 ) + ( c & 31 ) + ( d & 31 ) + 2 ) >> 2;
+
+	return r << 11 | g << 5 | bl;
+}
+
+/* One texel of a source level (`sw` x `sh` pixel_t), sampled for texel
+   (x, y) of a `lw` x `lh` level: direct at the same size, else bilinear
+   across the texture's wrap (a size that isn't a power of two). */
+static uint32_t RP_TexSample( const pixel_t *src, int sw, int sh, int x, int y, int lw, int lh )
+{
+	int32_t  fx, fy, x0, y0, x1, y1, ax, ay;
+	uint32_t c[4], r = 0, g = 0, b = 0;
+
+	if( sw == lw && sh == lh )
+		return vid.screen[src[y * sw + x]];
+	/* the source position of the texel's centre, 16.16 */
+	fx = (int32_t)((( (int64_t)( 2 * x + 1 ) * sw ) << 15 ) / lw ) - 32768;
+	fy = (int32_t)((( (int64_t)( 2 * y + 1 ) * sh ) << 15 ) / lh ) - 32768;
+	x0 = fx >> 16;
+	y0 = fy >> 16;
+	ax = fx >> 8 & 255;
+	ay = fy >> 8 & 255;
+	x0 = ( x0 % sw + sw ) % sw;
+	y0 = ( y0 % sh + sh ) % sh;
+	x1 = ( x0 + 1 ) % sw;
+	y1 = ( y0 + 1 ) % sh;
+	c[0] = vid.screen[src[y0 * sw + x0]];
+	c[1] = vid.screen[src[y0 * sw + x1]];
+	c[2] = vid.screen[src[y1 * sw + x0]];
+	c[3] = vid.screen[src[y1 * sw + x1]];
+	{
+		const uint32_t wgt[4] = { ( 256 - ax ) * ( 256 - ay ), ax * ( 256 - ay ), ( 256 - ax ) * ay, ax * ay };
+
+		for( int k = 0; k < 4; k++ )
+		{
+			r += ( c[k] >> 11 ) * wgt[k];
+			g += ( c[k] >> 5 & 63 ) * wgt[k];
+			b += ( c[k] & 31 ) * wgt[k];
+		}
+	}
+	return ( r + 32768 ) >> 16 << 11 | ( g + 32768 ) >> 16 << 5 | ( b + 32768 ) >> 16;
+}
+
+/* The texture in the pool (written at its first use), or NULL: no room
+   (the pool empties at the next frame) or a shape it doesn't take. */
+static rp_tex_t *RP_TexPlace( const image_t *image )
+{
+	uint32_t  h = (uint32_t)(( (uintptr_t)image >> 3 ) * 2654435761u ) >> 23;
+	rp_tex_t *t = NULL;
+	uint16_t *chain = (uint16_t *)rp_scratch_buf.more;
+	int       W, H, levels = 0, sb, plw = 1, plh = 1;
+	uint32_t  bytes = 0, at, off = 0, prev = 0;
+
+	for( int i = 0; i < 16; i++ )
+	{
+		rp_tex_t *e = &rp_tex[( h + i ) & ( RP_TEX_SLOTS - 1 )];
+
+		if( e->gen == rp_tex_gen && e->image == image )
+			return e;
+		if( e->gen != rp_tex_gen )
+		{
+			t = e;
+			break;
+		}
+	}
+	if( !t || rp_tex_full || !image || !image->pixels[0] || image->width < 1 || image->height < 1 )
+		return NULL;
+	W = RP_Pow2( image->width );
+	H = RP_Pow2( image->height );
+	if( W < 8 )
+		W = 8;
+	if( H < 8 )
+		H = 8;
+	/* the whole chain is built in the scratch first (a third more) */
+	if( W > 1024 || H > 1024 || W * H > 65536 )
+		return NULL;
+	for( int lw = W, lh = H;; lw = lw > 1 ? lw >> 1 : 1, lh = lh > 1 ? lh >> 1 : 1 )
+	{
+		bytes += (uint32_t)( lw * lh * 2 );
+		levels++;
+		if( lw == 1 && lh == 1 )
+			break;
+	}
+	at = ( rp_tex_used + 127u ) & ~127u;
+	if( at + bytes > rp_tex_room )
+	{
+		rp_tex_full = 1;
+		return NULL;
+	}
+
+	for( int l = 0, lw = W, lh = H; l < levels; l++ )
+	{
+		uint16_t *lv = chain + off / 2;
+
+		sb = 31 - __builtin_clz((uint32_t)( lw < lh ? lw : lh ));
+		if( l < 4 && image->pixels[l] )
+		{
+			/* the map's own level (a quarter of the area each) */
+			int sw = image->width >> l, sh = image->height >> l;
+
+			if( sw < 1 )
+				sw = 1;
+			if( sh < 1 )
+				sh = 1;
+			for( int y = 0; y < lh; y++ )
+				for( int x = 0; x < lw; x++ )
+					lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexSample( image->pixels[l], sw, sh, x, y, lw, lh );
+		}
+		else
+		{
+			/* past the stored four: each texel the mean of the larger level's two by two */
+			const uint16_t *pv = chain + prev / 2;
+			int             pw = plw, ph = plh;
+			int             psb = 31 - __builtin_clz((uint32_t)( pw < ph ? pw : ph ));
+			for( int y = 0; y < lh; y++ )
+				for( int x = 0; x < lw; x++ )
+				{
+					int x0 = pw > lw ? 2 * x : x, y0 = ph > lh ? 2 * y : y;
+					int x1 = pw > lw ? x0 + 1 : x0, y1 = ph > lh ? y0 + 1 : y0;
+
+					lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_565Avg4(
+						pv[RP_TexAt( x0, y0, pw, ph, psb )], pv[RP_TexAt( x1, y0, pw, ph, psb )],
+						pv[RP_TexAt( x0, y1, pw, ph, psb )], pv[RP_TexAt( x1, y1, pw, ph, psb )] );
+				}
+		}
+		prev = off;
+		off += (uint32_t)( lw * lh * 2 );
+		plw = lw;
+		plh = lh;
+		lw = lw > 1 ? lw >> 1 : 1;
+		lh = lh > 1 ? lh >> 1 : 1;
+	}
+	/* one copy of the whole chain (whole words: the last texel padded) */
+	memcpy((uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES + at, chain, ( bytes + 3u ) & ~3u );
+	rp_tex_used = at + (( bytes + 3u ) & ~3u );
+	t->image = image;
+	t->gen = rp_tex_gen;
+	/* wrap (repeat 0) both ways, the sizes, RGB565, the chain's last level */
+	t->tex0 = (uint32_t)( 31 - __builtin_clz((uint32_t)W ) - 3 ) << 24 | (uint32_t)( 31 - __builtin_clz((uint32_t)H ) - 3 ) << 20
+		| 2u << 13 | (uint32_t)( levels - 1 ) << 9;
+	at += rp_g.tex_at + (uint32_t)rp_pages * RP_PAGE_BYTES;
+	t->tex1 = levels > 1 ? RP_TEX1_MIP( at ) : RP_TEX1_LINEAR( at );
+	rp_count.tex_built++;
+	rp_count.tex_kib += bytes >> 10;
+	return t;
+}
+
+/* The face's lightmap in the atlas, written when it is new or its light
+   changed (D_CacheSurface's tests); its page and place, or -1. */
+static int RP_LmPlace( msurface_t *fa, int *x, int *y )
+{
+	uint32_t loc = (uint32_t)RP_LOC( fa );
+	int      pg = loc >> 16 & 0xFF, placed, stale, w, h, r;
+
+	placed = ( loc & RP_VALID ) && ( loc & RP_LMAP ) && pg < rp_pages && (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen;
+	stale = !placed || ( RP_GEN( fa ) & 1 ) || fa->dlightframe == tr.framecount;
+	for( int maps = 0; !stale && maps < MAXLIGHTMAPS && fa->styles[maps] != 255; maps++ )
+		if( g_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps] )
+			stale = 1;
+	if( placed )
+	{
+		*x = loc & 0xFF;
+		*y = loc >> 8 & 0xFF;
+		rp_page[pg].used = tr.framecount;
+		rp_page[pg].live += 128;
+		if( !stale )
+			return pg;
+	}
+	if( fa->dlightframe == tr.framecount )
+	{
+		/* R305: the light in the face's own space (RP_SurfacePlace's) */
+		if( RI.currentmodel == WORLDMODEL || !RI.currententity )
+			tr.modelviewIdentity = true;
+		else
+		{
+			Matrix4x4_CreateFromEntity( RI.objectMatrix, RI.currententity->angles, RI.currententity->origin, 1 );
+			tr.modelviewIdentity = false;
+		}
+	}
+	r = RP_SurfLightmap( fa, rp_lm_texels, RP_LM_TEXELS, &w, &h );
+	if( !r )
+		return -1;
+	if( !placed )
+	{
+		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, x, y );
+		if( pg < 0 )
+			return -1;
+		rp_page[pg].used = tr.framecount;
+		rp_page[pg].live += 128;
+	}
+	rp_upload_raw = 1;
+	RP_Upload((const pixel_t *)rp_lm_texels, w, h, pg, *x, *y );
+	rp_upload_raw = 0;
+	RP_LOC( fa ) = (intptr_t)( RP_VALID | RP_LMAP | (uint32_t)pg << 16 | (uint32_t)*y << 8 | (uint32_t)*x );
+	RP_GEN( fa ) = (intptr_t)( rp_page[pg].gen << 1 | ( r & 2 ? 1 : 0 ));
+	rp_count.lm_built++;
+	if( r & 2 )
+		rp_count.lm_dlit++;
+	return pg;
+}
+
+/*
+A world face (corners as RP_ChipFaceFixed made them) by option B: the
+texture's pass into the frame, the lightmap's into the second pass's
+buffer. 0: not this face (it goes the lit surface's way).
+*/
+static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st )
+{
+	texture_t *tt;
+	rp_tex_t  *t;
+	int        pg, qx, qy, lo, hi, tw, th;
+	int32_t    ks, kt;
+	int64_t    iw, ih;
+
+	if( rp_face_blend || rp_face_masked || fa->pdecals || ( fa->flags & SURF_CONVEYOR )
+		|| ( fa->texinfo->flags & TEX_WORLD_LUXELS ) || gEngfuncs.Mod_SampleSizeForFace( fa ) != 16
+		|| fa->info->lightmapmins[0] != fa->texturemins[0] || fa->info->lightmapmins[1] != fa->texturemins[1] )
+		return 0;
+	if( rp_lm_n + RP_STATE_WORDS + 1 + (uint32_t)n * RP_VERTEX_WORDS > RP_LM_WORDS )
+	{
+		rp_count.lm_full++;
+		return 0;
+	}
+	tt = R_TextureAnimation( fa );
+	if( !tt || tt->width < 1 || tt->height < 1 )
+		return 0;
+	t = RP_TexPlace( R_GetTexture( tt->gl_texturenum ));
+	if( !t )
+		return 0;
+	pg = RP_LmPlace( fa, &qx, &qy );
+	if( pg < 0 )
+		return 0;
+
+	/* the texture's repeats: s from the face's corner, moved by whole
+	   texture widths to start inside the first (the floats stay small) */
+	tw = tt->width;
+	th = tt->height;
+	ks = ( fa->texturemins[0] % tw + tw ) % tw * 256;
+	kt = ( fa->texturemins[1] % th + th ) % th * 256;
+	iw = ( (int64_t)1 << 24 ) / tw; /* (24.8 texels x 2^24 / w) >> 16: the repeat as 16.16 */
+	ih = ( (int64_t)1 << 24 ) / th;
+
+	if( rp_state != t )
+	{
+		rp_state = t;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE );
+		RP_Put( RP_TSP_WORLD );
+		RP_Put( RP_ISP_ALWAYS );
+		RP_Put( t->tex0 );
+		RP_Put( t->tex1 );
+		RP_Put( RP_TEX2 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_Whole();
+	}
+	if( rp_lm_page != pg )
+	{
+		rp_lm_page = pg;
+		RP_LmPut( RP_GFX_STATE );
+		RP_LmPut( RP_TSP_LMAP );
+		RP_LmPut( RP_ISP_ALWAYS );
+		RP_LmPut( RP_TEX0_PAGE );
+		RP_LmPut( RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+		RP_LmPut( RP_TEX2 );
+		RP_LmPut( RP_CLIP );
+		RP_LmPut( 0 );
+	}
+
+	RP_Put( RP_GFX_STRIP( n ));
+	RP_LmPut( RP_GFX_STRIP( n ));
+	lo = 1;
+	hi = n - 1;
+	for( int k = 0; k < n; k++ )
+	{
+		int c = k == 0 ? 0 : ( k & 1 ) ? lo++ : hi--;
+		/* the corners as they are, not moved out for the cracks as
+		   RP_ChipFaceFixed's: two faces overlapping at a seam would each
+		   multiply its pixels in the second pass (the light twice: a dark
+		   seam); a T-junction's crack shows as GL's (ref_gl's sparkles,
+		   counted by rp_holes) */
+		uint32_t fx = RP_FixBits( cxy[c][0], 4 ), fy = RP_FixBits( cxy[c][1], 4 );
+		/* the texture in repeats (16.16); the lightmap a sample a 16
+		   texels, at the samples' centres, in page texels (24.8) */
+		int32_t  u = (int32_t)(( (int64_t)( st[c][0] + ks ) * iw ) >> 16 );
+		int32_t  v = (int32_t)(( (int64_t)( st[c][1] + kt ) * ih ) >> 16 );
+		int32_t  lu = ( qx << 11 ) + ( st[c][0] >> 4 ) + 128;
+		int32_t  lv = ( qy << 11 ) + ( st[c][1] >> 4 ) + 128;
+
+		RP_Put( fx );
+		RP_Put( fy );
+		RP_Put( zis[c] );
+		RP_Put( zis[c] );
+		RP_Put( 0xFFFFFFFFu );
+		RP_Put( RP_FixBits( u, 16 ));
+		RP_Put( RP_FixBits( v, 16 ));
+		RP_LmPut( fx );
+		RP_LmPut( fy );
+		RP_LmPut( zis[c] );
+		RP_LmPut( zis[c] );
+		RP_LmPut( 0xFFFFFFFFu );
+		RP_LmPut( RP_FixBits( lu, 8 + 9 ));
+		RP_LmPut( RP_FixBits( lv, 8 + 9 ));
+	}
+	RP_Whole();
+	rp_count.faces++;
+	rp_count.fixed++;
+	rp_count.lm_faces++;
+	rp_count.tris += 2 * ( n - 2 );
+	rp_count.verts += 2 * n;
+	return 1;
+}
+
+/*
 The world's tables, made when a map is first drawn: each vertex as 16.16;
 each face corner's s, t (mip 0 texels from the surface's corner, the same
 sums RP_ChipFace's float path makes) as 24.8, by surfedge; each vertex's
@@ -1229,6 +1688,7 @@ static int RP_WorldTables( void )
 		return rp_wc != NULL;
 	rp_wmodel = mod;
 	rp_map_frames = 0;
+	RP_TexReset(); /* a new map's textures (image slots are used again) */
 	free( rp_wc );
 	free( rp_wv_block );
 	rp_wc = NULL;
@@ -1336,6 +1796,8 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	}
 	sx = RP_DivN( sx, n ) * 4;
 	sy = RP_DivN( sy, n ) * 4;
+	if( rp_lm_on && RP_ChipFaceLm( fa, n, zis, cxy, st ))
+		return 1;
 
 	/* the software renderer's mip level for the nearest corner (positive
 	   floats compare as their bits) */
@@ -1657,18 +2119,34 @@ lighting's own colour, where the software renderer kept a grey in 32 steps.
    `serial` the part's (RP_StudioVerts), `zi` 0 when nearer than a unit.
    One 32-byte record, one cache line (FPS work after run 47: the record was
    36 bytes, so every vertex spanned two lines; RP_StudioCmd 6.5% of the
-   play, most of it waiting on them): x and y's float words are made from
-   xy at the corner (RP_FixBits, the same bits RP_ProjectS made). */
+   play, most of it waiting on them).
+   Kit 49 (run 48: RP_StudioCmd 3802 -> 4527 samples, 898 of them on the
+   compare after the record's first load, ~20% of the function): the
+   PXA270's D-cache allocates on reads only, so RP_StudioVertFixed's
+   stores never bring the lines in and every corner's first load is an
+   SDRAM miss (~506 ns, docs/perf.md). ref_soft and ref_gl walk the same
+   kind of transformed-vertex table and leave the miss to the CPU's
+   hardware prefetcher, which the PXA270 has not: here RP_StudioCmd asks
+   for the record RP_MV_AHEAD corners ahead with PLD (the corner's index
+   is known from the command), so the miss overlaps the corners between.
+   The record now holds x and y's float words themselves (made once a
+   vertex, not twice a corner: RP_FixBits was ~11% of RP_StudioCmd) and
+   the view-space point moved to rp_mq, read only by a command with a
+   corner behind the near plane. */
 typedef struct
 {
 	int      serial;
-	uint32_t zi;    /* 1/z's float bits */
+	uint32_t zi;    /* 1/z's float bits, 0 behind the near plane */
+	uint32_t f[2];  /* the TA's x, y float words */
 	int32_t  xy[2]; /* the TA's x, y as 28.4: the culling reads them */
-	int32_t  q[3];  /* in view space, 16.16: the near plane's clip reads it */
-	int32_t  pad;
+	int32_t  pad[2];
 } __attribute__(( aligned( 32 ))) rp_mvert_t;
 
 static rp_mvert_t rp_mv[RP_STUDIO_VERTS];
+/* each vertex in view space, 16.16: the near plane's clip reads it */
+static int32_t    rp_mq[RP_STUDIO_VERTS][3];
+#define RP_MV_AHEAD 4 /* corners: ~300 cycles a miss against ~100 a corner;
+                         the PXA270 keeps four line fills going at once */
 static int        rp_studio_serial = 1;
 
 /* A model's part has new vertices (R_StudioDrawPoints moved them). */
@@ -1701,6 +2179,27 @@ static struct
 	int     flat;
 } rp_flit;
 
+/* A vertex's record from its view-space point. */
+static inline void RP_StudioVertSet( int idx, rp_mvert_t *mv, const int32_t q[3] )
+{
+	mv->serial = rp_studio_serial;
+	rp_mq[idx][0] = q[0];
+	rp_mq[idx][1] = q[1];
+	rp_mq[idx][2] = q[2];
+	if( q[2] < RP_ONE16 )
+		mv->zi = 0;
+	else
+	{
+		uint32_t w[3];
+
+		RP_ProjectS( q, w, mv->xy );
+		mv->f[0] = w[0];
+		mv->f[1] = w[1];
+		mv->zi = w[2];
+	}
+	rp_count.mverts++;
+}
+
 int RP_StudioFixedBegin( int numverts )
 {
 	if( rp_emit_on != 2 || rp_both || !rp_fixed_on || numverts > RP_STUDIO_VERTS )
@@ -1724,23 +2223,13 @@ void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float 
 		rp_bone_join( (const int32_t( * )[3] )rp_view.m, rp_view.o, bm, &rp_fbone[bone] );
 		rp_count.bones++;
 	}
+	/* the model's vertices are read in order and miss (read-allocate,
+	   no hardware prefetch): ask for the ones eight vertices on */
+	__builtin_prefetch( p + 24 );
 	for( int j = 0; j < 3; j++ )
 		a[j] = rp_fixq( p[j], 16 );
 	rp_bone_point( &rp_fbone[bone], a, q );
-	mv->serial = rp_studio_serial;
-	mv->q[0] = q[0];
-	mv->q[1] = q[1];
-	mv->q[2] = q[2];
-	if( q[2] < RP_ONE16 )
-		mv->zi = 0;
-	else
-	{
-		uint32_t w[3];
-
-		RP_ProjectS( q, w, mv->xy );
-		mv->zi = w[2];
-	}
-	rp_count.mverts++;
+	RP_StudioVertSet( idx, mv, q );
 }
 
 /*
@@ -1821,6 +2310,10 @@ void RP_StudioLightFixed( int bone, const float *blight, int flags, const float 
 				for( int j = 0; j < 3; j++ )
 					rp_flight[bone][j] = rp_fixq( blight[j], 28 );
 			}
+			/* the model's normals are read in order and miss as its
+			   vertices do (run 48: ~400 of RP_StudioLightFixed's 1863
+			   samples on these loads): ask for eight normals on */
+			__builtin_prefetch( normal + 24 );
 			for( int j = 0; j < 3; j++ )
 				n[j] = rp_fixq( normal[j], 30 );
 			index = rp_light_index( rp_dot30( n, rp_flight[bone] ), rp_flit.a16, rp_flit.s16 );
@@ -2009,6 +2502,8 @@ int RP_StudioSkin( void )
 	   the format, the alpha test): its own key beside the page's */
 	what = (const uint8_t *)&rp_page[e->pg] + 1 + e->masked + 2 * blend;
 	tsp = RP_TSP_WORLD | RP_TSP_GOURAUD;
+	if( blend != RP_BLEND_OPAQUE && what != rp_state )
+		RP_LmFlush(); /* the lit walls before the blended meshes */
 	if( blend != RP_BLEND_OPAQUE )
 	{
 		/* the factors (bits 31-29 source, 28-26 destination: 4 the
@@ -2168,7 +2663,8 @@ static void RP_StudioClipCmd( int fan, int n, const rp_svert_t *v, uint32_t ( *c
 	for( int i = 0; i < tris; i++ )
 	{
 		int t0 = fan ? 0 : i, t1 = i + 1, t2 = i + 2;
-		int ins = ( cq[t0][2] >= RP_ONE16 ) + ( cq[t1][2] >= RP_ONE16 ) + ( cq[t2][2] >= RP_ONE16 );
+		/* in front: 1/z's word made (0 behind the near plane, both paths) */
+		int ins = ( c[t0][2] != 0 ) + ( c[t1][2] != 0 ) + ( c[t2][2] != 0 );
 
 		if( ins == 0 )
 			state[i] = RP_TRI_GONE;
@@ -2233,7 +2729,7 @@ static void RP_StudioClipCmd( int fan, int n, const rp_svert_t *v, uint32_t ( *c
 			int      pn = 0, slot = n, f;
 
 			for( int j = 0; j < 3; j++ )
-				in[j] = cq[t[j]][2] >= RP_ONE16;
+				in[j] = c[t[j]][2] != 0;
 			for( int j = 0; j < 3; j++ )
 			{
 				int a = t[j], b = t[( j + 1 ) % 3], bin = in[( j + 1 ) % 3];
@@ -2300,7 +2796,13 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 	smax = ( e->w << 5 ) - 1;
 	tmax = ( e->h << 5 ) - 1;
 	if( rp_fixed_on )
+	{
 		RP_ViewFixed();
+		/* the first corners' records asked for at once (PLD never
+		   faults; an index past the table is masked into it) */
+		for( int k = 0; k < RP_MV_AHEAD && k < n; k++ )
+			__builtin_prefetch( &rp_mv[v[k].idx & ( RP_STUDIO_VERTS - 1 )] );
+	}
 
 	for( int k = 0; k < n; k++ )
 	{
@@ -2311,39 +2813,25 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			/* each vertex of the model's part worked once (step 4b) */
 			rp_mvert_t *mv = &rp_mv[v[k].idx];
 
+			if( k + RP_MV_AHEAD < n )
+				__builtin_prefetch( &rp_mv[v[k + RP_MV_AHEAD].idx & ( RP_STUDIO_VERTS - 1 )] );
 			if( mv->serial != rp_studio_serial )
 			{
 				int32_t p[3], q[3];
 
-				mv->serial = rp_studio_serial;
 				for( int j = 0; j < 3; j++ )
 					p[j] = RP_Fix16( v[k].xyz[j] );
 				RP_ViewPoint( (const int32_t( * )[3] )rp_view.m, rp_view.o, p, q );
-				mv->q[0] = q[0];
-				mv->q[1] = q[1];
-				mv->q[2] = q[2];
-				if( q[2] < RP_ONE16 )
-					mv->zi = 0;
-				else
-				{
-					uint32_t w[3];
-
-					RP_ProjectS( q, w, mv->xy );
-					mv->zi = w[2];
-				}
-				rp_count.mverts++;
+				RP_StudioVertSet( v[k].idx, mv, q );
 			}
 			else
 				rp_count.mreuse++;
 			cxy[k][0] = mv->xy[0];
 			cxy[k][1] = mv->xy[1];
-			cq[k][0] = mv->q[0];
-			cq[k][1] = mv->q[1];
-			cq[k][2] = mv->q[2];
 			if( !mv->zi )
 				behind++;
-			c[k][0] = RP_FixBits( mv->xy[0], 4 );
-			c[k][1] = RP_FixBits( mv->xy[1], 4 );
+			c[k][0] = mv->f[0];
+			c[k][1] = mv->f[1];
 			c[k][2] = mv->zi;
 			c[k][3] = mv->zi;
 		}
@@ -2402,7 +2890,19 @@ texels:
 		/* each triangle sorted (R299's near plane, the culling): the ones
 		   kept in runs, a triangle across the near plane cut */
 		if( behind )
+		{
+			/* the cut reads the view-space points: the fixed path's
+			   from rp_mq, only now (the float path made its own) */
 			rp_count.cmds_near++;
+			if( rp_fixed_on )
+				for( int k = 0; k < n; k++ )
+					if(( unsigned )v[k].idx < RP_STUDIO_VERTS )
+					{
+						cq[k][0] = rp_mq[v[k].idx][0];
+						cq[k][1] = rp_mq[v[k].idx][1];
+						cq[k][2] = rp_mq[v[k].idx][2];
+					}
+		}
 		RP_StudioClipCmd( fan, n, v, c, (const int32_t( * )[3] )cq, (const int32_t( * )[2] )cst, cxy );
 		return;
 	}
@@ -2556,6 +3056,7 @@ void RP_EmitSubmit( void )
 {
 	if( rp_emit_on != 2 )
 		return;
+	RP_LmFlush();
 	if( rp_gfx_frame( rp_buf, rp_good ) != 0 )
 		rp_count.refused++;
 	if( rp_both )
@@ -2872,6 +3373,7 @@ static void RP_2DState( int pg, int fmt )
 	what = (const uint8_t *)&rp_page[pg] + 32 + fmt * 4 + blend;
 	if( what == rp_state )
 		return;
+	RP_LmFlush(); /* the lit walls before the 2D layer */
 	switch( blend )
 	{
 	case 1: tsp |= 4u << 29 | 5u << 26 | 1u << 13; break; /* source alpha, one minus it */

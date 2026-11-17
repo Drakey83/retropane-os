@@ -726,10 +726,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..c5f7e4a 100644
+index 1a7efd6..a034ff3 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,48 @@ typedef struct
+@@ -992,6 +992,49 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -748,6 +748,7 @@ index 1a7efd6..c5f7e4a 100644
 +void RP_EmitSurfBuilt( qboolean relit );
 +void RP_EmitSubmit( void );
 +surfcache_t *RP_SurfScratch( int width, int size );
++int RP_SurfLightmap( msurface_t *surf, unsigned short *out, int room, int *pw, int *ph );
 +texture_t *R_TextureAnimation( msurface_t *s );
 +// ref_rp step 4a: a model's stored command, a corner a vertex
 +#define RP_STUDIO_CMD 1024
@@ -1120,7 +1121,7 @@ index 03790d8..733b3a8 100644
  		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
  		{
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
-index e47e115..b609d29 100644
+index e47e115..691dba3 100644
 --- a/ref/soft/r_surf.c
 +++ b/ref/soft/r_surf.c
 @@ -133,14 +133,24 @@ static void R_AddDynamicLights( const msurface_t *surf )
@@ -1150,7 +1151,76 @@ index e47e115..b609d29 100644
  			{
  				int   sd = ( sl - sample_size * s ) * sample_frac;
  				float dist;
-@@ -236,7 +246,7 @@ R_TextureAnimation
+@@ -229,6 +239,68 @@ static void R_BuildLightMap( void )
+ }
+ 
+ 
++/*
++=================
++RP_SurfLightmap
++
++ref_rp (R297 option B, ADR-0039): the face's lightmap as RGB565, one texel
++a light sample, for the 2700G to multiply into the texture in a second
++pass. R_BuildLightMap sums the samples' three channels into one grey (the
++software renderer's 32 light levels); ref_gl keeps the colours. Here each
++channel goes through R_BuildLightMap's own scale and gamma (as if all
++three were that channel), so a grey light gives ref_soft's level exactly
++and a coloured one the GL look. Dynamic lights add their grey as
++R_AddDynamicLights does. 0 if the face's samples don't fit `room`; else
++1, | 2 when a dynamic light was in it.
++=================
++*/
++int RP_SurfLightmap( msurface_t *surf, unsigned short *out, int room, int *pw, int *ph )
++{
++	const mextrasurf_t *info = surf->info;
++	const int          sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
++	const int          smax = ( info->lightextents[0] / sample_size ) + 1;
++	const int          tmax = ( info->lightextents[1] / sample_size ) + 1;
++	const int          size = smax * tmax;
++	const int          dlit = surf->dlightframe == tr.framecount;
++	uint               scale[MAXLIGHTMAPS];
++	int                maps;
++
++	if( size > room || size > (int)ARRAYSIZE( blocklights ) || FBitSet( surf->flags, SURF_CONVEYOR ))
++		return 0;
++	*pw = smax;
++	*ph = tmax;
++	memset( blocklights, 0, sizeof( uint ) * size );
++	if( dlit )
++		R_AddDynamicLights( surf );
++	for( maps = 0; maps < MAXLIGHTMAPS && surf->samples && surf->styles[maps] != 255; maps++ )
++		scale[maps] = g_lightstylevalue[surf->styles[maps]] * 3;
++	R_UpdateSurfaceCachedLight( surf );
++	for( int i = 0; i < size; i++ )
++	{
++		uint c[3];
++		int  t[3];
++
++		c[0] = c[1] = c[2] = blocklights[i];
++		for( int map = 0; map < maps; map++ )
++		{
++			const color24 *lm = &surf->samples[map * size + i];
++
++			c[0] += lm->r * scale[map];
++			c[1] += lm->g * scale[map];
++			c[2] += lm->b * scale[map];
++		}
++		for( int k = 0; k < 3; k++ )
++		{
++			int v = c[k] < 65280 ? (int)( LightToTexGamma( c[k] >> 6 ) << 6 ) : (int)c[k];
++
++			v = bound( 0, v, 65535 * 3 );
++			t[k] = v / 2048 / 3; /* 0-31, R_BuildLightMap's level */
++		}
++		out[i] = (unsigned short)( t[0] << 11 | ( t[1] << 1 | t[1] >> 4 ) << 5 | t[2] );
++	}
++	return dlit ? 3 : 1;
++}
++
+ /*
+ ===============
+ R_TextureAnimation
+@@ -236,7 +308,7 @@ R_TextureAnimation
  Returns the proper texture for a given time and surface
  ===============
  */
@@ -1159,7 +1229,7 @@ index e47e115..b609d29 100644
  {
  	texture_t *base = s->texinfo->texture;
  	int       reletive;
-@@ -782,6 +792,13 @@ void R_InitCaches( void )
+@@ -782,6 +854,13 @@ void R_InitCaches( void )
  			size += ( pix - 64000 ) * 3;
  	}
  
@@ -1173,7 +1243,7 @@ index e47e115..b609d29 100644
  	// round up to page size
  	size = ( size + 8191 ) & ~8191;
  
-@@ -1137,9 +1154,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
+@@ -1137,9 +1216,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
  //
  // allocate memory if needed
  //
