@@ -42,6 +42,8 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     files: Files<'a, D, N>,
     console: C,
     heap: Break,
+    /// The most MiB of heap said so far (the large blocks' lines: new highs only).
+    heap_peak: usize,
     /// Reads the OS timer's counter (3.25 MHz).
     ticks: fn() -> u32,
     clock: Micros,
@@ -159,6 +161,7 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             files,
             console,
             heap,
+            heap_peak: 0,
             ticks,
             clock: Micros::starting_at(ticks()),
             sound: None,
@@ -386,6 +389,32 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
             Some(_) => {}
         }
         got
+    }
+
+    fn big_alloc(&mut self, size: usize) -> Option<usize> {
+        let got = self.heap.big_alloc(size);
+        if got.is_some() {
+            let now = (self.clock.at((self.ticks)()) / 1_000) as u32;
+            let used = self.heap.used();
+            if used >> 20 > self.heap_peak {
+                self.heap_peak = used >> 20;
+                let _ = writeln!(
+                    Line(&mut self.console),
+                    "heap: {} MiB in use at {now} ms (large blocks {} KiB free in their holes)",
+                    used >> 20,
+                    self.heap.big_free_bytes() / 1024
+                );
+            }
+        }
+        got
+    }
+
+    fn big_free(&mut self, at: usize) -> bool {
+        self.heap.big_free(at)
+    }
+
+    fn big_size(&mut self, at: usize) -> usize {
+        self.heap.big_size(at)
     }
 
     fn stat(&mut self, path: &[u8]) -> Result<FileStat, Errno> {

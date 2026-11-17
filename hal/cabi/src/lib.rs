@@ -309,6 +309,22 @@ pub trait Sys {
     /// Moves the end of the C heap by `by` bytes (`sbrk`): the old end, or
     /// `None` when the room is used up. [`Break`] does this.
     fn grow(&mut self, by: isize) -> Option<usize>;
+    /// A large block from the heap's top region (`rp_big_alloc`,
+    /// [`Break::big_alloc`]): its address, or `None` (the caller uses
+    /// `malloc`). None by default.
+    fn big_alloc(&mut self, _size: usize) -> Option<usize> {
+        None
+    }
+    /// Frees a block [`Self::big_alloc`] gave (`rp_big_free`); false if
+    /// `at` is not one.
+    fn big_free(&mut self, _at: usize) -> bool {
+        false
+    }
+    /// The size of the large block at `at`, 0 if it is not one
+    /// (`rp_big_size`).
+    fn big_size(&mut self, _at: usize) -> usize {
+        0
+    }
     /// Microseconds since the program's system was started; never goes
     /// back. (The date is not known to the port layer yet: `time()` counts
     /// from 1970 as if the program had started then.)
@@ -513,42 +529,187 @@ pub trait Sys {
     fn end(&mut self) {}
 }
 
-/// The C heap's room: one run of RAM whose used part grows from its start
-/// (`sbrk`'s model; picolibc's `malloc` asks for more as it needs it).
+/// Large blocks the heap's top region keeps track of at once
+/// ([`Break::big_alloc`]); past them a large request goes to `malloc`.
+pub const BIG_BLOCKS: usize = 256;
+
+/// The alignment and granule of a large block: a cache line.
+const BIG_ALIGN: usize = 32;
+
+/// One large block of the top region: where, how long, in use or free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Big {
+    at: usize,
+    size: usize,
+    used: bool,
+}
+
+/// The C heap's room: one run of RAM whose used part grows from its start
+/// (`sbrk`'s model; picolibc's `malloc` asks for more as it needs it), and,
+/// from its end down, a region for large blocks.
+///
+/// R310 (Half-Life's third map change out of memory, 2026-11-17): the
+/// engine's pools ask for map-sized blocks (2.7 MB of surfaces) and free
+/// them at the next map; under one first-fit `malloc` the small blocks that
+/// live on (the server's, the sound's) settle in those holes, so the C heap
+/// held 28 MiB with 7 MiB free in 564 holes and no hole for the next map's
+/// block. dlmalloc and glibc keep large requests apart (`mmap` past a
+/// threshold, given back whole on `free`); the X51v's port layer has no
+/// MMU-backed `mmap`, so the large blocks get their own region at the
+/// heap's top, growing down to meet `sbrk`'s break: best fit over an
+/// address-ordered table, neighbours joined on free, and a free run at the
+/// region's bottom given back to the break. Small blocks can never split a
+/// large one's hole.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Break {
     start: usize,
     end: usize,
     at: usize,
+    /// The large blocks' region is `low..end`.
+    low: usize,
+    big: [Big; BIG_BLOCKS],
+    /// Entries of `big` in use, by address from `low` up.
+    count: usize,
 }
 
 impl Break {
     /// A heap of the addresses `start..end`, none of it used.
     #[must_use]
     pub const fn new(start: usize, end: usize) -> Self {
+        let end = if end < start { start } else { end };
         Self {
             start,
-            end: if end < start { start } else { end },
+            end,
             at: start,
+            low: end,
+            big: [Big {
+                at: 0,
+                size: 0,
+                used: false,
+            }; BIG_BLOCKS],
+            count: 0,
         }
     }
 
     /// Moves the end of the used part by `by` and returns where it was;
-    /// `None`, and nothing moved, if that leaves the room at either end.
+    /// `None`, and nothing moved, if that leaves the room at either end
+    /// (the top end is where the large blocks' region starts).
     pub fn grow(&mut self, by: isize) -> Option<usize> {
         let old = self.at;
         let new = old.checked_add_signed(by)?;
-        if new < self.start || new > self.end {
+        if new < self.start || new > self.low {
             return None;
         }
         self.at = new;
         Some(old)
     }
 
-    /// Bytes in use.
+    /// Bytes in use: the break's part and the large blocks' region.
     #[must_use]
     pub const fn used(&self) -> usize {
-        self.at - self.start
+        (self.at - self.start) + (self.end - self.low)
+    }
+
+    /// A large block of at least `size` bytes, 32-byte aligned, from the
+    /// top region; `None` if there is no room or the table is full (the
+    /// caller then asks `malloc`).
+    pub fn big_alloc(&mut self, size: usize) -> Option<usize> {
+        let size = size.checked_add(BIG_ALIGN - 1)? & !(BIG_ALIGN - 1);
+        if size == 0 {
+            return None;
+        }
+        // Best fit among the free blocks.
+        let best = (0..self.count)
+            .filter(|&i| !self.big[i].used && self.big[i].size >= size)
+            .min_by_key(|&i| self.big[i].size);
+        if let Some(i) = best {
+            let b = self.big[i];
+            if b.size == size {
+                self.big[i].used = true;
+                return Some(b.at);
+            }
+            // Split: the block at the free run's top, the rest stays free
+            // below it (towards the region's bottom, which can go back).
+            if self.count == BIG_BLOCKS {
+                return None;
+            }
+            self.big.copy_within(i + 1..self.count, i + 2);
+            self.count += 1;
+            self.big[i].size = b.size - size;
+            let at = b.at + b.size - size;
+            self.big[i + 1] = Big {
+                at,
+                size,
+                used: true,
+            };
+            return Some(at);
+        }
+        // A new block below the region, if the break leaves room.
+        if self.count == BIG_BLOCKS {
+            return None;
+        }
+        let at = self.low.checked_sub(size)? & !(BIG_ALIGN - 1);
+        if at < self.at {
+            return None;
+        }
+        let gap = self.low - at;
+        self.big.copy_within(0..self.count, 1);
+        self.count += 1;
+        self.big[0] = Big {
+            at,
+            size: gap,
+            used: true,
+        };
+        self.low = at;
+        Some(at)
+    }
+
+    /// The size of the large block at `at` (0 if `at` starts none in use).
+    #[must_use]
+    pub fn big_size(&self, at: usize) -> usize {
+        self.find(at).map_or(0, |i| self.big[i].size)
+    }
+
+    /// Frees the large block at `at`; false if `at` starts none in use.
+    pub fn big_free(&mut self, at: usize) -> bool {
+        let Some(mut i) = self.find(at) else {
+            return false;
+        };
+        self.big[i].used = false;
+        // Joined with a free neighbour above, then below.
+        if i + 1 < self.count && !self.big[i + 1].used {
+            self.big[i].size += self.big[i + 1].size;
+            self.big.copy_within(i + 2..self.count, i + 1);
+            self.count -= 1;
+        }
+        if i > 0 && !self.big[i - 1].used {
+            self.big[i - 1].size += self.big[i].size;
+            self.big.copy_within(i + 1..self.count, i);
+            self.count -= 1;
+            i -= 1;
+        }
+        // A free run at the region's bottom goes back to the break.
+        if i == 0 {
+            self.low += self.big[0].size;
+            self.big.copy_within(1..self.count, 0);
+            self.count -= 1;
+        }
+        true
+    }
+
+    /// Bytes free inside the large blocks' region (its holes).
+    #[must_use]
+    pub fn big_free_bytes(&self) -> usize {
+        self.big[..self.count]
+            .iter()
+            .filter(|b| !b.used)
+            .map(|b| b.size)
+            .sum()
+    }
+
+    fn find(&self, at: usize) -> Option<usize> {
+        let i = self.big[..self.count].binary_search_by_key(&at, |b| b.at).ok()?;
+        self.big[i].used.then_some(i)
     }
 }
 
@@ -895,6 +1056,25 @@ mod face {
             Ok(old) => old as *mut c_void,
             Err(e) => fail(e) as usize as *mut c_void,
         }
+    }
+
+    /// `rp_big_alloc` (`ports/include/retropane.h`, R310): a large block
+    /// from the heap's top region, or NULL (then `malloc`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_big_alloc(size: usize) -> *mut c_void {
+        with(|s| Ok(s.big_alloc(size))).ok().flatten().map_or(core::ptr::null_mut(), |a| a as *mut c_void)
+    }
+
+    /// `rp_big_free`: 1 if `p` was a large block and is free now, else 0.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_big_free(p: *mut c_void) -> c_int {
+        c_int::from(with(|s| Ok(s.big_free(p.addr()))).unwrap_or(false))
+    }
+
+    /// `rp_big_size`: the size of the large block at `p`, 0 if it is not one.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_big_size(p: *const c_void) -> usize {
+        with(|s| Ok(s.big_size(p.addr()))).unwrap_or(0)
     }
 
     /// The port layer's clock (`ports/include/retropane.h`): microseconds
@@ -1423,6 +1603,77 @@ mod face {
 
 #[cfg(target_os = "none")]
 pub use face::{ARGS, run, run_module, runner_table, start, with_system};
+
+#[cfg(test)]
+mod big_tests {
+    use super::{BIG_BLOCKS, Break};
+
+    #[test]
+    fn large_blocks_come_from_the_top_and_the_break_cannot_pass_them() {
+        let mut h = Break::new(0x1000, 0x11000);
+        let a = h.big_alloc(0x4000).unwrap();
+        assert_eq!(a, 0x11000 - 0x4000);
+        assert_eq!(h.big_size(a), 0x4000);
+        assert_eq!(h.used(), 0x4000);
+        // the break may grow to the region and not past it
+        assert!(h.grow(0xC000).is_some());
+        assert!(h.grow(1).is_none());
+        // and the region may not grow down past the break
+        assert!(h.big_alloc(32).is_none());
+    }
+
+    #[test]
+    fn a_freed_block_joins_its_neighbours_and_the_bottom_goes_back() {
+        let mut h = Break::new(0, 0x10000);
+        let a = h.big_alloc(0x1000).unwrap();
+        let b = h.big_alloc(0x1000).unwrap();
+        let c = h.big_alloc(0x1000).unwrap();
+        assert!(c < b && b < a);
+        assert!(h.big_free(b));
+        assert_eq!(h.big_free_bytes(), 0x1000);
+        assert!(!h.big_free(b), "a block freed twice is refused");
+        assert!(h.big_free(a));
+        // a and b joined into one hole of 0x2000 above c
+        assert_eq!(h.big_free_bytes(), 0x2000);
+        let d = h.big_alloc(0x2000).unwrap();
+        assert_eq!(d, b, "the joined hole takes a block of both sizes");
+        assert!(h.big_free(d));
+        assert!(h.big_free(c));
+        // all free: the whole region back to the break
+        assert_eq!(h.used(), 0);
+        assert_eq!(h.big_free_bytes(), 0);
+        assert!(h.grow(0x10000).is_some());
+    }
+
+    #[test]
+    fn best_fit_splits_the_smallest_hole_and_keeps_alignment() {
+        let mut h = Break::new(0, 0x100000);
+        let big = h.big_alloc(0x8000).unwrap();
+        let _keep = h.big_alloc(0x100).unwrap();
+        let small = h.big_alloc(0x1000).unwrap();
+        let _keep2 = h.big_alloc(0x100).unwrap();
+        h.big_free(big);
+        h.big_free(small);
+        let x = h.big_alloc(0x800).unwrap();
+        assert!(x >= small && x < small + 0x1000, "the smaller hole was used");
+        assert_eq!(x % 32, 0);
+        let one = h.big_alloc(1).unwrap();
+        assert_eq!(h.big_size(one), 32);
+    }
+
+    #[test]
+    fn a_full_table_or_a_bad_address_is_refused_not_a_crash() {
+        let mut h = Break::new(0, 1 << 24);
+        let mut got = 0;
+        while h.big_alloc(64).is_some() {
+            got += 1;
+        }
+        assert_eq!(got, BIG_BLOCKS);
+        assert!(!h.big_free(12345));
+        assert_eq!(h.big_size(12345), 0);
+        assert!(h.big_alloc(usize::MAX).is_none());
+    }
+}
 
 #[cfg(test)]
 mod tests {

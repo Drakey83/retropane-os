@@ -197,6 +197,14 @@ struct rp_gfx_part {
     size_t count;
 };
 int rp_gfx_frame_parts(const struct rp_gfx_part *parts, size_t n);
+
+/* R310: large blocks from the heap's top region, apart from malloc's (a
+   map's multi-megabyte blocks never share holes with small ones). NULL:
+   no room, use malloc. rp_big_free: 1 if p was one (now free), else 0.
+   rp_big_size: its size, 0 if p is not one. */
+void  *rp_big_alloc(size_t size);
+int    rp_big_free(void *p);
+size_t rp_big_size(const void *p);
 /* Waits until the last frame is drawn (before texture memory it may read
  * is written over): 0, or -1 with errno. */
 int rp_gfx_wait(void);

@@ -50,6 +50,7 @@ particles, the sky, water and 2D are step 4's later sub-steps.
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <retropane.h>
 #include "r_local.h"
 #include "rp_fixed.h"
@@ -4108,6 +4109,15 @@ void RP_EmitNewMap( void )
 		RP_WorldTables( );
 	rp_map_frames = 0;
 	fprintf( stderr, "rp-emit: new map: per-map state reset, tables in %u us\n", (uint32_t)( rp_time_us( ) - t0 ));
+	{
+		/* R310 (a map change out of memory after three): the C heap at each
+		   new map, used and free in holes, to tell a leak (used grows) from
+		   holes too small for a map's large blocks (free grows) */
+		struct mallinfo mi = mallinfo( );
+
+		fprintf( stderr, "rp-emit: the C heap at the new map: %u KiB used, %u KiB free in %u holes, %u KiB from the system\n",
+			(unsigned)( mi.uordblks >> 10 ), (unsigned)( mi.fordblks >> 10 ), (unsigned)mi.ordblks, (unsigned)( mi.arena >> 10 ));
+	}
 }
 
 /*
