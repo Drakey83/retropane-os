@@ -22,6 +22,16 @@ note in docs/design/ref-rp.md).
 
 #include <stdint.h>
 
+/* The same in ARM assembly (kit 65, hal/mem/src/float_arm.rs), linked into
+every module with the float routines: what DotProduct calls. The C below is
+its reference (its own proof on the PC); the runner's -rpfloat check
+compares the assembly against the compiler's generic routines. */
+float rp_fdot3_asm( const float *a, const float *b );
+
+/* A float[3] . float[3] by the assembly; anything else C's expression. */
+#define RP_DOT_C( x, y ) ((x)[0]*(y)[0]+(x)[1]*(y)[1]+(x)[2]*(y)[2])
+#define RP_DOT( x, y ) _Generic( +(x)[0], 	float: _Generic( +(y)[0], 		float: rp_fdot3_asm( (const float *)(x), (const float *)(y) ), 		default: RP_DOT_C( x, y )), 	default: RP_DOT_C( x, y ))
+
 /* An unpacked float: zero (e = 0), or m (bit 23 set) x 2^(e - 150). */
 typedef struct
 {

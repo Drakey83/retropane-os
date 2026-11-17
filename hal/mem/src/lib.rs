@@ -29,6 +29,7 @@ pub mod asm {
         fn rp_fsub_asm(a: u32, b: u32) -> u32;
         fn rp_fmul_asm(a: u32, b: u32) -> u32;
         fn rp_fdiv_asm(a: u32, b: u32) -> u32;
+        fn rp_fdot3_asm(a: *const u32, b: *const u32) -> u32;
         fn rp_udiv_asm(n: u32, d: u32) -> u64;
         fn rp_idiv_asm(n: i32, d: i32) -> u64;
     }
@@ -79,6 +80,16 @@ pub mod asm {
     pub fn div(a: u32, b: u32) -> u32 {
         // SAFETY: as `add`; it reads `RP_FLOAT_RECIP`, a static table.
         unsafe { rp_fdiv_asm(a, b) }
+    }
+
+    /// C's `(a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]`, bit for bit, in
+    /// one call (R316: the game modules' `DotProduct`).
+    #[must_use]
+    pub fn dot3(a: &[u32; 3], b: &[u32; 3]) -> u32 {
+        // SAFETY: the routine reads the three words at r0 and at r1 (both
+        // borrowed arrays, aligned) and writes r0, as the AAPCS says; it
+        // touches no other memory but its own stack.
+        unsafe { rp_fdot3_asm(a.as_ptr(), b.as_ptr()) }
     }
 
     /// The rare cases of `rp_fdiv_asm` (a subnormal, an infinity, a NaN,

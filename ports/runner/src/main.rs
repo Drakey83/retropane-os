@@ -132,6 +132,10 @@ mod image {
     /// (`rp_hal_mem::float`, what the modules link), on numbers of a
     /// game's range, every result compared (R282).
     const FLOAT_WORD: &[u8] = b"-rpfloat";
+    /// With [`FLOAT_WORD`], how many times 2^20 vectors of each kind the
+    /// fused dot product's check takes (R316: the emulator's long proof;
+    /// one when not said).
+    const DOT_WORD: &[u8] = b"-rpdot";
     /// A test run's word for write-allocate on the game modules' memory
     /// (R306 item 2): [`WALLOC_FROM`]..[`WALLOC_TO`], the server's,
     /// client's and engine's code, data and tables (kit 53's ELFs: the
@@ -694,6 +698,148 @@ mod image {
                     "float: {name}: the first that differs: {x:#010x}, {y:#010x} gave {got:#010x}, the generic {want:#010x}"
                 );
             }
+        }
+    }
+
+    /// The fused dot product (`rp_hal_mem::asm::dot3`, R316) against C's
+    /// expression made of the compiler's generic routines, on `rounds`
+    /// times 2^20 vectors of each of six kinds, every result compared; and
+    /// timed against the generic routines' five calls and the assembly
+    /// routines' five calls. Said in the run's log.
+    fn dot_bench(rounds: u32) {
+        panel::note(b"Checking the fused|dot product against|the generic floats.");
+        let mut seed = 0x6A09_E667_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let generic = |a: &[u32; 3], b: &[u32; 3]| {
+            generic_add(
+                generic_add(generic_mul(a[0], b[0]), generic_mul(a[1], b[1])),
+                generic_mul(a[2], b[2]),
+            )
+        };
+        let calls = |a: &[u32; 3], b: &[u32; 3]| {
+            use rp_hal_mem::asm::{add, mul};
+            add(add(mul(a[0], b[0]), mul(a[1], b[1])), mul(a[2], b[2]))
+        };
+        let nan = |v: u32| v & 0x7FFF_FFFF > 0x7F80_0000;
+        // A game's range (1e-5 to 1e4 or so, both signs).
+        let game = |r: u32, e: u32| (r & 0x807F_FFFF) | ((110 + e % 31) << 23);
+        // Kinds: 0 the game's range; 1 the same with zeros (axial
+        // vectors); 2 the second product near minus the first and the third
+        // near minus their sum (cancellations, exact zeros); 3 any normal
+        // exponent (overflows and underflows on the way); 4 any bits; 5
+        // the edges in any order and sign.
+        let mut checked = 0u64;
+        let mut differ = 0u64;
+        let mut first = None;
+        for kind in 0..6u32 {
+            for _ in 0..rounds.saturating_mul(1 << 20) {
+                let mut a = [0u32; 3];
+                let mut b = [0u32; 3];
+                for i in 0..3 {
+                    let (x, y) = match kind {
+                        0 | 2 => (game(next(), next()), game(next(), next())),
+                        1 => {
+                            let z = next();
+                            let x = if z & 3 == 0 {
+                                z & 0x8000_0000
+                            } else {
+                                game(next(), next())
+                            };
+                            let y = if z & 12 == 0 {
+                                (z << 1) & 0x8000_0000
+                            } else {
+                                game(next(), next())
+                            };
+                            (x, y)
+                        }
+                        3 => (
+                            (next() & 0x807F_FFFF) | ((1 + next() % 254) << 23),
+                            (next() & 0x807F_FFFF) | ((1 + next() % 254) << 23),
+                        ),
+                        4 => (next(), next()),
+                        _ => (
+                            FLOAT_EDGES[(next() % 20) as usize] | (next() & 0x8000_0000),
+                            FLOAT_EDGES[(next() % 20) as usize] | (next() & 0x8000_0000),
+                        ),
+                    };
+                    a[i] = x;
+                    b[i] = y;
+                }
+                if kind == 2 {
+                    // b[1] = -(a0 b0) / a1, a few low bits off; then b[2]
+                    // likewise against the first two's sum.
+                    let wobble = |v: u32, r: u32| v ^ (r & 0xF);
+                    let p0 = generic_mul(a[0], b[0]);
+                    b[1] = wobble(generic_div(p0 ^ 0x8000_0000, a[1]), next());
+                    let s = generic_add(p0, generic_mul(a[1], b[1]));
+                    if s & 0x7FFF_FFFF != 0 {
+                        b[2] = wobble(generic_div(s ^ 0x8000_0000, a[2]), next() >> 8);
+                    }
+                }
+                let want = generic(&a, &b);
+                for got in [rp_hal_mem::asm::dot3(&a, &b), calls(&a, &b)] {
+                    checked += 1;
+                    if got != want && !(nan(got) && nan(want)) {
+                        differ += 1;
+                        first.get_or_insert((a, b, got, want));
+                    }
+                }
+            }
+        }
+        // Timed on a game's vectors, a quarter of their parts zero.
+        let mut vecs = [([0u32; 3], [0u32; 3]); FLOAT_PAIRS];
+        for (a, b) in &mut vecs {
+            for i in 0..3 {
+                let z = next();
+                a[i] = if z & 7 == 0 { 0 } else { game(next(), next()) };
+                b[i] = if z & 0x38 == 0 {
+                    0
+                } else {
+                    game(next(), next())
+                };
+            }
+        }
+        rt::cycle_counter_start();
+        let time = |f: &dyn Fn(&[u32; 3], &[u32; 3]) -> u32| {
+            (0..5)
+                .map(|_| {
+                    let t = rt::cycles();
+                    let mut sink = 0u32;
+                    for (a, b) in &vecs {
+                        sink ^= f(core::hint::black_box(a), core::hint::black_box(b));
+                    }
+                    core::hint::black_box(sink);
+                    rt::cycles().wrapping_sub(t)
+                })
+                .min()
+                .unwrap_or(0)
+                * 10
+                / FLOAT_PAIRS as u32
+        };
+        let base = time(&|a, b| a[0] ^ b[2]);
+        let g = time(&generic).saturating_sub(base);
+        let c = time(&calls).saturating_sub(base);
+        let d = time(&|a, b| rp_hal_mem::asm::dot3(a, b)).saturating_sub(base);
+        let _ = writeln!(
+            Out,
+            "float: dot: the generic five calls {}.{} cycles, ours five calls {}.{}, ours fused {}.{}; {checked} results compared, {differ} differ",
+            g / 10,
+            g % 10,
+            c / 10,
+            c % 10,
+            d / 10,
+            d % 10
+        );
+        if let Some((a, b, got, want)) = first {
+            let _ = writeln!(
+                Out,
+                "float: dot: the first that differs: {a:08x?} . {b:08x?} gave {got:#010x}, the generic {want:#010x}"
+            );
         }
     }
 
@@ -1338,6 +1484,7 @@ mod image {
         );
         if args[..arg_count].iter().any(|a| a.to_bytes() == FLOAT_WORD) {
             float_bench();
+            dot_bench(seconds_after(&args[..arg_count], DOT_WORD).unwrap_or(1));
             div_bench();
         }
         if args[..arg_count].iter().any(|a| a.to_bytes() == WALLOC_WORD) {

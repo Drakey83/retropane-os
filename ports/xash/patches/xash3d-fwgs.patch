@@ -923,10 +923,52 @@ index 985e438..b79e8b5 100644
  	Cvar_RegisterVariable( &sv_nat );
  	Cvar_RegisterVariable( &violence_ablood );
 diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
-index bfd679b..9ae1adf 100644
+index bfd679b..fe6bde9 100644
 --- a/engine/server/sv_phys.c
 +++ b/engine/server/sv_phys.c
-@@ -1791,6 +1791,18 @@ void SV_Physics( void )
+@@ -1754,20 +1754,38 @@ static void SV_Physics_Entity( edict_t *ent )
+ static void SV_RunLightStyles( void )
+ {
+ 	// run lightstyles animation
++	/*
++	RetroPane (kit 65, run 62): a style with no pattern never has its clock
++	read (sv_client.c and sv_save.c send and save only styles with a
++	pattern, SV_SetLightStyle sets the clock anew with one), so its clock
++	is not advanced; time * 10 is made only where a letter is picked; the
++	records' lines (1,296 bytes each, a miss each) are asked for four
++	styles ahead. The same values and the same clocks for every style with
++	a pattern.
++	*/
+ 	for( int i = 0; i < MAX_LIGHTSTYLES; i++ )
+ 	{
+ 		lightstyle_t *ls = &sv.lightstyles[i];
+ 		int ofs;
+ 
+-		ls->time += sv.frametime;
+-		ofs = (ls->time * 10);
++		if( i + 4 < MAX_LIGHTSTYLES )
++			__builtin_prefetch( &sv.lightstyles[i + 4].length );
+ 
+ 		if( ls->length == 0 )
++		{
+ 			ls->value = 1.0f; // disable this light
+-		else if( ls->length == 1 )
++			continue;
++		}
++
++		ls->time += sv.frametime;
++
++		if( ls->length == 1 )
+ 			ls->value = ls->map[0] / 12.0f;
+ 		else
++		{
++			ofs = (ls->time * 10);
+ 			ls->value = ls->map[ofs % ls->length] / 12.0f;
++		}
+ 	}
+ }
+ 
+@@ -1791,6 +1809,18 @@ void SV_Physics( void )
  	{
  		edict_t *ent = SV_EdictNum( i );
  
@@ -1052,6 +1094,25 @@ index b490cfa..890f096 100644
  	if( chdir( path ) < 0 )
  	{
  		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));
+diff --git a/public/xash3d_mathlib.h b/public/xash3d_mathlib.h
+index afbc183..e509d67 100644
+--- a/public/xash3d_mathlib.h
++++ b/public/xash3d_mathlib.h
+@@ -91,7 +91,14 @@ CONSTANTS AND HELPER MACROS
+ #define ALIGN( x, a )   ((( x ) + (( size_t )( a ) - 1 )) & ~(( size_t )( a ) - 1 ))
+ 
+ #define VectorIsNAN(v) (IS_NAN(v[0]) || IS_NAN(v[1]) || IS_NAN(v[2]))
++#if defined( __retropane__ ) && !defined( __cplusplus )
++// RetroPane (R316, kit 65): a float dot product in one call, bit for bit
++// C's expression (ports/xash/include/rp_fdot.h)
++#include "rp_fdot.h"
++#define DotProduct(x,y) RP_DOT(x,y)
++#else
+ #define DotProduct(x,y) ((x)[0]*(y)[0]+(x)[1]*(y)[1]+(x)[2]*(y)[2])
++#endif
+ #define DotProductFabs(x,y) (fabs((x)[0]*(y)[0])+fabs((x)[1]*(y)[1])+fabs((x)[2]*(y)[2]))
+ #define DotProductPrecise(x,y) ((double)(x)[0]*(double)(y)[0]+(double)(x)[1]*(double)(y)[1]+(double)(x)[2]*(double)(y)[2])
+ #define CrossProduct(a,b,c) ((c)[0]=(a)[1]*(b)[2]-(a)[2]*(b)[1],(c)[1]=(a)[2]*(b)[0]-(a)[0]*(b)[2],(c)[2]=(a)[0]*(b)[1]-(a)[1]*(b)[0])
 diff --git a/ref/common/ref_common.h b/ref/common/ref_common.h
 index 32fa799..c017e24 100644
 --- a/ref/common/ref_common.h
@@ -1108,10 +1169,44 @@ index 32fa799..c017e24 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..d779ed0 100644
+index dd01c0f..94fd19b 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
-@@ -119,19 +119,33 @@ static void R_MarkLights( const dlight_t *light, int bit, const mnode_t *node, m
+@@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 		return;
+ 	}
+ 
++	/*
++	RetroPane (kit 65, run 62: 156 samples on this loop's add waiting for
++	the clock's miss, each style a 1,296-byte record): a style with no
++	pattern or one letter never reads its clock, and CL_SetLightstyle sets
++	the clock anew with any new pattern, so only the others advance it; the
++	records' lines are asked for four styles ahead. The same values.
++	*/
++	const qboolean run_clock = !gp_cl->paused && frametime <= 0.1f;
++
+ 	// light animations
+ 	// 'm' is normal light, 'a' is no light, 'z' is double bright
+ 	for( int i = 0; i < MAX_LIGHTSTYLES; i++ )
+ 	{
+-		if( !gp_cl->paused && frametime <= 0.1f )
+-			ls[i].time += frametime; // evaluate local time
++		if( i + 4 < MAX_LIGHTSTYLES )
++			__builtin_prefetch( &ls[i + 4].length );
+ 
+ 		if( !ls[i].length )
+ 		{
+@@ -61,6 +70,9 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 			continue;
+ 		}
+ 
++		if( run_clock )
++			ls[i].time += frametime; // evaluate local time
++
+ 		int flight = (int)floor( ls[i].time * 10 );
+ 
+ 		if( !ls[i].interp || !cl_lightstyle_lerping->value )
+@@ -119,19 +131,33 @@ static void R_MarkLights( const dlight_t *light, int bit, const mnode_t *node, m
  	int firstsurface = node_firstsurface( node, model );
  	int numsurfaces = node_numsurfaces( node, model );
  
@@ -1150,7 +1245,7 @@ index dd01c0f..d779ed0 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -489,6 +503,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +515,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -1226,7 +1321,7 @@ index dd01c0f..d779ed0 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +603,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +615,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -1256,7 +1351,7 @@ index dd01c0f..d779ed0 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -562,6 +662,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +674,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -1264,7 +1359,7 @@ index dd01c0f..d779ed0 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +705,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +717,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -1285,7 +1380,7 @@ index dd01c0f..d779ed0 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +736,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +748,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  

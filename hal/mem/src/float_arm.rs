@@ -16,6 +16,21 @@
 //! `rp_fadd_asm(a, b)`, `rp_fsub_asm(a, b)`, `rp_fmul_asm(a, b)`,
 //! `rp_fdiv_asm(a, b)`: IEEE
 //! single bits in r0 and r1, the result in r0 (AAPCS, soft-float).
+//!
+//! `rp_fdot3_asm(a, b)` (R316, kit 65): C's `(a[0] * b[0] + a[1] * b[1])
+//! + a[2] * b[2]` for two `float[3]` (pointers in r0 and r1), bit for bit,
+//! in one call: each operand unpacked once, the three products and two
+//! sums rounded to nearest even exactly as `rp_fmul_asm` and `rp_fadd_asm`
+//! round them, the values kept unpacked between the steps (exponent,
+//! significand at the top of a word, sign), no branch on the common path
+//! but the rare cases' exits. A zero product is made in place (axial
+//! normals have two); anything else off the common path (a subnormal, an
+//! infinity, a NaN, a product or sum past 2^126 or below 2^-126) goes the
+//! C way, the five calls in C's order, so the answer is always C's. The
+//! sum is the C reference's (`ports/xash/include/rp_fdot.h`, kit 64:
+//! 10^9 vectors on the PC against IEEE hardware): the significands at bits
+//! 30 and down, the smaller shifted with a sticky bit, `clz` normalising
+//! a carry, a plain sum and a cancellation alike.
 
 core::arch::global_asm!(
     r#"
@@ -343,5 +358,173 @@ rp_fdiv_asm:
     bx      lr
     .ltorg
     .size rp_fdiv_asm, . - rp_fdiv_asm
+    @ ---- rp_fdot3_asm (R316) ----
+    @ A product: x = a[off], y = b[off], both normal (else .Lfdot_z<id>);
+    @ the result unpacked: E its exponent (1..254), M its significand at
+    @ bits 31..8 (low byte zero), S's bit 31 its sign. Uses r2, r3, r12, lr.
+    .macro RP_FDOT_MUL id, off, E, M, S
+    ldr     r2, [r0, #\off]
+    ldr     r3, [r1, #\off]
+    mov     \E, r2, lsl #1
+    mov     r12, r3, lsl #1
+    sub     lr, \E, #0x01000000         @ a normal x: 0 .. 0xFDFFFFFF
+    cmp     lr, #0xFE000000
+    sublo   lr, r12, #0x01000000
+    cmplo   lr, #0xFE000000
+    bhs     .Lfdot_z\id                 @ a zero (or a rare case)
+    eor     \S, r2, r3
+    mov     \E, \E, lsr #24
+    add     \E, \E, r12, lsr #24        @ ea + eb
+    mov     r2, r2, lsl #8
+    orr     r2, r2, #0x80000000
+    mov     r3, r3, lsl #8
+    orr     r3, r3, #0x80000000
+    umull   lr, \M, r2, r3              @ M:lr, the leading one at 63 or 62
+    tst     \M, #0x80000000
+    subne   \E, \E, #126
+    subeq   \E, \E, #127
+    moveq   \M, \M, lsl #1
+    orreq   \M, \M, lr, lsr #31
+    moveq   lr, lr, lsl #1
+    cmp     lr, #0
+    orrne   \M, \M, #1                  @ the low word, kept as one bit
+    sub     r12, \E, #1                 @ before rounding, as C: 1..253
+    cmp     r12, #253
+    bhs     .Lfdot_slow
+    @ To 24 bits, nearest even: + 0x7F + the kept lowest bit; a carry out
+    @ of the word is 2.0, one exponent up.
+    and     r12, \M, #0x100
+    adds    \M, \M, r12, lsr #8
+    addscc  \M, \M, #0x7F
+    movcs   \M, \M, rrx
+    addcs   \E, \E, #1
+    bic     \M, \M, #0xFF
+.Lfdot_m\id:
+    .endm
+
+    @ The rare exit of a product: a zero times a finite number is the
+    @ signed zero (E = M = 0); anything else goes the C way.
+    .macro RP_FDOT_ZERO id, E, M, S
+.Lfdot_z\id:
+    cmp     \E, #0                      @ x << 1
+    cmpne   r12, #0                     @ y << 1
+    bne     .Lfdot_slow
+    cmp     \E, #0xFF000000
+    cmplo   r12, #0xFF000000
+    bhs     .Lfdot_slow
+    eor     \S, r2, r3
+    mov     \E, #0
+    mov     \M, #0
+    b       .Lfdot_m\id
+    .endm
+
+    @ x + y, x = (r4, r5, r6), y = (r7, r8, r9), into x; the last one
+    @ packs the float into r0 and returns. Uses r2, r3, r12.
+    .macro RP_FDOT_ADD id, last
+    eor     r12, r6, r9                 @ bit 31: the signs differ
+    subs    r2, r4, r7                  @ d = ex - ey
+    rsbmi   r2, r2, #0
+    movmi   r4, r7                      @ the larger exponent's in x
+    movmi   r6, r9
+    movmi   r3, r5
+    movmi   r5, r8
+    movmi   r8, r3
+    @ Both significands to bit 30, y's d further with the bits that go
+    @ kept as one (a d of 31 or more leaves only that bit).
+    add     r2, r2, #1
+    cmp     r2, #32
+    movhi   r2, #32
+    rsb     r3, r2, #32
+    mov     r3, r8, lsl r3
+    mov     r8, r8, lsr r2
+    cmp     r3, #0
+    orrne   r8, r8, #1
+    tst     r12, #0x80000000
+    addeq   r5, r8, r5, lsr #1
+    rsbsne  r5, r8, r5, lsr #1
+    rsbmi   r5, r5, #0                  @ y was the larger: its sign
+    eormi   r6, r6, #0x80000000
+    clz     r2, r5                      @ a carry (0), none (1), a cancellation
+    movs    r5, r5, lsl r2
+    beq     .Lfdot_s\id                 @ an exact zero
+    rsb     r2, r2, #1
+    add     r4, r4, r2
+    sub     r12, r4, #1                 @ before rounding: 1..253
+    cmp     r12, #253
+    bhs     .Lfdot_slow
+    .if \last
+    @ Rounded into the float: the exponent field e - 1 plus the leading
+    @ one, so a carry raises it.
+    mov     r0, r5, lsr #8
+    add     r0, r0, r12, lsl #23
+    and     r3, r5, #0xFF
+    and     r2, r0, #1
+    add     r3, r3, r2
+    cmp     r3, #0x80
+    addhi   r0, r0, #1
+    and     r6, r6, #0x80000000
+    orr     r0, r0, r6
+    pop     {{r4, r5, r6, r7, r8, r9, pc}}
+    .else
+    and     r12, r5, #0x100
+    adds    r5, r5, r12, lsr #8
+    addscc  r5, r5, #0x7F
+    movcs   r5, r5, rrx
+    addcs   r4, r4, #1
+    bic     r5, r5, #0xFF
+.Lfdot_a\id:
+    .endif
+    .endm
+
+    .global rp_fdot3_asm
+    .type rp_fdot3_asm, %function
+    .p2align 2
+rp_fdot3_asm:
+    push    {{r4, r5, r6, r7, r8, r9, lr}}
+    RP_FDOT_MUL 1, 0, r4, r5, r6
+    RP_FDOT_MUL 2, 4, r7, r8, r9
+    RP_FDOT_ADD 1, 0
+    RP_FDOT_MUL 3, 8, r7, r8, r9
+    RP_FDOT_ADD 2, 1
+    @ The rare exits, out of the line.
+    RP_FDOT_ZERO 1, r4, r5, r6
+    RP_FDOT_ZERO 2, r7, r8, r9
+    RP_FDOT_ZERO 3, r7, r8, r9
+.Lfdot_s1:
+    @ x + y exactly zero: +0 when the signs differ, else their sign.
+    tst     r12, #0x80000000
+    movne   r6, #0
+    mov     r4, #0
+    b       .Lfdot_a1
+.Lfdot_s2:
+    tst     r12, #0x80000000
+    movne   r6, #0
+    and     r0, r6, #0x80000000
+    pop     {{r4, r5, r6, r7, r8, r9, pc}}
+.Lfdot_slow:
+    @ C's own expression, the five calls in its order (r0, r1 untouched).
+    pop     {{r4, r5, r6, r7, r8, r9, lr}}
+    push    {{r4, r5, r6, lr}}
+    mov     r4, r0
+    mov     r5, r1
+    ldr     r0, [r4]
+    ldr     r1, [r5]
+    bl      rp_fmul_asm
+    mov     r6, r0
+    ldr     r0, [r4, #4]
+    ldr     r1, [r5, #4]
+    bl      rp_fmul_asm
+    mov     r1, r0
+    mov     r0, r6
+    bl      rp_fadd_asm
+    mov     r6, r0
+    ldr     r0, [r4, #8]
+    ldr     r1, [r5, #8]
+    bl      rp_fmul_asm
+    mov     r1, r0
+    mov     r0, r6
+    bl      rp_fadd_asm
+    pop     {{r4, r5, r6, pc}}
+    .size rp_fdot3_asm, . - rp_fdot3_asm
 "#
 );

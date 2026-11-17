@@ -829,6 +829,34 @@ against kit 63's 98,686 ms (27.8 fps): 0.5% less time**, every window
 faster, every mark the same. From kit 60: 103,808 -> 98,191 ms (5.4%);
 30 fps is ~91,700 ms, 6.6% still to go.
 
+**Kit 65 (2026-11-17, exact, from run 62's samples):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The server's physics entities (`SV_CopyEdictToPhysEnt`) | Xash: the edict's fields read as the copy reaches them | the edict's lines asked for with `PLD` first (kit 64's client fix, server side) | run 62: 648 samples, most of them waiting on those loads; a hint only |
+| R316, the fused dot product, in ARM assembly (`rp_fdot3_asm`, `hal/mem/src/float_arm.rs`) | C's five software-float calls (three `rp_fmul_asm`, two `rp_fadd_asm`), each unpacking its operands, testing its rare cases, rounding and packing, with a call, a return and two saved registers each (a desktop does the dot in an FPU; a fused multiply-add rounds once and gives other bits); kit 64's C version of ours lost to the calls (1,591 samples against ~850) | one call: the six operands tested for the common case at once per pair, the three products made with `umull` and rounded at the top of a word, kept unpacked (exponent, significand, sign) into the two sums, the sums' alignment, add or subtract and normalisation without a branch (`clz` covers a carry and a cancellation alike, the smaller operand chosen by conditional moves), one pack at the end; a zero product made in place (axial normals); every rare case (subnormal, infinity, NaN, a result past 2^126 or under 2^-126) takes the five calls in C's order | the same bits as C by construction (each step rounds as `rp_fmul_asm`/`rp_fadd_asm`, the sums as the C reference proven on 10^9 vectors), checked on the X51v and in the emulator by `-rpfloat` against the compiler's generic routines (six kinds of vectors: the game's range, zeros, cancellations, any exponent, any bits, the edges); `-rpfloat` also times the generic calls, our five calls and the fused one on the X51v |
+| The light styles' clocks (`CL_RunLightStyles`, `SV_RunLightStyles`) | Quake and Xash: every one of the 64 styles' clocks advanced every frame on the client and the server, and the server's `time * 10` made for each, used or not; each style is a 1,296-byte record, so each is a cache miss | a style with no pattern (most of the 64) gets its value and nothing else: its clock is never read (not sent, not saved; set anew with its pattern), and the client's single-letter styles likewise; the server's `time * 10` made only where it picks a letter; each record's line asked for with `PLD` four styles ahead | run 62: 156 of `CL_RunLightStyles`' 198 add samples sit on the add's first instruction, the stall of the clock's miss; the same values for every style that has a pattern (the game sees nothing else) |
+
+**Run 63 (2026-11-17, kit 65, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **97,389 ms (28.2 fps) against kit 64's 98,191 ms
+(28.0 fps): 0.8% less time**, every 250-frame window faster (by 30-94
+ms) and every one of the thirteen marks (to frame 3,250) at the same
+place. The emulator first: `-rpfloat` compared
+12,582,912 results (6,291,456 vectors, six kinds, each against the fused
+routine and the five calls), 0 differ; the X51v the same, 0 differ. On
+the X51v the dot product costs **208.5 cycles fused against 267.9 for our
+five assembly calls** (553.6 for the compiler's generic ones), 22% less;
+in the play `rp_fdot3_asm` took 1,165 samples where the calls it replaced
+had cost ~1,280 (`rp_fadd_asm` 3,459 -> 2,698, `rp_fmul_asm` 2,168 ->
+1,649; part of the routine's samples are its operands' misses, which the
+callers carried before). The light styles: the client's 300 -> 154
+samples, the server's (inside `SV_Physics`) 810 -> 694;
+`SV_CopyEdictToPhysEnt` 648 -> 429. From kit 60: 103,808 -> 97,389 ms
+(6.2%); 30 fps is ~91,700 ms, 5.8% still to go. Run 63's play, biggest
+first: `RP_StudioCmdLit` 4.4%, `rp_fadd_asm` 4.2%, `RP_ChipFaceFixed`
+3.1%, `RP_StudioCmdSend` 3.0%, `rp_snd_write` 2.8%, `RP_StudioLightMesh`
+2.6%, `rp_fmul_asm` 2.5%, `rp_gfx_frame_parts` 2.2%, `rp_fdot3_asm` 2.0%.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
