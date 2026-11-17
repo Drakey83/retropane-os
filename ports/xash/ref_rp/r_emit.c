@@ -113,6 +113,7 @@ static struct
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
+	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
@@ -225,6 +226,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: 2D: %u quads a frame (the HUD, text, fills), %u tiles not drawn (no room); %u see-through faces a frame (R303)\n",
 			rp_count.pics / f, rp_count.pics_skipped / f, rp_count.masked / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: kit 74's effects (sprites, beams, particles): %u triangles a frame, %u of them plain (no picture), %u not drawn (no room)\n",
+			rp_count.fx_tris / f, rp_count.fx_plain / f, rp_count.fx_skipped / f );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: R297 B (rp_lm %d): %u faces a frame as texture and lightmap, %u lightmaps written a frame (%u for a dynamic light), %u second-pass words a frame, %u faces with no second-pass room; %u textures written (%u KiB), the texture pool %u of %u KiB, %u pool resets\n",
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
@@ -427,11 +431,13 @@ static void RP_State( const void *what, uint32_t tsp )
 A triangle from the models, sprites, beams and particles: the corners
 `R_DrawTriangle` would have rasterised, already on the screen.
 */
+static void RP_FxTriangle( void ); /* kit 74, by RP_EmitFill */
+
 void RP_EmitTriangle( void )
 {
 	if( rp_emit_on == 2 )
 	{
-		rp_count.models++; /* step 4: the models' skins in video memory */
+		RP_FxTriangle( ); /* kit 74: drawn on the 2700G */
 		return;
 	}
 
@@ -4967,6 +4973,141 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 				x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,
 				e->qx * 8 + ( a0 - tx ), e->qy * 8 + ( b0 - ty ), e->qx * 8 + ( a1 - tx ), e->qy * 8 + ( b1 - ty ));
 		}
+}
+
+/*
+Kit 74 (R320, the owner's play run on kit 72: c1a0e's electricity did not
+show): the triangles of the engine's triangle interface (sprites, beams,
+particles, the client's own drawing) on the 2700G. Each is what the
+software renderer rasterises (R_DrawTriangle's three corners, already on
+the screen, clipped to it and to the near plane): the bound frame placed
+in the atlas as the HUD's pictures are, the TriAPI colour on each corner,
+the render mode as the models' blends, depth compared with the world and
+not written (a glow tested against nothing: GoldSrc hides glows by a
+trace). A frame with no picture (or no room) is drawn plainly in its
+colour, never dropped.
+*/
+static const image_t *rp_tri_image; /* GL_Bind's last */
+
+void RP_EmitBind( const image_t *image )
+{
+	rp_tri_image = image;
+}
+
+/* The white texel the plain draws use (RP_EmitFill's): its page, or -1. */
+static int RP_WhitePage( void )
+{
+	if( rp_white.pg < 0 || rp_white.gen != rp_page[rp_white.pg].gen )
+	{
+		int       pg = RP_AtlasAlloc( 1, 1, &rp_white.qx, &rp_white.qy );
+		uint32_t *dst;
+
+		rp_white.pg = pg;
+		if( pg < 0 )
+			return -1;
+		dst = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES ) + RP_Interleave( rp_white.qx, rp_white.qy ) * 32;
+		for( int k = 0; k < 32; k++ )
+			dst[k] = 0xFFFFFFFFu;
+		rp_white.gen = rp_page[pg].gen;
+	}
+	rp_page[rp_white.pg].used = tr.framecount;
+	return rp_white.pg;
+}
+
+static void RP_FxState( int pg, int fmt, int mode )
+{
+	int         blend, glow = mode == kRenderGlow;
+	uint32_t    tsp = RP_TSP_WORLD | RP_TSP_GOURAUD;
+	const void *what;
+
+	if( mode == kRenderTransAdd || glow )
+		blend = 2;
+	else if( fmt || ( rp_2d_colour >> 24 ) != 0xFF || mode != kRenderNormal )
+		blend = 1;
+	else
+		blend = 0;
+	what = (const uint8_t *)&rp_page[pg] + 48 + fmt * 4 + ( glow ? 3 : blend );
+	if( what == rp_state )
+		return;
+	RP_LmFlush(); /* the lit walls before what blends over them */
+	if( blend )
+		/* the models' blends: source alpha over one minus it, or one plus
+		   one; blending on (bit 13), depth not written (bit 7) */
+		tsp = ( tsp & 0x03FFFFFFu ) | ( blend == 2 ? 1u << 29 | 1u << 26 : 4u << 29 | 5u << 26 ) | 1u << 13 | 1u << 7;
+	if( glow )
+		tsp = ( tsp & ~( 7u << 9 )) | 7u << 9; /* depth always */
+	rp_state = what;
+	rp_count.states++;
+	RP_Put( RP_GFX_STATE );
+	RP_Put( tsp );
+	RP_Put( RP_ISP_ALWAYS );
+	RP_Put( fmt ? ( RP_TEX0_PAGE & ~( 7u << 13 )) | 4u << 13 : RP_TEX0_PAGE );
+	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+	RP_Put( fmt ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha */
+	RP_Put( RP_CLIP );
+	RP_Put( 0 );
+	RP_Whole();
+}
+
+static void RP_FxTriangle( void )
+{
+	const finalvert_t *v[3] = { aliastriangleparms.a, aliastriangleparms.b, aliastriangleparms.c };
+	const image_t     *img = rp_tri_image;
+	const int          mode = vid.rendermode;
+	const rp_skin_t   *e = NULL;
+	int32_t            u0, v0, smax, tmax;
+	int                fmt = 0, pg;
+
+	if( img && img->pixels[0] && img->width >= 1 && img->height >= 1
+		&& img->width <= RP_PAGE_SIDE && img->height <= RP_PAGE_SIDE )
+	{
+		fmt = mode != kRenderTransAdd && mode != kRenderGlow && img->alpha_pixels;
+		e = RP_PicPlace( fmt ? img->alpha_pixels : img->pixels[0], img->width, img->width, img->height, fmt );
+	}
+	if( e )
+	{
+		pg = e->pg;
+		u0 = e->qx * 8 << 16;
+		v0 = e->qy * 8 << 16;
+		smax = ( e->w << 16 ) - 1;
+		tmax = ( e->h << 16 ) - 1;
+	}
+	else
+	{
+		/* no picture (or no room): drawn plainly in its colour */
+		pg = RP_WhitePage( );
+		if( pg < 0 )
+		{
+			rp_count.fx_skipped++;
+			return;
+		}
+		fmt = 0;
+		u0 = ( rp_white.qx * 8 + 4 ) << 16;
+		v0 = ( rp_white.qy * 8 + 4 ) << 16;
+		smax = tmax = 0;
+		rp_count.fx_plain++;
+	}
+	RP_FxState( pg, fmt, mode );
+	RP_Put( RP_GFX_STRIP( 3 ));
+	for( int i = 0; i < 3; i++ )
+	{
+		int32_t s = v[i]->s, t = v[i]->t;
+
+		s = s < 0 ? 0 : s > smax ? smax : s;
+		t = t < 0 ? 0 : t > tmax ? tmax : t;
+		/* the upright picture: x = the game's y, y = 640 - the game's x */
+		RP_Put( RP_FixBits( v[i]->v, 0 ));
+		RP_Put( RP_FixBits( RP_GAME_W - v[i]->u, 0 ));
+		RP_Put( RP_FixBits( v[i]->zi, 31 )); /* 1/z, the world's own units */
+		RP_Put( RP_FixBits( v[i]->zi, 31 ));
+		RP_Put( rp_2d_colour );
+		RP_Put( RP_FixBits( u0 + s, 16 + 9 )); /* page texels / 512 */
+		RP_Put( RP_FixBits( v0 + t, 16 + 9 ));
+	}
+	RP_Whole();
+	rp_count.fx_tris++;
+	rp_count.tris++;
+	rp_count.verts += 3;
 }
 
 /* Draw_Fill: a rectangle in the colour the engine set (CL_FillRGBA's). */

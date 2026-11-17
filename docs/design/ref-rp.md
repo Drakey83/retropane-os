@@ -1042,6 +1042,25 @@ averages, so a single long frame does not show; the walk's own motion
 corner) is the same since kit 60. R319: the worst frame of each 5-second
 line, and a check of the hitches against the kits before today's.
 
+**Kit 74 (2026-11-17, R320: the effects drawn).** The owner's play run on
+kit 72 (port-runner-0092): c1a0e's test-chamber electricity did not show.
+In the code, with `rp_emit 2` every triangle of the engine's triangle
+interface (sprites, beams, particles, the client's own TriAPI drawing)
+reached `RP_EmitTriangle`, which only counted it: step 4's "later
+sub-steps" for them were never built, against the owner's
+draw-everything rule.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Sprites, beams, particles (TriAPI) | ref_soft rasterises each triangle on the CPU through span tables (a few blend levels, no filtering); ref_gl makes a GL state a call and immediate-mode vertices; Dell's GLES driver writes each vertex to the TA by the CPU | each triangle the software renderer would rasterise becomes three corners of TA words: the bound frame placed in the atlas as the HUD's pictures are (`RP_PicPlace`: RGB565, or ARGB4444 where the frame has alpha), the TriAPI colour each corner's colour, the render mode the models' proven blends (alpha over, one plus one for additive, glow additive with no depth test as GoldSrc hides glows by a trace), depth compared with the world and not written; a frame with no picture drawn plainly in its colour, never dropped | the chip draws them (filtered, true blends) for ~3 words of CPU a corner; the same triangles in the same order the software renderer draws, so every effect the game makes appears |
+
+**The emulator (2026-11-17, kit 74, c1a0 with the walk and `-rpfx`, a test
+word: the gluon gun held firing, its ammunition topped up every 4 s):**
+34-45 effect triangles a frame drawn, none plain, none dropped; the end
+frame on the 2700G shows the gluon beam, its spiral and the blood
+particles where the software renderer's picture of the same frame has
+them (`local/half-life/kit-74`). Not yet on the X51v.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

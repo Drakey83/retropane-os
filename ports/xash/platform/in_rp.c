@@ -396,7 +396,7 @@ static void RP_WalkScore( void )
 static void RP_Walk( uint64_t played_us )
 {
 	static int      started, turn; // turn: 0 none, 1 left, -1 right
-	static uint64_t next, stuck_check, turn_until, used, active_at;
+	static uint64_t next, stuck_check, turn_until, used, active_at, fx_next;
 	static int      toured, count; // a map of the tour started: wait for it (its server count)
 	static vec3_t   last;
 	static double   game0 = -1.0;
@@ -436,9 +436,21 @@ static void RP_Walk( uint64_t played_us )
 		   game ignored impulse 100, so the runs to 53 had no flashlight),
 		   the flashlight once it is picked up */
 		Cbuf_AddText( "sv_cheats 1\ngod\ngive item_suit\nwait\nwait\nwait\nimpulse 100\nvolume 0.05\nMP3Volume 0\n+forward\n" ); // quiet: nobody is listening (the owner, 2026-11-16: "my daughter is trying to sleep") // the flashlight on (R308: its dynamic light every frame)
+		/* kit 74's check (-rpfx): the MP5 held firing, so every frame has
+		   the effects R320 draws (muzzle flashes, tracers, impact sparks:
+		   sprites, beams, particles); not for the timed walk */
+		if( Sys_CheckParm( "-rpfx" ))
+			Cbuf_AddText( "give weapon_egon\ngive ammo_gaussclip\ngive ammo_gaussclip\nwait\nweapon_egon\nwait\nwait\n+attack\n" );
 		VectorCopy( cl.simorg, last );
 		stuck_check = ms + 1000;
 		turn_until = next = used = 0;
+	}
+	/* -rpfx: the gluon gun's ammunition topped up every 4 s, so it never
+	   stops firing (its beam and sprites in every frame, the end shot too) */
+	if( ms >= fx_next && Sys_CheckParm( "-rpfx" ))
+	{
+		fx_next = ms + 4000;
+		Cbuf_AddText( "give ammo_gaussclip\n" );
 	}
 	if( ms >= stuck_check )
 	{

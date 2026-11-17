@@ -1881,11 +1881,24 @@ index 863d5b4..322f249 100644
  //	gEngfuncs.Con_Printf("blit begin\n");
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
+diff --git a/ref/soft/r_image.c b/ref/soft/r_image.c
+index 8a82400..1e8f05f 100644
+--- a/ref/soft/r_image.c
++++ b/ref/soft/r_image.c
+@@ -44,6 +44,8 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
+ {
+ 	image_t *image = &r_images[texnum];
+ 
++	RP_EmitBind( image ); // ref_rp kit 74: the effects' frame on the 2700G
++
+ 	if( vid.rendermode == kRenderNormal )
+ 	{
+ 		r_affinetridesc.pskin = image->pixels[0];
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..478eeb0 100644
+index 1a7efd6..aed368f 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,59 @@ typedef struct
+@@ -992,6 +992,60 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -1902,6 +1915,7 @@ index 1a7efd6..478eeb0 100644
 +void RP_EmitFace( msurface_t *fa );
 +void RP_FaceAhead( const msurface_t *fa ); // kit 69
 +void RP_EmitTriangle( void );
++void RP_EmitBind( const struct image_s *image ); // kit 74
 +void RP_EmitSurfBuilt( qboolean relit );
 +void RP_EmitSubmit( void );
 +surfcache_t *RP_SurfScratch( int width, int size );
