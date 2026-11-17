@@ -945,6 +945,23 @@ index bfd679b..9ae1adf 100644
  		if( !SV_IsValidEdict( ent ))
  			continue;
  
+diff --git a/engine/server/sv_pmove.c b/engine/server/sv_pmove.c
+index f146b9f..384e276 100644
+--- a/engine/server/sv_pmove.c
++++ b/engine/server/sv_pmove.c
+@@ -44,6 +44,12 @@ static qboolean SV_CopyEdictToPhysEnt( physent_t *pe, edict_t *ed )
+ 	model_t	*mod = SV_ModelHandle( ed->v.modelindex );
+ 
+ 	if( !mod ) return false;
++	// RetroPane (kit 65, run 62: 1.1% of the play here, mostly waiting on
++	// the edict's fields, spread over its ~700-byte entvars): the lines
++	// asked for first (PLD, a hint), as kit 64 did for the client's copy
++	// of the same thing (CL_CopyEntityToPhysEnt: 815 -> ~490 samples)
++	for( size_t at = 0; at < sizeof( ed->v ); at += 32 )
++		__builtin_prefetch((const byte *)&ed->v + at );
+ 	pe->player = false;
+ 
+ 	pe->info = NUM_FOR_EDICT( ed );
 diff --git a/engine/server/sv_save.c b/engine/server/sv_save.c
 index 54975d6..c74f1d5 100644
 --- a/engine/server/sv_save.c
