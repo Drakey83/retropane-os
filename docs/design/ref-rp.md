@@ -731,6 +731,12 @@ run plays the same frames. The score: `rp-walk: frames a-b took N ms`
 every 250 frames, with the player's position (the emulator: two runs at
 the same place at every mark). Kits compare window by window.
 
+**Run 55 (2026-11-17, kit 59, the X51v, two runs of the same kit, suit,
+HUD, flashlight and sound on):** frames 1-2,750 took **111,156 ms in both**
+(24.7 fps), every 250-frame window within 1 ms of the other, the player
+at the same place at every mark (and the emulator's). The yardstick for
+every lever from here: kit against kit, window by window.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
