@@ -444,13 +444,14 @@ pub trait Sys {
     fn gfx_open(&mut self) -> Result<Gfx, Errno> {
         Err(Errno::NoSys)
     }
-    /// One frame's words (`rp_gfx_frame`): checked, fed to the tile
-    /// accelerator behind a background, drawn into the screen.
+    /// One frame's words (`rp_gfx_frame`, `rp_gfx_frame_parts`), in parts
+    /// drawn in their order: checked, fed to the tile accelerator behind a
+    /// background, drawn into the screen.
     ///
     /// # Errors
     /// Not open (`EBADF`), a word the check refuses (`EINVAL`: nothing of
     /// the frame drawn), or the chip did not finish (`EIO`).
-    fn gfx_frame(&mut self, _words: &[u32]) -> Result<(), Errno> {
+    fn gfx_frame(&mut self, _parts: &[&[u32]]) -> Result<(), Errno> {
         Err(Errno::NoSys)
     }
     /// Waits until the last frame is drawn (`rp_gfx_wait`): before the
@@ -1273,7 +1274,50 @@ mod face {
         // not null and aligned (both checked), not changed while this call
         // runs (one core, one C thread).
         let words = unsafe { core::slice::from_raw_parts(words, count) };
-        match with(|s| s.gfx_frame(words)) {
+        match with(|s| s.gfx_frame(&[words])) {
+            Ok(()) => 0,
+            Err(e) => fail(e) as c_int,
+        }
+    }
+
+    /// `rp_gfx_frame_parts`'s part (`struct rp_gfx_part`).
+    #[repr(C)]
+    pub struct GfxPart {
+        words: *const u32,
+        count: usize,
+    }
+
+    /// Parts a frame may have (`RP_GFX_PARTS`).
+    pub const GFX_PARTS: usize = 32;
+
+    /// `rp_gfx_frame_parts`: 0, or -1 with `errno`. Kit 51 (ref_rp's
+    /// second pass was copied after the first, ~1-2% of Half-Life's play,
+    /// run 49): the parts go to the feed as they lie, no copy to join them.
+    ///
+    /// # Safety
+    /// `parts` points at `n` readable parts, each at `count` readable
+    /// 32-bit words.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn rp_gfx_frame_parts(parts: *const GfxPart, n: usize) -> c_int {
+        if parts.is_null() || !parts.is_aligned() || n > GFX_PARTS {
+            return fail(Errno::Invalid) as c_int;
+        }
+        // SAFETY: the caller's contract: `n` readable parts, not null and
+        // aligned (both checked), not changed while this call runs.
+        let parts = unsafe { core::slice::from_raw_parts(parts, n) };
+        let mut list: [&[u32]; GFX_PARTS] = [&[]; GFX_PARTS];
+        for (slot, p) in list.iter_mut().zip(parts) {
+            if p.count == 0 {
+                continue;
+            }
+            if p.words.is_null() || !p.words.is_aligned() || p.count > isize::MAX as usize / 4 {
+                return fail(Errno::Invalid) as c_int;
+            }
+            // SAFETY: the caller's contract, as `rp_gfx_frame`'s, a part
+            // at a time (not null, aligned and sized: checked).
+            *slot = unsafe { core::slice::from_raw_parts(p.words, p.count) };
+        }
+        match with(|s| s.gfx_frame(&list[..n])) {
             Ok(()) => 0,
             Err(e) => fail(e) as c_int,
         }

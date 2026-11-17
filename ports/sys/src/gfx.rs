@@ -50,12 +50,14 @@ pub trait Screen {
     /// # Errors
     /// Open already (`EBUSY`), or the chip would not set up (`EIO`).
     fn open(&mut self) -> Result<Gfx, Errno>;
-    /// One checked frame's TA words ([`Piece`]s) drawn into the screen.
+    /// One checked frame's TA words ([`Piece`]s) drawn into the screen,
+    /// in parts drawn in their order (each checked as a frame of its own:
+    /// each starts with a state block).
     ///
     /// # Errors
-    /// Not open (`EBADF`), the check refused a word (`EINVAL`), or the chip
-    /// did not finish (`EIO`).
-    fn frame(&mut self, words: &[u32]) -> Result<(), Errno>;
+    /// Not open (`EBADF`), the check refused a word (`EINVAL`: nothing of
+    /// the frame drawn), or the chip did not finish (`EIO`).
+    fn frame(&mut self, parts: &[&[u32]]) -> Result<(), Errno>;
     /// Waits until the last frame is drawn.
     ///
     /// # Errors

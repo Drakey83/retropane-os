@@ -31,10 +31,33 @@ handed to the OS's mixer (rp_snd_write), which is one of its streams.
 
 #define RING_FRAMES 16384 // 0.37 s at 44.1 kHz: power of two, as the engine's mixer wants
 
+/*
+Kit 51 (R306): the OS's mixer is called once a paint, not once a frame.
+The engine paints in pieces (S_TransferPaintBuffer: each piece its own
+BeginPainting and Submit) and S_ExtraUpdate paints again from the client's
+model drawing, so run 50 called the OS ~15 times a game frame (333 a
+second), and its own sound lines show each call's cost is mostly the call
+(the mixer took 2,562 ms in 16,839 calls one minute, 2,926 ms in 20,673
+another: ~95 us an extra call, ~1 s a minute for the mixing itself; 4.8%
+of the time in all). The SDL and ALSA backends never meet this: their
+audio thread pulls once a period. Ours, with no thread: the play position
+read again only when 8 ms have passed (the engine paints a little less
+from a position at most 8 ms old: a mix ahead of 100 ms covers it), and
+what was painted handed over once a game frame's worth is waiting or 20 ms
+have passed (a piece stays in the engine's ring, which holds 370 ms).
+*/
+#define SUBMIT_FRAMES 1024  // 23 ms at 44.1 kHz
+#define SUBMIT_US     20000
+#define PLAYED_US     8000
+
 static struct
 {
 	int64_t sent; // frames handed to the OS
 	qboolean open;
+	uint64_t played_at, sent_at; // when the OS was last asked, last given sound
+	int samplepos;
+	int calls, saved; // calls made and not made (the run log's line)
+	uint64_t since;
 } s_rp;
 
 qboolean SNDDMA_Init( void )
@@ -88,9 +111,22 @@ void SNDDMA_BeginPainting( void )
 	if( !s_rp.open )
 		return;
 
+	{
+		uint64_t now = rp_time_us();
+
+		if( s_rp.played_at && now - s_rp.played_at < PLAYED_US )
+		{
+			snd.samplepos = s_rp.samplepos;
+			s_rp.saved++;
+			return;
+		}
+		s_rp.played_at = now;
+	}
+	s_rp.calls++;
 	played = rp_snd_played();
 	if( played >= 0 )
 		snd.samplepos = (int)(( played * 2 ) % snd.samples );
+	s_rp.samplepos = snd.samplepos;
 }
 
 /*
@@ -108,6 +144,24 @@ void SNDDMA_Submit( void )
 
 	if( end - s_rp.sent > RING_FRAMES )
 		s_rp.sent = end - RING_FRAMES;
+
+	{
+		uint64_t now = rp_time_us();
+
+		if( end - s_rp.sent < SUBMIT_FRAMES && now - s_rp.sent_at < SUBMIT_US )
+		{
+			if( end > s_rp.sent )
+				s_rp.saved++;
+			return;
+		}
+		s_rp.sent_at = now;
+		if( now - s_rp.since >= 60000000u )
+		{
+			fprintf( stderr, "s_rp: the OS's sound asked %d times in the last minute, %d calls saved (kit 51)\n", s_rp.calls, s_rp.saved );
+			s_rp.calls = s_rp.saved = 0;
+			s_rp.since = now;
+		}
+	}
 
 	while( s_rp.sent < end )
 	{
@@ -142,6 +196,7 @@ void SNDDMA_Submit( void )
 				since = now;
 			}
 		}
+		s_rp.calls++;
 		took = rp_snd_write((const int16_t *)snd.buffer + at * 2, (size_t)frames * 2 );
 		if( took <= 0 )
 			break;

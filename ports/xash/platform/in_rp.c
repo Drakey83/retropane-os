@@ -300,20 +300,96 @@ static int RP_Person( vec3_t to )
 	return best;
 }
 
+/*
+-rptour <map>,<map>: the walk goes on to these maps in turn (kit 51, R309:
+the sky, water and conveyors are few in c1a0; c2a5 opens on 44 sky and 4
+water faces, c2a4b on 35 conveyor faces, counted from each map's start in
+its own visibility data). The run's play is shared out evenly: the first
+map its share (the same walk as run 50 for the frame rate), then each
+listed one, started by `map` (a new game there: god mode and the walk's
+settings given again once it plays).
+*/
+static int RP_Tour( uint64_t ms, int *started )
+{
+	static char     list[64];
+	static int      have = -1, at; // the maps gone to
+	static uint64_t share;
+	char            name[32];
+	const char      *p;
+	int             k = 0;
+
+	if( have < 0 )
+	{
+		have = Sys_GetParmFromCmdLine( "-rptour", list ) ? 1 : 0;
+		if( have )
+		{
+			int n = 1;
+
+			for( p = list; *p; p++ )
+				n += *p == ',';
+			share = (uint64_t)RP_Seconds( "-rpend" ) * 1000u / (uint64_t)( n + 1 );
+		}
+	}
+	if( !have || !share || ms < share * (uint64_t)( at + 1 ))
+		return 0;
+	// the next map's name
+	p = list;
+	for( int i = 0; i < at && p; i++ )
+	{
+		p = Q_strchr( p, ',' );
+		if( p )
+			p++;
+	}
+	if( !p || !*p )
+		return 0;
+	while( p[k] && p[k] != ',' && k < (int)sizeof( name ) - 1 )
+	{
+		name[k] = p[k];
+		k++;
+	}
+	name[k] = 0;
+	at++;
+	fprintf( stderr, "rp-walk: on to %s (%u s into the play)\n", name, (uint)( ms / 1000 ));
+	Cbuf_AddText( va( "-forward\n-left\n-right\nmap %s\n", name ));
+	*started = 0;
+	return 1;
+}
+
 static void RP_Walk( uint64_t played_us )
 {
 	static int      started, turn; // turn: 0 none, 1 left, -1 right
-	static uint64_t next, stuck_check, turn_until, used;
+	static uint64_t next, stuck_check, turn_until, used, active_at;
+	static int      toured, count; // a map of the tour started: wait for it (its server count)
 	static vec3_t   last;
 	uint64_t        ms = played_us / 1000;
 	int             want = turn;
 
+	if( RP_Tour( ms, &started ))
+	{
+		turn = 0;
+		active_at = 0;
+		toured = 1;
+		count = cl.servercount;
+		return;
+	}
+	// a tour's map coming up: the walk waits until it has played 3 s (the
+	// first map's walk starts at once, as run 50's)
+	if( toured && ( !CL_Active( ) || cl.servercount == count ))
+	{
+		active_at = 0;
+		return;
+	}
+	if( !active_at )
+		active_at = ms;
+	if( toured && !started && ms - active_at < 3000 )
+		return;
 	if( !started )
 	{
 		started = 1;
 		Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 100\nvolume 0.05\nMP3Volume 0\n+forward\n" ); // quiet: nobody is listening (the owner, 2026-11-16: "my daughter is trying to sleep") // the flashlight on (R308: its dynamic light every frame)
 		VectorCopy( cl.simorg, last );
 		stuck_check = ms + 1000;
+		turn_until = next = used = 0;
 	}
 	if( ms >= stuck_check )
 	{

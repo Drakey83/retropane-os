@@ -187,6 +187,16 @@ struct rp_gfx {
 int rp_gfx_open(struct rp_gfx *g);
 /* One frame's `count` words: 0, or -1 with errno. */
 int rp_gfx_frame(const uint32_t *words, size_t count);
+/* One frame in parts, drawn in their order, as if their words were one
+ * run (each part must start with a state block): no copy to join them
+ * (ref_rp's second pass, its sky first). At most RP_GFX_PARTS parts:
+ * 0, or -1 with errno. */
+#define RP_GFX_PARTS 32
+struct rp_gfx_part {
+    const uint32_t *words;
+    size_t count;
+};
+int rp_gfx_frame_parts(const struct rp_gfx_part *parts, size_t n);
 /* Waits until the last frame is drawn (before texture memory it may read
  * is written over): 0, or -1 with errno. */
 int rp_gfx_wait(void);

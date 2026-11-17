@@ -499,8 +499,8 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         self.screen.as_mut().ok_or(Errno::NoSys)?.open()
     }
 
-    fn gfx_frame(&mut self, words: &[u32]) -> Result<(), Errno> {
-        self.screen.as_mut().ok_or(Errno::NoSys)?.frame(words)
+    fn gfx_frame(&mut self, parts: &[&[u32]]) -> Result<(), Errno> {
+        self.screen.as_mut().ok_or(Errno::NoSys)?.frame(parts)
     }
 
     fn gfx_wait(&mut self) -> Result<(), Errno> {

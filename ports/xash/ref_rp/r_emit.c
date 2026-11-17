@@ -83,6 +83,7 @@ static uint32_t rp_buf[RP_BUF_WORDS];
 static uint32_t rp_n;
 static const void *rp_state; /* what the last state block named */
 static uint32_t rp_lit_bytes, rp_block_bytes; /* this frame's lit surfaces (step 1b) */
+static int64_t rp_time_ms; /* the client's time this frame, ms (R309's water and conveyors) */
 
 /* Counted over the frames since the last report. */
 static struct
@@ -102,6 +103,7 @@ static struct
 	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
+	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
@@ -194,6 +196,10 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: R297 B (rp_lm %d): %u faces a frame as texture and lightmap, %u lightmaps written a frame (%u for a dynamic light), %u second-pass words a frame, %u faces with no second-pass room; %u textures written (%u KiB), the texture pool %u of %u KiB, %u pool resets\n",
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: R309: the sky in %u of %u frames (%u sides a frame, %u not drawn: no room), %u water faces a frame in %u cells (%u not drawn), %u conveyor faces a frame\n",
+			rp_count.sky_frames, f, rp_count.sky_sides / f, rp_count.sky_missed, rp_count.water_faces / f, rp_count.water_cells / f,
+			rp_count.water_missed, rp_count.conveyors / f );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	since = now;
 }
@@ -271,6 +277,7 @@ void RP_EmitFrame( void )
 	rp_mip_force = (int)rp_mip->value;
 	rp_cull_on = (int)rp_cull->value;
 	RP_LmFrame();
+	rp_time_ms = (int64_t)( gp_cl->time * 1000.0 );
 	if(( rp_emit_on == 2 ) != ( rp_gpu->value == 1.0f ))
 		gEngfuncs.Cvar_SetValue( "rp_gpu", rp_emit_on == 2 ? 1.0f : 0.0f );
 	if( !rp_emit_on )
@@ -1265,12 +1272,27 @@ typedef struct
 	const image_t *image;
 	uint32_t       tex0, tex1;
 	int            gen; /* rp_tex_gen when it was written */
+	int            sky; /* a skybox side: one level, at most 256 a side */
 } rp_tex_t;
 
 static rp_tex_t rp_tex[RP_TEX_SLOTS];
 static int      rp_tex_gen = 1, rp_tex_full;
 static uint32_t rp_lm_buf[RP_LM_WORDS];
 static uint32_t rp_lm_n;
+/*
+Kit 51 (R306: the second pass's memcpy into the frame, ~1-2% of the play
+in run 49): the frame goes to the port layer as parts that lie where they
+were made (rp_gfx_frame_parts), the first pass's stretches of rp_buf and
+the second pass's of rp_lm_buf in their order, the sky first. ref_gl's GL
+driver and the software renderer have no such copy only because they draw
+as they go; the 2700G takes a frame whole, so a list of parts is ours:
+no word moves twice. With no room left in the list, the old copy.
+*/
+static struct rp_gfx_part rp_parts[RP_GFX_PARTS];
+static int      rp_nparts;
+static uint32_t rp_seg_from, rp_lm_from; /* the parts not yet listed start here */
+static int      rp_sky_seen; /* a sky face was in the view this frame */
+static void RP_SkyBox( void );
 static int      rp_lm_page = -1;
 static uint16_t rp_lm_texels[RP_LM_TEXELS];
 
@@ -1288,6 +1310,9 @@ static void RP_LmFrame( void )
 	rp_lm_on = rp_lm->value != 0.0f && rp_tex_pages > 0;
 	rp_lm_n = 0;
 	rp_lm_page = -1;
+	rp_nparts = 0;
+	rp_seg_from = rp_lm_from = 0;
+	rp_sky_seen = 0;
 	if( rp_tex_full )
 	{
 		rp_gfx_wait();
@@ -1297,16 +1322,41 @@ static void RP_LmFrame( void )
 }
 
 /* The second pass's words into the frame, after what was drawn so far. */
+static void RP_AddPart( const uint32_t *w, uint32_t n )
+{
+	if( n )
+	{
+		rp_parts[rp_nparts].words = w;
+		rp_parts[rp_nparts].count = n;
+		rp_nparts++;
+	}
+}
+
 static void RP_LmFlush( void )
 {
-	if( !rp_lm_n )
+	uint32_t n = rp_lm_n - rp_lm_from;
+
+	if( !n )
 		return;
-	if( rp_n + rp_lm_n <= RP_BUF_WORDS )
-		memcpy( &rp_buf[rp_n], rp_lm_buf, rp_lm_n * sizeof( uint32_t ));
-	rp_n += rp_lm_n;
-	RP_Whole();
-	rp_count.lm_words += rp_lm_n;
-	rp_lm_n = 0;
+	/* room kept for the sky and the last stretch */
+	if( rp_nparts + 4 <= RP_GFX_PARTS )
+	{
+		uint32_t end = rp_n <= RP_BUF_WORDS ? rp_n : rp_good;
+
+		if( end > rp_seg_from )
+			RP_AddPart( &rp_buf[rp_seg_from], end - rp_seg_from );
+		RP_AddPart( &rp_lm_buf[rp_lm_from], n );
+		rp_seg_from = end;
+	}
+	else
+	{
+		if( rp_n + n <= RP_BUF_WORDS )
+			memcpy( &rp_buf[rp_n], &rp_lm_buf[rp_lm_from], n * sizeof( uint32_t ));
+		rp_n += n;
+		RP_Whole();
+	}
+	rp_count.lm_words += n;
+	rp_lm_from = rp_lm_n;
 	rp_lm_page = -1;
 	rp_state = NULL; /* the main stream's state changed */
 }
@@ -1378,7 +1428,9 @@ static uint32_t RP_TexSample( const pixel_t *src, int sw, int sh, int x, int y, 
 
 /* The texture in the pool (written at its first use), or NULL: no room
    (the pool empties at the next frame) or a shape it doesn't take. */
-static rp_tex_t *RP_TexPlace( const image_t *image )
+#define RP_TEX0_CLAMP 0xA0000000u /* clamped both ways (RP_TEX0_PAGE's) */
+
+static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 {
 	uint32_t  h = (uint32_t)(( (uintptr_t)image >> 3 ) * 2654435761u ) >> 23;
 	rp_tex_t *t = NULL;
@@ -1390,7 +1442,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image )
 	{
 		rp_tex_t *e = &rp_tex[( h + i ) & ( RP_TEX_SLOTS - 1 )];
 
-		if( e->gen == rp_tex_gen && e->image == image )
+		if( e->gen == rp_tex_gen && e->image == image && e->sky == sky )
 			return e;
 		if( e->gen != rp_tex_gen )
 		{
@@ -1406,6 +1458,12 @@ static rp_tex_t *RP_TexPlace( const image_t *image )
 		W = 8;
 	if( H < 8 )
 		H = 8;
+	if( sky )
+	{
+		/* always magnified: no chain; a larger side sampled down to 256 */
+		W = W > 256 ? 256 : W;
+		H = H > 256 ? 256 : H;
+	}
 	/* the whole chain is built in the scratch first (a third more) */
 	if( W > 1024 || H > 1024 || W * H > 65536 )
 		return NULL;
@@ -1413,7 +1471,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image )
 	{
 		bytes += (uint32_t)( lw * lh * 2 );
 		levels++;
-		if( lw == 1 && lh == 1 )
+		if(( lw == 1 && lh == 1 ) || sky )
 			break;
 	}
 	at = ( rp_tex_used + 127u ) & ~127u;
@@ -1470,6 +1528,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image )
 	rp_tex_used = at + (( bytes + 3u ) & ~3u );
 	t->image = image;
 	t->gen = rp_tex_gen;
+	t->sky = sky;
 	/* wrap (repeat 0) both ways, the sizes, RGB565, the chain's last level */
 	t->tex0 = (uint32_t)( 31 - __builtin_clz((uint32_t)W ) - 3 ) << 24 | (uint32_t)( 31 - __builtin_clz((uint32_t)H ) - 3 ) << 20
 		| 2u << 13 | (uint32_t)( levels - 1 ) << 9;
@@ -1547,7 +1606,7 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 	int32_t    ks, kt;
 	int64_t    iw, ih;
 
-	if( rp_face_blend || rp_face_masked || fa->pdecals || ( fa->flags & SURF_CONVEYOR )
+	if( rp_face_blend || rp_face_masked || fa->pdecals
 		|| ( fa->texinfo->flags & TEX_WORLD_LUXELS ) || gEngfuncs.Mod_SampleSizeForFace( fa ) != 16
 		|| fa->info->lightmapmins[0] != fa->texturemins[0] || fa->info->lightmapmins[1] != fa->texturemins[1] )
 		return 0;
@@ -1559,7 +1618,7 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 	tt = R_TextureAnimation( fa );
 	if( !tt || tt->width < 1 || tt->height < 1 )
 		return 0;
-	t = RP_TexPlace( R_GetTexture( tt->gl_texturenum ));
+	t = RP_TexPlace( R_GetTexture( tt->gl_texturenum ), 0 );
 	if( !t )
 		return 0;
 	pg = RP_LmPlace( fa, &qx, &qy );
@@ -1572,6 +1631,19 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 	th = tt->height;
 	ks = ( fa->texturemins[0] % tw + tw ) % tw * 256;
 	kt = ( fa->texturemins[1] % th + th ) % th * 256;
+	if(( fa->flags & SURF_CONVEYOR ) && RI.currententity )
+	{
+		/* R309: ref_gl's scroll (DrawGLPoly): the entity's speed in 16ths
+		   of a texel a second (rendercolor g, b; r turns it), s moved back
+		   by speed x time, here in 24.8 texels within one repeat */
+		const cl_entity_t *e = RI.currententity;
+		int64_t            sp = e->curstate.rendercolor.g << 8 | e->curstate.rendercolor.b;
+
+		if( e->curstate.rendercolor.r )
+			sp = -sp;
+		ks = (int32_t)((( ks - rp_time_ms * sp * 16 / 1000 ) % ( tw * 256 ) + tw * 256 ) % ( tw * 256 ));
+		rp_count.conveyors++;
+	}
 	iw = ( (int64_t)1 << 24 ) / tw; /* (24.8 texels x 2^24 / w) >> 16: the repeat as 16.16 */
 	ih = ( (int64_t)1 << 24 ) / th;
 
@@ -1969,6 +2041,653 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 }
 
 /*
+==============================================================================
+R309: the sky, water and conveyor belts on the 2700G (kit 51)
+==============================================================================
+
+Iterate, don't imitate (rule 0).
+
+The sky. ref_soft fills each sky span by sampling the six skybox images as
+a cube for every pixel (several float multiplies a pixel: hopeless without
+an FPU); ref_gl clips every sky polygon into the box's six sides in floats
+(ClipSkyPolygon), keeps each side's bounds and draws those rectangles of
+the box at the far clip, the sky faces themselves not drawn. Ours: the
+six sides as six textured quads around the eye (the box's corners turned
+by the view's rows once a frame, integers, the eye at its centre), their
+depth word below anything the world writes, so the 2700G's hidden-surface
+removal textures only the pixels where nothing nearer is: the per-pixel
+work is the chip's, the CPU's is eight corners. Only in a frame with a sky
+face in the view; the sides behind the eye not sent; each side's image in
+the texture pool once, no mip chain (the sky is always magnified),
+clamped and bilinear (no seam where two sides meet). Sent as the frame's
+first part, before anything a blend could put over it.
+
+Water. ref_soft warps each pixel's texel (Turbulent8: a 128-texel wave of
+8 texels each way); ref_gl cuts the face into 64-unit polygons and moves
+only their corners' texture coordinates (a 50-texel wave sampled every 64:
+it aliases into a slow swim). Ours: the face cut on the fly, in integers,
+into a grid of 16-texel cells (8 corners a wave: the warp within 0.6 texel
+of ref_soft's), coarser for a large face (at most 256 cells), each corner's
+texture coordinates warped by ref_soft's own wave (its phase moving
+smoothly, not in ref_soft's 1/20 s steps; on the absolute texel, so two
+faces of one pool meet without a seam), the inner cells sent as one strip
+a row, the cells on the face's edge cut to it; the texture from the pool
+with its mip chain and the chip's bilinear filtering. A func_water's
+blend as the other brushes'; its waves (the entity's scale) as ref_gl's.
+
+Conveyors. ref_gl scrolls the texture coordinates by the entity's speed;
+ref_soft scrolls the lit surface. Ours: option B's texture pass with its
+s moved by the same speed (one multiply a face), the lightmap still.
+*/
+
+/* the box's half side: 4096 units (16.16), the depth word of its sides */
+#define RP_SKY_R    ( 1 << 28 )
+#define RP_SKY_NEAR ( RP_SKY_R >> 4 ) /* off the screen at any field of view up to 172 degrees */
+#define RP_SKY_Z    ( 107u << 23 )    /* 2^-20: behind the farthest world point (2^-14) */
+
+/* ref_gl's st_to_vec (gl_warp.c): a side's s, t, out to the world's axes */
+static const int rp_st_to_vec[6][3] =
+{
+	{  3, -1,  2 },
+	{ -3,  1,  2 },
+	{  1,  3,  2 },
+	{ -1, -3,  2 },
+	{ -2, -1,  3 },
+	{  2, -1, -3 }
+};
+
+/*
+A convex polygon in view space (16.16), its texture coordinates (16.16
+repeats), cut at the plane z = `near` and sent as one strip: `zword` the
+depth word (0: 1/z), `colour` each corner's colour word.
+*/
+static void RP_PolyEmit( int n, const int32_t ( *q )[3], const int32_t ( *uv )[2], int32_t near, uint32_t zword, uint32_t colour )
+{
+	int32_t  o[RP_MAX_CORNERS][3], ouv[RP_MAX_CORNERS][2];
+	uint32_t w[RP_MAX_CORNERS][3];
+	int      m = 0, lo, hi;
+
+	if( n < 3 || n > RP_MAX_CORNERS - 2 )
+		return;
+	for( int i = 0; i < n; i++ )
+	{
+		int j = i + 1 == n ? 0 : i + 1;
+		int ini = q[i][2] >= near, inj = q[j][2] >= near;
+
+		if( ini )
+		{
+			o[m][0] = q[i][0];
+			o[m][1] = q[i][1];
+			o[m][2] = q[i][2];
+			ouv[m][0] = uv[i][0];
+			ouv[m][1] = uv[i][1];
+			m++;
+		}
+		if( ini != inj )
+		{
+			int64_t den = (int64_t)q[j][2] - q[i][2];
+			int32_t t = (int32_t)(( (int64_t)( near - q[i][2] ) << 16 ) / den );
+
+			for( int k = 0; k < 2; k++ )
+			{
+				o[m][k] = q[i][k] + (int32_t)(( (int64_t)( q[j][k] - q[i][k] ) * t ) >> 16 );
+				ouv[m][k] = uv[i][k] + (int32_t)(( (int64_t)( uv[j][k] - uv[i][k] ) * t ) >> 16 );
+			}
+			o[m][2] = near;
+			m++;
+		}
+	}
+	if( m < 3 )
+		return;
+	if( m != n )
+		rp_count.nearclipped++;
+	for( int i = 0; i < m; i++ )
+		RP_ProjectS( o[i], w[i], NULL );
+	RP_Put( RP_GFX_STRIP( m ));
+	lo = 1;
+	hi = m - 1;
+	for( int k = 0; k < m; k++ )
+	{
+		int c = k == 0 ? 0 : ( k & 1 ) ? lo++ : hi--;
+
+		RP_Put( w[c][0] );
+		RP_Put( w[c][1] );
+		RP_Put( zword ? zword : w[c][2] );
+		RP_Put( w[c][2] );
+		RP_Put( colour );
+		RP_Put( RP_FixBits( ouv[c][0], 16 ));
+		RP_Put( RP_FixBits( ouv[c][1], 16 ));
+	}
+	RP_Whole();
+	rp_count.tris += m - 2;
+	rp_count.verts += m;
+}
+
+/* The sky's six sides (RP_EmitSubmit, when a sky face was in the view). */
+static void RP_SkyBox( void )
+{
+	static const int corner[4][2] = { { -1, -1 }, { -1, 1 }, { 1, 1 }, { 1, -1 } };
+
+	if( rp_view.frame != tr.framecount )
+		return;
+	for( int i = 0; i < 6; i++ )
+		if( !tr.skyboxTextures[i] )
+			return; /* none loaded: the clear colour, as ref_soft's flat fill */
+	for( int i = 0; i < 6; i++ )
+	{
+		int32_t  q[4][3], uv[4][2];
+		int      behind = 0;
+		rp_tex_t *t;
+
+		for( int c = 0; c < 4; c++ )
+		{
+			int32_t b[3] = { corner[c][0] * RP_SKY_R, corner[c][1] * RP_SKY_R, RP_SKY_R }, d[3];
+			static const int32_t zero[3] = { 0, 0, 0 };
+
+			for( int j = 0; j < 3; j++ )
+			{
+				int k = rp_st_to_vec[i][j];
+
+				d[j] = k < 0 ? -b[-k - 1] : b[k - 1];
+			}
+			RP_ViewPoint( (const int32_t( * )[3] )rp_view.m, zero, d, q[c] );
+			behind += q[c][2] < RP_SKY_NEAR;
+			/* ref_gl's MakeSkyVec: s, t from -1..1 to 0..1, t upside down */
+			uv[c][0] = corner[c][0] > 0 ? RP_ONE16 : 0;
+			uv[c][1] = corner[c][1] > 0 ? 0 : RP_ONE16;
+		}
+		if( behind == 4 )
+			continue;
+		t = RP_TexPlace( R_GetTexture( tr.skyboxTextures[r_skyTexOrder[i]] ), 1 );
+		if( !t )
+		{
+			rp_count.sky_missed++;
+			continue;
+		}
+		rp_state = NULL;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE );
+		RP_Put( RP_TSP_WORLD );
+		RP_Put( RP_ISP_ALWAYS );
+		RP_Put( t->tex0 | RP_TEX0_CLAMP );
+		RP_Put( t->tex1 );
+		RP_Put( RP_TEX2 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_PolyEmit( 4, (const int32_t( * )[3] )q, (const int32_t( * )[2] )uv, RP_SKY_NEAR, RP_SKY_Z, 0xFFFFFFFFu );
+		rp_count.sky_sides++;
+	}
+}
+
+/*
+A water face's shape, made at its first draw (floats, once): the point of
+texel (s0, t0) in the model's space and the steps a texel along s and t
+(16.16 units), its corners in texels from (s0, t0) as 24.8, its bounds.
+*/
+typedef struct
+{
+	int32_t p0[3], a[3], b[3];
+	int32_t s0, t0;            /* whole texels */
+	int32_t smax, tmax;        /* whole texels from (s0, t0), rounded up */
+	int     n, ccw;
+	int32_t st[RP_MAX_CORNERS][2];
+} rp_turb_t;
+
+static rp_turb_t **rp_turb; /* by face, for the map (RP_WorldTables) */
+static int         rp_turb_faces;
+
+static void RP_TurbFree( void )
+{
+	if( rp_turb )
+		for( int i = 0; i < rp_turb_faces; i++ )
+			free( rp_turb[i] );
+	free( rp_turb );
+	rp_turb = NULL;
+	rp_turb_faces = 0;
+}
+
+static rp_turb_t *RP_TurbShape( msurface_t *fa )
+{
+	const model_t *wm = WORLDMODEL;
+	const model_t *mod = RI.currentmodel;
+	int            idx, n = fa->numedges, i1 = 1, i2 = 2;
+	float          s[RP_MAX_CORNERS], t[RP_MAX_CORNERS], smin = 1e9f, tmin = 1e9f, smax = -1e9f, tmax = -1e9f, best = 0.0f;
+	const float   *p[RP_MAX_CORNERS];
+	const float   *sv = fa->texinfo->vecs[0], *tv = fa->texinfo->vecs[1];
+	rp_turb_t     *w;
+	float          det, a[3], b[3], area = 0.0f;
+
+	if( !wm || fa < wm->surfaces || fa >= wm->surfaces + wm->numsurfaces || n < 3 || n > RP_MAX_CORNERS - 6 )
+		return NULL;
+	idx = (int)( fa - wm->surfaces );
+	if( !rp_turb || rp_turb_faces != wm->numsurfaces )
+	{
+		RP_TurbFree();
+		rp_turb = calloc( wm->numsurfaces, sizeof( *rp_turb ));
+		if( !rp_turb )
+			return NULL;
+		rp_turb_faces = wm->numsurfaces;
+	}
+	if( rp_turb[idx] )
+		return rp_turb[idx];
+	for( int i = 0; i < n; i++ )
+	{
+		int lindex = mod->surfedges[fa->firstedge + i];
+		const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
+
+		p[i] = mod->vertexes[lindex > 0 ? e->v[0] : e->v[1]].position;
+		s[i] = DotProduct( p[i], sv ) + sv[3];
+		t[i] = DotProduct( p[i], tv ) + tv[3];
+		smin = s[i] < smin ? s[i] : smin;
+		tmin = t[i] < tmin ? t[i] : tmin;
+		smax = s[i] > smax ? s[i] : smax;
+		tmax = t[i] > tmax ? t[i] : tmax;
+	}
+	/* the two corners making the largest triangle with corner 0 */
+	for( int i = 1; i < n; i++ )
+		for( int j = i + 1; j < n; j++ )
+		{
+			float d = ( s[i] - s[0] ) * ( t[j] - t[0] ) - ( s[j] - s[0] ) * ( t[i] - t[0] );
+
+			if( fabsf( d ) > best )
+			{
+				best = fabsf( d );
+				i1 = i;
+				i2 = j;
+			}
+		}
+	det = ( s[i1] - s[0] ) * ( t[i2] - t[0] ) - ( s[i2] - s[0] ) * ( t[i1] - t[0] );
+	if( fabsf( det ) < 1e-3f || smax - smin > 32768.0f || tmax - tmin > 32768.0f )
+		return NULL;
+	w = calloc( 1, sizeof( *w ));
+	if( !w )
+		return NULL;
+	for( int k = 0; k < 3; k++ )
+	{
+		float d1 = p[i1][k] - p[0][k], d2 = p[i2][k] - p[0][k];
+
+		a[k] = (( t[i2] - t[0] ) * d1 - ( t[i1] - t[0] ) * d2 ) / det;
+		b[k] = (( s[i1] - s[0] ) * d2 - ( s[i2] - s[0] ) * d1 ) / det;
+	}
+	w->s0 = (int32_t)floorf( smin );
+	w->t0 = (int32_t)floorf( tmin );
+	w->smax = (int32_t)ceilf( smax ) - w->s0;
+	w->tmax = (int32_t)ceilf( tmax ) - w->t0;
+	for( int k = 0; k < 3; k++ )
+	{
+		w->p0[k] = RP_Fix16( p[0][k] + ( w->s0 - s[0] ) * a[k] + ( w->t0 - t[0] ) * b[k] );
+		w->a[k] = RP_Fix16( a[k] );
+		w->b[k] = RP_Fix16( b[k] );
+	}
+	w->n = n;
+	for( int i = 0; i < n; i++ )
+	{
+		int j = i + 1 == n ? 0 : i + 1;
+
+		w->st[i][0] = (int32_t)(( s[i] - w->s0 ) * 256.0f );
+		w->st[i][1] = (int32_t)(( t[i] - w->t0 ) * 256.0f );
+		area += s[i] * t[j] - s[j] * t[i];
+	}
+	w->ccw = area > 0.0f;
+	rp_turb[idx] = w;
+	return w;
+}
+
+/* ref_soft's wave (r_main.c sintable: AMP + AMP sin, a 128-texel cycle)
+   as 24.8 texels, a table entry a texel */
+static int32_t rp_wave[128];
+static int     rp_wave_ready;
+
+/* the wave's offset at texel position `x` (24.8), its phase `ph` in 1/256
+   of a table step: linear between the table's whole texels */
+static inline int32_t RP_Wave( int32_t x, int32_t ph )
+{
+	int32_t  at = ( x + ph ) & ( 128 * 256 - 1 );
+	int      i = at >> 8, f = at & 255;
+	int32_t  a = rp_wave[i], b = rp_wave[( i + 1 ) & 127];
+
+	return a + ((( b - a ) * f ) >> 8 );
+}
+
+/* ref_gl's r_turbsin (8 sin) for the waves of a func_water, 16.16 */
+static int32_t rp_tsin[256];
+
+#define RP_WATER_CELLS 256
+#define RP_WATER_GRID  ( RP_WATER_CELLS * 2 + 64 )
+
+/* the face's edges each grid point is outside of, by bits (st 24.8) */
+static inline uint32_t RP_TurbOut( const rp_turb_t *w, int32_t s, int32_t t )
+{
+	uint32_t out = 0;
+
+	for( int i = 0; i < w->n && i < 32; i++ )
+	{
+		int     j = i + 1 == w->n ? 0 : i + 1;
+		int64_t c = (int64_t)( w->st[j][0] - w->st[i][0] ) * ( t - w->st[i][1] )
+			- (int64_t)( w->st[j][1] - w->st[i][1] ) * ( s - w->st[i][0] );
+
+		if( w->ccw ? c < 0 : c > 0 )
+			out |= 1u << i;
+	}
+	return out;
+}
+
+/* A point of the face (st 24.8 from s0, t0) in view space and its warped
+   texture coordinates (16.16 repeats). */
+typedef struct
+{
+	const rp_turb_t *w;
+	int32_t          vo[3], va[3], vb[3]; /* (s0, t0)'s view point; a texel's step in view space */
+	int32_t          wz[3];               /* a unit of the world's z in view space (the waves) */
+	int32_t          wave;                /* the waves' height, 16.16 (0: none) */
+	int32_t          ph, wph1, wph2;      /* the warp's phase; the waves' */
+	int32_t          iw, ih;              /* 2^24 / the texture's width, height */
+	int32_t          tw, th;
+} rp_wctx_t;
+
+static void RP_TurbPoint( const rp_wctx_t *x, int32_t s, int32_t t, int32_t v[3], int32_t uv[2] )
+{
+	const rp_turb_t *w = x->w;
+	/* absolute texels (24.8) for the warp: the same wave across faces */
+	int32_t          as = s + ( w->s0 << 8 ), at = t + ( w->t0 << 8 );
+	int32_t          ws = as + RP_Wave( at, x->ph ), wt = at + RP_Wave( as, x->ph );
+
+	for( int k = 0; k < 3; k++ )
+		v[k] = x->vo[k] + (int32_t)(( (int64_t)s * x->va[k] + (int64_t)t * x->vb[k] ) >> 8 );
+	if( x->wave )
+	{
+		/* ref_gl's EmitWaterPolys: the point's height moved by two waves
+		   along the world's x and y */
+		int32_t px = ( w->p0[0] + (int32_t)(( (int64_t)s * w->a[0] + (int64_t)t * w->b[0] ) >> 8 )) >> 16;
+		int32_t py = ( w->p0[1] + (int32_t)(( (int64_t)s * w->a[1] + (int64_t)t * w->b[1] ) >> 8 )) >> 16;
+		int32_t nv = rp_tsin[( x->wph1 + px + py ) & 255] + ( 8 << 16 );
+		int32_t dz;
+
+		nv += (int32_t)(( (int64_t)( rp_tsin[( px * 5 + x->wph2 - py ) & 255] + ( 8 << 16 )) * 52429 ) >> 16 ); /* x 0.8 */
+		dz = (int32_t)(( (int64_t)nv * x->wave ) >> 16 );
+		for( int k = 0; k < 3; k++ )
+			v[k] += (int32_t)(( (int64_t)x->wz[k] * dz ) >> 30 );
+	}
+	/* texels (24.8) to repeats (16.16): x 2^24 / w >> 16 */
+	uv[0] = (int32_t)(( (int64_t)( ws - ( w->s0 << 8 ) + (( w->s0 % x->tw + x->tw ) % x->tw << 8 )) * x->iw ) >> 16 );
+	uv[1] = (int32_t)(( (int64_t)( wt - ( w->t0 << 8 ) + (( w->t0 % x->th + x->th ) % x->th << 8 )) * x->ih ) >> 16 );
+}
+
+/* Clips the polygon `in` (st 24.8, `n` corners) to the face's edges. */
+static int RP_TurbClip( const rp_turb_t *w, int n, int32_t ( *in )[2], int32_t ( *tmp )[2] )
+{
+	int32_t ( *src )[2] = in, ( *dst )[2] = tmp;
+
+	for( int e = 0; e < w->n && n >= 3; e++ )
+	{
+		int     f = e + 1 == w->n ? 0 : e + 1;
+		int64_t ex = w->st[f][0] - w->st[e][0], ey = w->st[f][1] - w->st[e][1];
+		int     m = 0;
+
+		for( int i = 0; i < n; i++ )
+		{
+			int     j = i + 1 == n ? 0 : i + 1;
+			int64_t ci = ex * ( src[i][1] - w->st[e][1] ) - ey * ( src[i][0] - w->st[e][0] );
+			int64_t cj = ex * ( src[j][1] - w->st[e][1] ) - ey * ( src[j][0] - w->st[e][0] );
+			int     ini, inj;
+
+			if( !w->ccw )
+			{
+				ci = -ci;
+				cj = -cj;
+			}
+			ini = ci >= 0;
+			inj = cj >= 0;
+			if( m >= RP_MAX_CORNERS - 2 )
+				return 0;
+			if( ini )
+			{
+				dst[m][0] = src[i][0];
+				dst[m][1] = src[i][1];
+				m++;
+			}
+			if( ini != inj )
+			{
+				/* where the edge crosses: ci / (ci - cj) of the way */
+				int64_t d = ci - cj;
+
+				dst[m][0] = src[i][0] + (int32_t)(( src[j][0] - src[i][0] ) * ci / d );
+				dst[m][1] = src[i][1] + (int32_t)(( src[j][1] - src[i][1] ) * ci / d );
+				m++;
+			}
+		}
+		n = m;
+		{
+			int32_t ( *sw )[2] = src;
+
+			src = dst;
+			dst = sw;
+		}
+	}
+	if( src != in )
+		for( int i = 0; i < n; i++ )
+		{
+			in[i][0] = src[i][0];
+			in[i][1] = src[i][1];
+		}
+	return n;
+}
+
+/* A water face (SURF_DRAWTURB) to the 2700G. */
+static void RP_ChipWater( msurface_t *fa )
+{
+	const model_t *mod = RI.currentmodel;
+	const int32_t ( *m )[3];
+	const int32_t *o;
+	rp_turb_t     *w;
+	texture_t     *tt;
+	rp_tex_t      *t;
+	rp_wctx_t      x;
+	int            c = 16, nx, ny, gs0, gt0;
+	static int32_t gv[RP_WATER_GRID][3], guv[RP_WATER_GRID][2];
+	static uint32_t gout[RP_WATER_GRID], gw[RP_WATER_GRID][3];
+	uint32_t       colour = rp_face_blend ? rp_face_colour : 0xFFFFFFFFu;
+	const void    *key;
+
+	if( !rp_wave_ready )
+	{
+		/* the tables in floats, once */
+		for( int i = 0; i < 128; i++ )
+			rp_wave[i] = (int32_t)(( 8.0f + 8.0f * sinf( i * 2.0f * M_PI_F / 128.0f )) * 256.0f );
+		for( int i = 0; i < 256; i++ )
+			rp_tsin[i] = (int32_t)( 8.0f * sinf( i * 2.0f * M_PI_F / 256.0f ) * 65536.0f );
+		rp_wave_ready = 1;
+	}
+	if( mod == WORLDMODEL )
+	{
+		RP_ViewFixed();
+		m = (const int32_t( * )[3] )rp_view.m;
+		o = rp_view.o;
+	}
+	else if( rp_view.frame == tr.framecount )
+	{
+		RP_BrushViewFixed();
+		m = (const int32_t( * )[3] )rp_bview.m;
+		o = rp_bview.o;
+	}
+	else
+	{
+		rp_count.water_missed++;
+		return;
+	}
+	w = RP_TurbShape( fa );
+	tt = R_TextureAnimation( fa );
+	t = w && tt ? RP_TexPlace( R_GetTexture( tt->gl_texturenum ), 0 ) : NULL;
+	if( !t || tt->width < 1 || tt->height < 1 )
+	{
+		rp_count.water_missed++;
+		return;
+	}
+
+	x.w = w;
+	RP_ViewPoint( m, o, w->p0, x.vo );
+	{
+		static const int32_t zero[3] = { 0, 0, 0 };
+
+		RP_ViewPoint( m, zero, w->a, x.va );
+		RP_ViewPoint( m, zero, w->b, x.vb );
+		for( int k = 0; k < 3; k++ )
+			x.wz[k] = m[k][2]; /* the world's z in view space, 2.30 */
+	}
+	/* ref_soft's phase: SPEED (20) table steps a second, here smooth */
+	x.ph = (int32_t)(( rp_time_ms * 20 * 256 / 1000 ) & ( 128 * 256 - 1 ));
+	x.wph1 = (int32_t)( rp_time_ms * 160 / 1000 );
+	x.wph2 = (int32_t)( rp_time_ms * 171 / 1000 );
+	x.wave = 0;
+	if( RI.currententity && RI.currententity->curstate.scale != 0.0f && mod != WORLDMODEL )
+	{
+		/* below the eye the waves go up, above it down (ref_gl's sign) */
+		int32_t sc = RP_Fix16( RI.currententity->curstate.scale );
+
+		x.wave = w->p0[2] >= RP_Fix16( tr.modelorg[2] ) ? -sc : sc;
+	}
+	x.tw = tt->width;
+	x.th = tt->height;
+	x.iw = (int32_t)(( 1 << 24 ) / tt->width );
+	x.ih = (int32_t)(( 1 << 24 ) / tt->height );
+
+	/* the grid: lines on whole multiples of c texels (absolute: the
+	   cells of two faces of one pool line up) */
+	for( ;; )
+	{
+		gs0 = (( w->s0 & ~( c - 1 )) - w->s0 );
+		gt0 = (( w->t0 & ~( c - 1 )) - w->t0 );
+		nx = ( w->smax - gs0 + c - 1 ) / c;
+		ny = ( w->tmax - gt0 + c - 1 ) / c;
+		if( nx * ny <= RP_WATER_CELLS || c >= 1024 )
+			break;
+		c <<= 1;
+	}
+	if( nx < 1 || ny < 1 || ( nx + 1 ) * ( ny + 1 ) > RP_WATER_GRID )
+	{
+		rp_count.water_missed++;
+		return;
+	}
+
+	/* the state block: the texture, opaque or the entity's blend */
+	key = (const uint8_t *)t + ( rp_face_blend ? 1 + rp_face_blend : 0 );
+	if( rp_state != key )
+	{
+		uint32_t tsp = RP_TSP_WORLD;
+
+		if( rp_face_blend )
+		{
+			RP_LmFlush(); /* the lit walls before what blends over them */
+			tsp = ( tsp & 0x03FFFFFFu ) | ( rp_face_blend == 2 ? 1u << 29 | 1u << 26 : 4u << 29 | 5u << 26 )
+				| 1u << 13 | 1u << 7;
+			rp_count.blended++;
+		}
+		rp_state = key;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE );
+		RP_Put( tsp );
+		RP_Put( RP_ISP_ALWAYS );
+		RP_Put( t->tex0 );
+		RP_Put( t->tex1 );
+		RP_Put( RP_TEX2 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_Whole();
+	}
+
+	/* every grid point: in view space, warped, which edges it is outside,
+	   projected when in front of the near plane */
+	for( int j = 0; j <= ny; j++ )
+		for( int i = 0; i <= nx; i++ )
+		{
+			int k = j * ( nx + 1 ) + i;
+			int32_t s = ( gs0 + i * c ) << 8, tt8 = ( gt0 + j * c ) << 8;
+
+			RP_TurbPoint( &x, s, tt8, gv[k], guv[k] );
+			gout[k] = RP_TurbOut( w, s, tt8 );
+			if( gv[k][2] >= RP_ONE16 )
+				RP_ProjectS( gv[k], gw[k], NULL );
+			else
+				gw[k][2] = 0;
+		}
+
+	/* each row: the runs of whole cells in front of the near plane as one
+	   strip; the cells on the face's edge or across the near plane cut */
+	for( int j = 0; j < ny; j++ )
+	{
+		int i = 0;
+
+		while( i < nx )
+		{
+			int k0 = j * ( nx + 1 ) + i, k1 = k0 + nx + 1;
+			int whole = !( gout[k0] | gout[k0 + 1] | gout[k1] | gout[k1 + 1] )
+				&& gw[k0][2] && gw[k0 + 1][2] && gw[k1][2] && gw[k1 + 1][2];
+
+			if( whole )
+			{
+				int run = 1;
+
+				while( i + run < nx && run < 126 )
+				{
+					int a = k0 + run + 1, b = k1 + run + 1;
+
+					if( gout[a] | gout[b] || !gw[a][2] || !gw[b][2] )
+						break;
+					run++;
+				}
+				RP_Put( RP_GFX_STRIP( 2 * ( run + 1 )));
+				for( int r = 0; r <= run; r++ )
+				{
+					for( int e = 0; e < 2; e++ )
+					{
+						int g = ( e ? k1 : k0 ) + r;
+
+						RP_Put( gw[g][0] );
+						RP_Put( gw[g][1] );
+						RP_Put( gw[g][2] );
+						RP_Put( gw[g][2] );
+						RP_Put( colour );
+						RP_Put( RP_FixBits( guv[g][0], 16 ));
+						RP_Put( RP_FixBits( guv[g][1], 16 ));
+					}
+				}
+				RP_Whole();
+				rp_count.tris += 2 * run;
+				rp_count.verts += 2 * ( run + 1 );
+				rp_count.water_cells += run;
+				i += run;
+				continue;
+			}
+			if( !( gout[k0] & gout[k0 + 1] & gout[k1] & gout[k1 + 1] ))
+			{
+				/* on the edge (or across the near plane): the cell cut to
+				   the face, each corner worked on its own */
+				int32_t sq[RP_MAX_CORNERS][2], tmp[RP_MAX_CORNERS][2];
+				int32_t q[RP_MAX_CORNERS][3], uv[RP_MAX_CORNERS][2];
+				int     n;
+
+				sq[0][0] = ( gs0 + i * c ) << 8;
+				sq[0][1] = ( gt0 + j * c ) << 8;
+				sq[1][0] = sq[0][0] + ( c << 8 );
+				sq[1][1] = sq[0][1];
+				sq[2][0] = sq[1][0];
+				sq[2][1] = sq[0][1] + ( c << 8 );
+				sq[3][0] = sq[0][0];
+				sq[3][1] = sq[2][1];
+				n = ( gout[k0] | gout[k0 + 1] | gout[k1] | gout[k1 + 1] ) ? RP_TurbClip( w, 4, sq, tmp ) : 4;
+				for( int v = 0; v < n; v++ )
+					RP_TurbPoint( &x, sq[v][0], sq[v][1], q[v], uv[v] );
+				RP_PolyEmit( n, (const int32_t( * )[3] )q, (const int32_t( * )[2] )uv, RP_ONE16, 0, colour );
+				rp_count.water_cells++;
+			}
+			i++;
+		}
+	}
+	rp_count.faces++;
+	rp_count.water_faces++;
+}
+
+/*
 A world (or brush model) face to the 2700G: its corners transformed and
 projected, clipped against the near plane only, its lit surface placed in
 video memory, written as one strip in zigzag order, each corner turned
@@ -1984,11 +2703,24 @@ static void RP_ChipFace( msurface_t *fa )
 	int n = 0, m = 0, lo, hi, miplevel, k, w, h, qx, qy, pg, luxels, oldmip = -1, wanted;
 	float nearzi = 0.0f, smin, tmin, scale, ks, kt, u0, v0;
 
-	if( fa->flags & ( SURF_DRAWSKY | SURF_DRAWTURB | SURF_CONVEYOR ))
-		return; /* the sky, water and conveyors: step 4 */
+	if( fa->flags & SURF_DRAWSKY )
+	{
+		/* R309: the sky box behind everything, once at the frame's end */
+		if( mod == WORLDMODEL )
+			RP_ViewFixed();
+		if( !rp_sky_seen )
+			rp_count.sky_frames++;
+		rp_sky_seen = 1;
+		return;
+	}
 	if( fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS )
 		return;
 	RP_FaceBlend();
+	if( fa->flags & SURF_DRAWTURB )
+	{
+		RP_ChipWater( fa );
+		return;
+	}
 	rp_face_masked = ( fa->flags & SURF_TRANSPARENT ) != 0;
 	if( rp_face_masked )
 		rp_count.masked++;
@@ -3125,8 +3857,31 @@ void RP_EmitSubmit( void )
 	if( rp_emit_on != 2 )
 		return;
 	RP_LmFlush();
-	if( rp_gfx_frame( rp_buf, rp_good ) != 0 )
-		rp_count.refused++;
+	{
+		/* the sky's six sides drawn first (below everything), then the
+		   parts in their order: the words where they lie */
+		struct rp_gfx_part list[RP_GFX_PARTS];
+		uint32_t sky = rp_n, end;
+		int      k = 0;
+
+		if( rp_sky_seen )
+			RP_SkyBox();
+		end = sky <= rp_good ? sky : rp_good;
+		if( rp_good > sky )
+		{
+			list[k].words = &rp_buf[sky];
+			list[k++].count = rp_good - sky;
+		}
+		for( int i = 0; i < rp_nparts; i++ )
+			list[k++] = rp_parts[i];
+		if( end > rp_seg_from )
+		{
+			list[k].words = &rp_buf[rp_seg_from];
+			list[k++].count = end - rp_seg_from;
+		}
+		if( rp_gfx_frame_parts( list, (size_t)k ) != 0 )
+			rp_count.refused++;
+	}
 	if( rp_both )
 	{
 		RP_ChipShot();
@@ -3282,6 +4037,7 @@ void RP_EmitNewMap( void )
 	rp_wmodel = NULL;
 	rp_skin_world = NULL;
 	rp_state = NULL;
+	RP_TurbFree(); /* R309: the water faces' shapes are the old map's */
 	for( int pg = 0; pg < rp_pages; pg++ )
 		RP_PageDrop( &rp_page[pg] );
 	if( rp_emit_on == 2 && rp_fixed_on )

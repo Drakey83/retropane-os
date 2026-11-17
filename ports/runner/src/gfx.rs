@@ -1432,29 +1432,41 @@ impl Screen for Chip {
         Ok(gfx)
     }
 
-    fn frame(&mut self, words: &[u32]) -> Result<(), Errno> {
+    fn frame(&mut self, parts: &[&[u32]]) -> Result<(), Errno> {
         let (Some(o), true) = (self.open.as_mut(), self.regs.is_some()) else {
             return Err(Errno::BadHandle);
         };
         // C2: the core's known answer every frame while past 624 MHz.
         crate::cpu::check(self.log);
         let c = &mut self.counts;
-        let counts = match check(words, &o.gfx) {
-            Ok(n) => n,
-            Err(r) => {
-                c.refused += 1;
-                if c.refused == 1 {
-                    (self.log)(format_args!(
-                        "rp-gfx: a frame refused at word {} of {}: {:?} (0x{:08x})",
-                        r.at,
-                        words.len(),
-                        r.why,
-                        words.get(r.at).copied().unwrap_or(0)
-                    ));
+        // Every part checked before any is fed (a refusal draws nothing).
+        let mut counts = rp_port::gfx::Counts::default();
+        let mut before = 0;
+        for words in parts {
+            match check(words, &o.gfx) {
+                Ok(n) => {
+                    counts.states += n.states;
+                    counts.strips += n.strips;
+                    counts.corners += n.corners;
                 }
-                return Err(Errno::Invalid);
+                Err(r) => {
+                    c.refused += 1;
+                    if c.refused == 1 {
+                        (self.log)(format_args!(
+                            "rp-gfx: a frame refused at word {} of {} (part {} of {}): {:?} (0x{:08x})",
+                            before + r.at,
+                            parts.iter().map(|p| p.len()).sum::<usize>(),
+                            before,
+                            parts.len(),
+                            r.why,
+                            words.get(r.at).copied().unwrap_or(0)
+                        ));
+                    }
+                    return Err(Errno::Invalid);
+                }
             }
-        };
+            before += words.len();
+        }
         self.ladder_before();
         let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
             return Err(Errno::BadHandle);
@@ -1514,12 +1526,14 @@ impl Screen for Chip {
         let left_out = if part == Part::All {
             // The frame as runs of words, each in one tight loop.
             drop(put);
-            send_runs(
-                words,
-                &mut feed,
-                |f, ws| f.put_words(ws),
-                |f| f.put(ta::Item::End),
-            );
+            for words in parts {
+                send_runs(
+                    words,
+                    &mut feed,
+                    |f, ws| f.put_words(ws),
+                    |f| f.put(ta::Item::End),
+                );
+            }
             0
         } else {
             let mut split = Split {
@@ -1533,7 +1547,9 @@ impl Screen for Chip {
                 buf: [0; STRIP_MOST],
                 left_out: 0,
             };
-            send(words, |p| split.put(p));
+            for words in parts {
+                send(words, |p| split.put(p));
+            }
             split.left_out
         };
         if o.overlay_on {

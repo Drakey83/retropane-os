@@ -1,8 +1,8 @@
 diff --git a/cl_dll/studio_util.cpp b/cl_dll/studio_util.cpp
-index 441aca8..31f8e33 100644
+index 441aca8..88c8291 100644
 --- a/cl_dll/studio_util.cpp
 +++ b/cl_dll/studio_util.cpp
-@@ -36,8 +36,99 @@ ConcatTransforms
+@@ -36,8 +36,325 @@ ConcatTransforms
  
  ================
  */
@@ -93,6 +93,232 @@ index 441aca8..31f8e33 100644
 +}
 +#endif // XASH_RETROPANE
 +
++#if XASH_RETROPANE
++// RetroPane OS (the Dell Axim X51v, no FPU; ADR-0039's FPS work, kit 51,
++// R306): the rest of the client's skeleton in integers. Run 50's samples:
++// the client's software floats 3.4% of the play (rp_fadd 1.7%, rp_fmul
++// 1.7%), all but a little from QuaternionMatrix, QuaternionSlerp and
++// AngleQuaternion, and AngleQuaternion's six sin/cos in doubles on top.
++// Iterate, don't imitate: the SDK's way is floats with libm (NEON's
++// sin_ps/acos_ps where there is NEON); a fixed-point skeleton is how the
++// float-less consoles of HL's day did it (a 4096-entry sine table, no
++// slerp). Ours: the floats' bits straight to 2.30 (rp_cf_fix, no helper
++// call), the half angles' sines from a quarter-wave table of 1,025 2.30
++// entries read linearly (within 3e-7 of sin, and relatively exact near
++// 0, where adjacent frames' slerps live), the slerp's angle by CORDIC
++// (28 shift-and-add steps, no acos) from the cosine and the length of q's
++// part across p (exact to the last bit for small angles, where
++// sqrt(1 - c^2) loses half its bits), one 64-bit divide for both weights;
++// the floats made back from their bits. The same quaternions to within
++// 1e-6 (checked against doubles over 20,000 random cases: 1e-4 units on a
++// 100-unit bone, far under a pixel); any value out of range takes the
++// SDK's float path.
++static int32_t  rp_qsin[1025]; // sin(i pi / 2048), 2.30
++static uint32_t rp_qatan[28];  // atan(2^-i) in turns x 2^32
++static int      rp_q_ready;
++
++static void rp_q_init( void )
++{
++	for( int i = 0; i <= 1024; i++ )
++		rp_qsin[i] = (int32_t)( sin( i * ( M_PI / 2048.0 )) * 1073741824.0 + 0.5 );
++	for( int i = 0; i < 28; i++ )
++		rp_qatan[i] = (uint32_t)( atan( ldexp( 1.0, -i )) / ( 2.0 * M_PI ) * 4294967296.0 + 0.5 );
++	rp_q_ready = 1;
++}
++
++// sin of a phase (a turn is 2^32), 2.30
++static inline int32_t rp_qsin_at( uint32_t ph )
++{
++	uint32_t x = ph & 0x3FFFFFFFu;
++	int32_t  v;
++	uint32_t i, f;
++
++	if( ph & 0x40000000u )
++		x = 0x40000000u - x; // the quarter mirrored
++	i = x >> 20;
++	f = x & 0xFFFFFu; // all 20 bits: a phase's last bits are the small angles' (adjacent frames)
++	v = i >= 1024 ? rp_qsin[1024] : rp_qsin[i] + (int32_t)(( (int64_t)( rp_qsin[i + 1] - rp_qsin[i] ) * f ) >> 20 );
++	return ( ph & 0x80000000u ) ? -v : v;
++}
++
++static inline int32_t rp_qmul( int32_t a, int32_t b )
++{
++	return (int32_t)(( (int64_t)a * b ) >> 30 );
++}
++
++// a half angle's phase from radians (|a| below 128): a x 2^32 / 4 pi
++static inline int rp_q_half( float a, uint32_t *ph )
++{
++	int32_t v;
++
++	if( !rp_cf_fix( a, 24, &v ))
++		return 0;
++	*ph = (uint32_t)(( (int64_t)v * 341782638 ) >> 24 ); // 2^32 / 4 pi
++	return 1;
++}
++
++static int rp_angle_quaternion( const float *angles, vec4_t q )
++{
++	uint32_t py, pp, pr;
++	int32_t  sy, cy, sp, cp, sr, cr, srcp, crsp, crcp, srsp;
++
++	if( !rp_q_ready )
++		rp_q_init();
++	if( !rp_q_half( angles[2], &py ) || !rp_q_half( angles[1], &pp ) || !rp_q_half( angles[0], &pr ))
++		return 0;
++	sy = rp_qsin_at( py );
++	cy = rp_qsin_at( py + 0x40000000u );
++	sp = rp_qsin_at( pp );
++	cp = rp_qsin_at( pp + 0x40000000u );
++	sr = rp_qsin_at( pr );
++	cr = rp_qsin_at( pr + 0x40000000u );
++	srcp = rp_qmul( sr, cp );
++	crsp = rp_qmul( cr, sp );
++	crcp = rp_qmul( cr, cp );
++	srsp = rp_qmul( sr, sp );
++	q[0] = rp_cf_float( rp_qmul( srcp, cy ) - rp_qmul( crsp, sy ), 30 ); // X
++	q[1] = rp_cf_float( rp_qmul( crsp, cy ) + rp_qmul( srcp, sy ), 30 ); // Y
++	q[2] = rp_cf_float( rp_qmul( crcp, sy ) - rp_qmul( srsp, cy ), 30 ); // Z
++	q[3] = rp_cf_float( rp_qmul( crcp, cy ) + rp_qmul( srsp, sy ), 30 ); // W
++	return 1;
++}
++
++static int rp_quaternion_matrix( const vec4_t q, float ( *m )[4] )
++{
++	int32_t x, y, z, w;
++
++	if( !rp_cf_fix( q[0], 30, &x ) || !rp_cf_fix( q[1], 30, &y ) || !rp_cf_fix( q[2], 30, &z ) || !rp_cf_fix( q[3], 30, &w ))
++		return 0;
++	{
++		// the doubled products: 2ab as (ab) << 1, 2.30 (each within +-2)
++		int32_t xx = rp_qmul( x, x ), yy = rp_qmul( y, y ), zz = rp_qmul( z, z );
++		int32_t xy = rp_qmul( x, y ), xz = rp_qmul( x, z ), yz = rp_qmul( y, z );
++		int32_t wx = rp_qmul( w, x ), wy = rp_qmul( w, y ), wz = rp_qmul( w, z );
++		const int32_t one = 0x40000000;
++
++		if( xx + yy + zz > one + ( one >> 2 ))
++			return 0; // far from a unit quaternion: the doubled sums leave 2.30
++		m[0][0] = rp_cf_float( one - 2 * ( yy + zz ), 30 );
++		m[1][0] = rp_cf_float( 2 * ( xy + wz ), 30 );
++		m[2][0] = rp_cf_float( 2 * ( xz - wy ), 30 );
++		m[0][1] = rp_cf_float( 2 * ( xy - wz ), 30 );
++		m[1][1] = rp_cf_float( one - 2 * ( xx + zz ), 30 );
++		m[2][1] = rp_cf_float( 2 * ( yz + wx ), 30 );
++		m[0][2] = rp_cf_float( 2 * ( xz + wy ), 30 );
++		m[1][2] = rp_cf_float( 2 * ( yz - wx ), 30 );
++		m[2][2] = rp_cf_float( one - 2 * ( xx + yy ), 30 );
++	}
++	return 1;
++}
++
++// sqrt of a 64-bit value, rounded down (bit by bit: 32 steps)
++static inline uint32_t rp_isqrt64( uint64_t v )
++{
++	uint64_t r = 0, bit = (uint64_t)1 << 62;
++
++	while( bit > v )
++		bit >>= 2;
++	while( bit )
++	{
++		if( v >= r + bit )
++		{
++			v -= r + bit;
++			r = ( r >> 1 ) + bit;
++		}
++		else
++			r >>= 1;
++		bit >>= 2;
++	}
++	return (uint32_t)r;
++}
++
++static int rp_quaternion_slerp( vec4_t p, vec4_t q, float t, vec4_t qt )
++{
++	int32_t a[4], b[4], tf, sclp, sclq;
++	int64_t dot = 0;
++
++	if( !rp_q_ready )
++		rp_q_init();
++	for( int i = 0; i < 4; i++ )
++		if( !rp_cf_fix( p[i], 30, &a[i] ) || !rp_cf_fix( q[i], 30, &b[i] ))
++			return 0;
++	if( !rp_cf_fix( t, 30, &tf ) || tf < 0 || tf > 0x40000000 )
++		return 0;
++	for( int i = 0; i < 4; i++ )
++		dot += (int64_t)a[i] * b[i];
++	// the SDK's test (|p - q|^2 > |p + q|^2) is the dot's sign: q turned,
++	// as the SDK turns it (in the caller's array too)
++	if( dot < 0 )
++	{
++		for( int i = 0; i < 4; i++ )
++		{
++			b[i] = -b[i];
++			q[i] = -q[i];
++		}
++		dot = -dot;
++	}
++	{
++		int32_t c = (int32_t)( dot >> 30 );
++
++		if( 0x40000000 - c > 1074 ) // the SDK's 1 - cos > 0.000001
++		{
++			// sin w: q's part across p, |q - c p|
++			uint64_t ss = 0;
++			uint32_t s, ph = 0;
++			int64_t  x, y, inv;
++			int32_t  sw, st, s1;
++
++			for( int i = 0; i < 4; i++ )
++			{
++				int32_t r = b[i] - rp_qmul( c, a[i] );
++
++				ss += (uint64_t)( (int64_t)r * r );
++			}
++			s = rp_isqrt64( ss );
++			// w = atan2(s, c) by CORDIC (first quadrant), a turn as 2^32
++			x = c;
++			y = s;
++			for( int i = 0; i < 28; i++ )
++			{
++				int64_t nx;
++
++				if( y > 0 )
++				{
++					nx = x + ( y >> i );
++					y -= x >> i;
++					ph += rp_qatan[i];
++				}
++				else
++				{
++					nx = x - ( y >> i );
++					y += x >> i;
++					ph -= rp_qatan[i];
++				}
++				x = nx;
++			}
++			// the weights sin((1 - t) w) / sin w and sin(t w) / sin w,
++			// from the table for the angle found (one divide for both)
++			sw = rp_qsin_at( ph );
++			if( sw < 1024 )
++				return 0;
++			st = rp_qsin_at( (uint32_t)(( (uint64_t)ph * (uint32_t)tf ) >> 30 ));
++			s1 = rp_qsin_at( (uint32_t)(( (uint64_t)ph * (uint32_t)( 0x40000000 - tf )) >> 30 ));
++			inv = ( (int64_t)1 << 60 ) / sw; // 2.30 / sw as 2.30
++			sclq = (int32_t)(( (int64_t)st * inv ) >> 30 );
++			sclp = (int32_t)(( (int64_t)s1 * inv ) >> 30 );
++		}
++		else
++		{
++			sclp = 0x40000000 - tf;
++			sclq = tf;
++		}
++	}
++	for( int i = 0; i < 4; i++ )
++		qt[i] = rp_cf_float( rp_qmul( a[i], sclp ) + rp_qmul( b[i], sclq ), 30 );
++	return 1;
++}
++#endif // XASH_RETROPANE
++
  void ConcatTransforms( float in1[3][4], float in2[3][4], float out[3][4] )
  {
 +#if XASH_RETROPANE
@@ -102,7 +328,29 @@ index 441aca8..31f8e33 100644
  #if XASH_SIMD_NEON
  	float32x4_t in2_row0 = vld1q_f32( in2[0] );
  	float32x4_t in2_row1 = vld1q_f32( in2[1] );
-@@ -223,10 +314,25 @@ void QuaternionSlerp( vec4_t p, vec4_t q, float t, vec4_t qt )
+@@ -107,6 +424,10 @@ AngleQuaternion
+ */
+ void AngleQuaternion( float *angles, vec4_t quaternion )
+ {
++#if XASH_RETROPANE
++	if( rp_angle_quaternion( angles, quaternion ))
++		return;
++#endif
+ 	float angle;
+ 	float sr, sp, sy, cr, cp, cy;
+ 
+@@ -197,6 +518,10 @@ void QuaternionSlerp( vec4_t p, vec4_t q, float t, vec4_t qt )
+ 	sclp = NEON_MLS( ct, cosom, sclq );   // ct - cosom*sclq
+ 	vst1q_f32( qt, NEON_MLA( vmulq_f32( p_reg, sclp ), q_reg, sclq ));
+ #else // XASH_SIMD_NEON
++#if XASH_RETROPANE
++	if( rp_quaternion_slerp( p, q, t, qt ))
++		return;
++#endif
+ 	int i;
+ 	float omega, cosom, sinom, sclp, sclq;
+ 
+@@ -223,10 +548,25 @@ void QuaternionSlerp( vec4_t p, vec4_t q, float t, vec4_t qt )
  	{
  		if( ( 1.0f - cosom ) > 0.000001f )
  		{
@@ -128,6 +376,17 @@ index 441aca8..31f8e33 100644
  		}
  		else
  		{
+@@ -311,6 +651,10 @@ QuaternionMatrix
+ */
+ void QuaternionMatrix( vec4_t quaternion, float (*matrix)[4] )
+ {
++#if XASH_RETROPANE
++	if( rp_quaternion_matrix( quaternion, matrix ))
++		return;
++#endif
+ 	matrix[0][0] = 1.0f - 2.0f * quaternion[1] * quaternion[1] - 2.0f * quaternion[2] * quaternion[2];
+ 	matrix[1][0] = 2.0f * quaternion[0] * quaternion[1] + 2.0f * quaternion[3] * quaternion[2];
+ 	matrix[2][0] = 2.0f * quaternion[0] * quaternion[2] - 2.0f * quaternion[3] * quaternion[1];
 diff --git a/common/cl_entity.h b/common/cl_entity.h
 index d5323aa..a66849e 100644
 --- a/common/cl_entity.h
