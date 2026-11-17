@@ -1486,7 +1486,7 @@ impl Screen for Chip {
         o.checker_on = o.checker && variant;
         o.overlay_on = o.overlay && variant;
         let part = if variant { o.part } else { Part::All };
-        let mut put = |p| {
+        let put = |p| {
             feed.put(match p {
                 Piece::Word(w) => ta::Item::Word(w),
                 Piece::End => ta::Item::End,

@@ -390,10 +390,10 @@ index 4b1e40c..41d0718 100644
  #else
  static inline void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h ) { }
 diff --git a/engine/server/sv_save.c b/engine/server/sv_save.c
-index 54975d6..9b08e2f 100644
+index 54975d6..c74f1d5 100644
 --- a/engine/server/sv_save.c
 +++ b/engine/server/sv_save.c
-@@ -33,7 +33,11 @@ half-life implementation of saverestore system
+@@ -33,7 +33,21 @@ half-life implementation of saverestore system
  #define SAVEGAME_VERSION		0x0071				// Version 0.71 GoldSrc compatible
  #define CLIENT_SAVEGAME_VERSION	0x0067				// Version 0.67
  
@@ -402,11 +402,21 @@ index 54975d6..9b08e2f 100644
 +// heap's 35 MiB in use): 512 KiB, its use logged at every save and an
 +// overflow said plainly (a level's save is a few hundred KiB in GoldSrc's
 +// own files); Xash reserves 4 MiB "for now", a PC's habit
++// RetroPane (R280): a short from the packed save data, at any byte offset
++// (the PXA270 faults on a misaligned word read; run 42)
++static inline short RP_SaveShort( const void *p )
++{
++	short v;
++
++	memcpy( &v, p, sizeof( v ));
++	return v;
++}
++
 +#define SAVE_HEAPSIZE		0x80000 // run 40: c1a0's level change used 78 KB
  #define SAVE_HASHSTRINGS		0xFFF				// 4095 unique strings
  
  // savedata headers
-@@ -1565,6 +1569,11 @@ static SAVERESTOREDATA *SaveGameState( int changelevel )
+@@ -1565,6 +1579,11 @@ static SAVERESTOREDATA *SaveGameState( int changelevel )
  	// Write entity string token table
  	pTokenData = StoreHashTable( pSaveData );
  
@@ -418,6 +428,31 @@ index 54975d6..9b08e2f 100644
  	// output to disk
  	if(( pFile = FS_Open( name, "wb", true )) == NULL )
  	{
+@@ -2375,9 +2394,9 @@ int GAME_EXPORT SV_GetSaveComment( const char *savename, char *comment )
+ 	else pTokenList = NULL;
+ 
+ 	// short, short (size, index of field name)
+-	nFieldSize = *(short *)pData;
++	nFieldSize = RP_SaveShort( pData );
+ 	pData += sizeof( short );
+-	pFieldName = pTokenList[*(short *)pData];
++	pFieldName = pTokenList[RP_SaveShort( pData )];
+ 
+ 	if( Q_stricmp( pFieldName, "GameHeader" ))
+ 	{
+@@ -2401,10 +2420,10 @@ int GAME_EXPORT SV_GetSaveComment( const char *savename, char *comment )
+ 		// Size
+ 		// szName
+ 		// Actual Data
+-		nFieldSize = *(short *)pData;
++		nFieldSize = RP_SaveShort( pData );
+ 		pData += sizeof( short );
+ 
+-		pFieldName = pTokenList[*(short *)pData];
++		pFieldName = pTokenList[RP_SaveShort( pData )];
+ 		pData += sizeof( short );
+ 
+ 		size = Q_min( nFieldSize, MAX_STRING );
 diff --git a/filesystem/io.c b/filesystem/io.c
 index d30047f..6128130 100644
 --- a/filesystem/io.c

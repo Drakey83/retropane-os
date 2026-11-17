@@ -120,6 +120,144 @@ index d5323aa..a66849e 100644
  #define HISTORY_MASK	( HISTORY_MAX - 1 )
  
  #include "entity_state.h"
+diff --git a/dlls/util.cpp b/dlls/util.cpp
+index 27c7ffe..10201f4 100644
+--- a/dlls/util.cpp
++++ b/dlls/util.cpp
+@@ -32,6 +32,18 @@
+ #include "gamerules.h"
+ #include "byteswap.h"
+ 
++// RetroPane (R280; run 42 on the X51v: a data abort in CRestore::ReadField at
++// the first level change): the save buffer packs each field at whatever byte
++// offset it falls, and the SDK read them with word casts, fine on a PC's x86,
++// a fault on the PXA270 (ARMv5, alignment checking on). Every read from the
++// packed buffer goes through these: memcpy of a fixed size, byte loads where
++// the address may be odd.
++static inline int RP_RdInt( const void *p ) { int v; memcpy( &v, p, sizeof( v )); return v; }
++static inline short RP_RdShort( const void *p ) { short v; memcpy( &v, p, sizeof( v )); return v; }
++static inline float RP_RdFloat( const void *p ) { float v; memcpy( &v, p, sizeof( v )); return v; }
++static inline size_t RP_RdSize( const void *p ) { size_t v; memcpy( &v, p, sizeof( v )); return v; }
++
++
+ float UTIL_WeaponTimeBase( void )
+ {
+ #if CLIENT_WEAPONS
+@@ -2174,7 +2186,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 						timeData += time;
+ 						memcpy( pOutputData, &timeData, 4 );
+ 					#else
+-						timeData = ULittleToHost( *(float *)pInputData );
++						timeData = ULittleToHost( RP_RdFloat( pInputData ));
+ 						// Re-base time variables
+ 						timeData += time;
+ 						*( (float *)pOutputData ) = timeData;
+@@ -2216,7 +2228,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 						}
+ 						break;
+ 					case FIELD_EVARS:
+-						entityIndex = ULittleToHost( *( int *)pInputData );
++						entityIndex = ULittleToHost( RP_RdInt( pInputData ));
+ 						pent = EntityFromIndex( entityIndex );
+ 						if( pent )
+ 							*( (entvars_t **)pOutputData ) = VARS( pent );
+@@ -2224,7 +2236,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 							*( (entvars_t **)pOutputData ) = NULL;
+ 						break;
+ 					case FIELD_CLASSPTR:
+-						entityIndex = ULittleToHost( *( int *)pInputData );
++						entityIndex = ULittleToHost( RP_RdInt( pInputData ));
+ 						pent = EntityFromIndex( entityIndex );
+ 						if( pent )
+ 							*( (CBaseEntity **)pOutputData ) = CBaseEntity::Instance( pent );
+@@ -2232,14 +2244,14 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 							*( (CBaseEntity **)pOutputData ) = NULL;
+ 						break;
+ 					case FIELD_EDICT:
+-						entityIndex = ULittleToHost( *(int *)pInputData );
++						entityIndex = ULittleToHost( RP_RdInt( pInputData ));
+ 						pent = EntityFromIndex( entityIndex );
+ 						*( (edict_t **)pOutputData ) = pent;
+ 						break;
+ 					case FIELD_EHANDLE:
+ 						// Input and Output sizes are different!
+ 						pInputData = (char*)pData + j * gInputSizes[pTest->fieldType];
+-						entityIndex = ULittleToHost( *(int *)pInputData );
++						entityIndex = ULittleToHost( RP_RdInt( pInputData ));
+ 						pent = EntityFromIndex( entityIndex );
+ 						if( pent )
+ 							*( (EHANDLE *)pOutputData ) = CBaseEntity::Instance( pent );
+@@ -2247,7 +2259,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 							*( (EHANDLE *)pOutputData ) = NULL;
+ 						break;
+ 					case FIELD_ENTITY:
+-						entityIndex = ULittleToHost( *(int *)pInputData );
++						entityIndex = ULittleToHost( RP_RdInt( pInputData ));
+ 						pent = EntityFromIndex( entityIndex );
+ 						if( pent )
+ 							*( (EOFFSET *)pOutputData ) = OFFSET( pent );
+@@ -2261,9 +2273,9 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 						ULittleToHostSW( ( (float*)pOutputData)[1] );
+ 						ULittleToHostSW( ( (float*)pOutputData)[2] );
+ 						#else
+-						( (float *)pOutputData )[0] = ULittleToHost( ( (float *)pInputData )[0] );
+-						( (float *)pOutputData )[1] = ULittleToHost( ( (float *)pInputData )[1] );
+-						( (float *)pOutputData )[2] = ULittleToHost( ( (float *)pInputData )[2] );
++						( (float *)pOutputData )[0] = ULittleToHost( RP_RdFloat( (char *)pInputData + 0 ));
++						( (float *)pOutputData )[1] = ULittleToHost( RP_RdFloat( (char *)pInputData + 4 ));
++						( (float *)pOutputData )[2] = ULittleToHost( RP_RdFloat( (char *)pInputData + 8 ));
+ 						#endif
+ 						break;
+ 					case FIELD_POSITION_VECTOR:
+@@ -2278,24 +2290,24 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+ 							memcpy( pOutputData, &tmp, sizeof( Vector ) );
+ 						}
+ 						#else
+-						( (float *)pOutputData )[0] = ULittleToHost( ( (float *)pInputData )[0] ) + position.x;
+-						( (float *)pOutputData )[1] = ULittleToHost( ( (float *)pInputData )[1] ) + position.y;
+-						( (float *)pOutputData )[2] = ULittleToHost( ( (float *)pInputData )[2] ) + position.z;
++						( (float *)pOutputData )[0] = ULittleToHost( RP_RdFloat( (char *)pInputData + 0 )) + position.x;
++						( (float *)pOutputData )[1] = ULittleToHost( RP_RdFloat( (char *)pInputData + 4 )) + position.y;
++						( (float *)pOutputData )[2] = ULittleToHost( RP_RdFloat( (char *)pInputData + 8 )) + position.z;
+ 						#endif
+ 						break;
+ 					case FIELD_BOOLEAN:
+ 					case FIELD_INTEGER:
+-						*( (int *)pOutputData ) = ULittleToHost( *(int *)pInputData );
++						*( (int *)pOutputData ) = ULittleToHost( RP_RdInt( pInputData ));
+ 						break;
+ 					case FIELD_SHORT:
+-						*( (short *)pOutputData ) = ULittleToHost( *(short *)pInputData );
++						*( (short *)pOutputData ) = ULittleToHost( RP_RdShort( pInputData ));
+ 						break;
+ 					case FIELD_CHARACTER:
+ 						*( (char *)pOutputData ) = *(char *)pInputData;
+ 						break;
+ 					case FIELD_POINTER:
+ 						// TODO: There must be another solution for 64 bit big endian
+-						*( (void**)pOutputData ) = (void*)ULittleToHost( *(size_t *)pInputData );
++						*( (void**)pOutputData ) = (void*)ULittleToHost( RP_RdSize( pInputData ));
+ 						break;
+ 					case FIELD_FUNCTION:
+ 						if( ( (char *)pInputData )[0] == '\0' )
+@@ -2400,7 +2412,7 @@ int CRestore::ReadNamedInt( const char *pName )
+ 	HEADER header;
+ 
+ 	BufferReadHeader( &header );
+-	return LittleToHost( ( (int *)header.pData )[0] );
++	return LittleToHost( RP_RdInt( header.pData ));
+ }
+ 
+ char *CRestore::ReadNamedString( const char *pName )
+@@ -2409,7 +2421,7 @@ char *CRestore::ReadNamedString( const char *pName )
+ 
+ 	BufferReadHeader( &header );
+ #if TOKENIZE
+-	return (char *)( m_pdata->pTokens[*(short *)header.pData] );
++	return (char *)( m_pdata->pTokens[RP_RdShort( header.pData )] );
+ #else
+ 	return (char *)header.pData;
+ #endif
 diff --git a/public/build.h b/public/build.h
 index 5f4d861..4c70960 100644
 --- a/public/build.h
