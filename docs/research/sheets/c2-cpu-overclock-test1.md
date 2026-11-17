@@ -106,3 +106,22 @@ What would overturn it: the PLL refusing 2N 7 (route C next: L 14-15 x
 2N 8, 728 / 780 MHz with the bus and memory a little slower); a wrong
 answer or a hang at 728 (this unit's core can't run past 624 at Dell's top
 voltage by route A).
+
+## 8. Run 44 on the X51v (2026-11-16, the owner watching; port-runner-0044)
+
+Half-Life with `-rpcpu 7`. **The PLL took 2N 7** (route A: L 16, the bus,
+memory and SDRAM as at 624) and **the core counted 727,965 kHz** against
+the OS timer; the first known-answer check was right. **Within seconds,
+while the map loaded, a data abort in abort mode at the prefetch-abort
+vector** (`0xFFFF000C`, the vector's own load faulting: a fault inside a
+fault), the run lost. Read: this unit's core does not hold 728 MHz at
+Dell's top voltage pattern (one run; the voltage cannot be raised: no
+control exists). The CPU was put back to 624 by a soft reset into Windows
+Mobile right after (the loader keeps the clock it finds after a crash).
+
+Left for the owner (results, not decisions): route C (L 14-15 x 2N 8:
+728 / 780 MHz with the run clock and bus 182-195 MHz, the SDRAM 91-98)
+asks the same core speed or more, so it is unlikely to hold where route A
+did not; route B (L 17 x 2N 6: 663 MHz, +6%) raises the bus to 221 MHz and
+the SDRAM to 110 MHz, past Intel's and the memory's ratings (the owner's
+RAM rule); or C2 closed for this unit at 624.
