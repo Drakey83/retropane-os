@@ -43,3 +43,14 @@ hang is solved.
 
 What would overturn it: B measured slower than A on the X51v, or the owner
 preferring the software renderer's lighting look.
+
+## The pick (2026-11-16)
+
+**B**, as recommended. The owner: "ill do whatever you recommend as long as
+it doenst end with me giving up on 45 fps". Why B serves 45: the frame is
+CPU-bound (runs 40-43: 30-45 ms of CPU against a 9-11 ms render), and B
+moves the walls' lighting and uploads off the CPU (run 39-41: the atlas's
+uploads and the CPU lighting 4-7% of the frame, more in busy views, and
+the cause of the black walls and page-drop hitches), paying with GPU time
+the chip has spare and ~1 ms more feed (the walls are ~15% of the words).
+To build next (emulator first: blend and wrap words new to ref_rp).
