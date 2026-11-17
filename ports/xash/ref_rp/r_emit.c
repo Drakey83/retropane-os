@@ -128,6 +128,8 @@ static int      rp_lit_on, rp_lit_cap, rp_lit_capn;
 static uint32_t rp_lit_corners, rp_lit_differ;
 /* kit 68's guard: corners sent that RP_LitFill had not filled (must be 0) */
 static uint32_t rp_lit_unfilled;
+/* kit 72: normals recorded for lighting when read, and lit (a report's) */
+static uint32_t rp_nm_lazy, rp_nm_made;
 /* rp_lit 2 also checks kit 61's one-call meshes and parts against the call a
    normal (a vertex): items made both ways, items that differed */
 static uint32_t rp_b61_items, rp_b61_differ;
@@ -199,8 +201,9 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: rp_lit 2 (kit 53's check): %u corners built both ways, %u differed in a word\n",
 			rp_lit_corners, rp_lit_differ );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: kit 68's lazy corners: %u sent unfilled (must be 0)\n", rp_lit_unfilled );
-	if( rp_emit_on == 2 && rp_lit_on == 2 )
+		fprintf( stderr, "rp-emit: kit 68's lazy corners: %u sent unfilled (must be 0); kit 72's normals: %u a frame recorded, %u of them lit\n",
+			rp_lit_unfilled, rp_nm_lazy / f, rp_nm_made / f );
+	if( rp_emit_on == 2 && rp_lit_on >= 2 )
 		fprintf( stderr, "rp-emit: rp_lit 2 (kit 61's check): %u normals and vertices made both ways (one call a mesh, one a normal), %u differed\n",
 			rp_b61_items, rp_b61_differ );
 	if( rp_emit_on == 2 )
@@ -231,6 +234,7 @@ static void RP_EmitReport( void )
 			rp_count.sky_frames, f, rp_count.sky_sides / f, rp_count.sky_missed, rp_count.water_faces / f, rp_count.water_cells / f,
 			rp_count.water_missed, rp_count.conveyors / f );
 	memset( &rp_count, 0, sizeof( rp_count ));
+	rp_nm_lazy = rp_nm_made = 0;
 	since = now;
 }
 
@@ -3250,9 +3254,122 @@ once (full-bright and flat-shade meshes made once and copied), the light
 kept in registers, the same integer maths a normal, so the same bytes and
 the same records as RP_StudioLightFixed and RP_StudioVertFixed.
 */
-void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flags, const float ( *norms )[3], int count, byte ( *out )[3] )
+/*
+Kit 72 (run 69: RP_StudioLightMesh 1,486 samples, 2.6% of the play, while
+~60% of the model triangles are dropped before drawing, kit 68): a mesh's
+normals are lit when a sent corner first reads one (RP_StudioNCol), not
+all before the draw; full-bright and flat meshes (one colour) stay made
+at once, and rp_lit 2 lights every normal both ways as before. The same
+integer maths a normal (RP_LitNormal, shared by both ways), the same light
+and bone tables (they hold for the whole part: rp_studio_serial), so the
+same bytes for every normal read. Iterate (rule 0): GL and ref_soft light
+every vertex before culling; only what is drawn needs a colour.
+*/
+#define RP_LM_MESHES 64
+static struct
+{
+	const byte *bones;
+	const float ( *blight )[3];
+	const float ( *norms )[3];
+	int         first, count, flags;
+} rp_nm[RP_LM_MESHES];
+static int        rp_nm_n;          /* meshes recorded this part */
+static byte ( *rp_nm_base )[3];     /* the part's colour table */
+static int        rp_nm_serial[RP_STUDIO_VERTS]; /* lit for this serial */
+
+/* The part's colour table (R_StudioDrawPoints' rp_ncol): none recorded. */
+void RP_StudioLightTable( byte ( *table )[3] )
+{
+	rp_nm_base = table;
+	rp_nm_n = 0;
+}
+
+/* Normal i of a mesh lit, as kit 62's loop lit it. */
+static inline void RP_LitNormal( const byte *bones, const float ( *blight )[3], const float ( *norms )[3],
+	int i, int serial, const uint16_t *gtab, int small, byte *out )
 {
 	const int32_t a16 = rp_flit.a16, s16 = rp_flit.s16;
+	const int32_t g0 = rp_flit.g16[0], g1 = rp_flit.g16[1], g2 = rp_flit.g16[2];
+	unsigned bone = bones[i];
+	int32_t  n[3];
+	uint32_t gamma;
+	int      index;
+
+	if( bone >= RP_BONES )
+		bone = 0;
+	if( rp_flight_serial[bone] != serial )
+	{
+		rp_flight_serial[bone] = serial;
+		for( int j = 0; j < 3; j++ )
+			rp_flight[bone][j] = rp_fixq( blight[bones[i]][j], 28 );
+	}
+	if( !rp_fixq3_fast( norms[i], 30, n ))
+		for( int j = 0; j < 3; j++ )
+			n[j] = rp_fixq( norms[i][j], 30 );
+	index = rp_light_index( rp_dot30( n, rp_flight[bone] ), a16, s16 );
+	gamma = gtab ? gtab[index] : (uint32_t)index;
+	if( small )
+	{
+		uint32_t c0 = (uint32_t)g0 * gamma >> 16, c1 = (uint32_t)g1 * gamma >> 16, c2 = (uint32_t)g2 * gamma >> 16;
+
+		out[0] = c0 > 255 ? 255 : (byte)c0;
+		out[1] = c1 > 255 ? 255 : (byte)c1;
+		out[2] = c2 > 255 ? 255 : (byte)c2;
+	}
+	else
+	{
+		out[0] = rp_light_byte( g0, gamma );
+		out[1] = rp_light_byte( g1, gamma );
+		out[2] = rp_light_byte( g2, gamma );
+	}
+}
+
+/* kit 62's choices a mesh: the gamma table, the 32-bit products */
+static inline const uint16_t *RP_LitGamma( void )
+{
+	return FBitSet( gp_host->features, ENGINE_LINEAR_GAMMA_SPACE ) ? NULL : tr.lightgammatable;
+}
+
+static inline int RP_LitSmall( void )
+{
+	return (uint32_t)rp_flit.g16[0] < ( 1u << 21 ) && (uint32_t)rp_flit.g16[1] < ( 1u << 21 )
+		&& (uint32_t)rp_flit.g16[2] < ( 1u << 21 );
+}
+
+/* The part's normal ni's colour, lit now if a recorded mesh holds it. */
+const byte *RP_StudioNCol( int ni )
+{
+	const int serial = rp_studio_serial;
+
+	if( rp_nm_serial[ni] != serial )
+	{
+		rp_nm_serial[ni] = serial;
+		for( int m = 0; m < rp_nm_n; m++ )
+			if( ni >= rp_nm[m].first && ni < rp_nm[m].first + rp_nm[m].count )
+			{
+				RP_LitNormal( rp_nm[m].bones, rp_nm[m].blight, rp_nm[m].norms, ni - rp_nm[m].first, serial,
+					RP_LitGamma( ), RP_LitSmall( ), rp_nm_base[ni] );
+				rp_nm_made++;
+				if( rp_lit_on == 3 )
+				{
+					/* rp_lit 3: each normal lit when read also made one at a
+					   time, the old way, and compared */
+					const int i = ni - rp_nm[m].first;
+					const int bone = rp_nm[m].bones[i];
+					byte b[3];
+
+					RP_StudioLightFixed( bone, rp_nm[m].blight[bone], rp_nm[m].flags, rp_nm[m].norms[i], b );
+					rp_b61_items++;
+					rp_b61_differ += b[0] != rp_nm_base[ni][0] || b[1] != rp_nm_base[ni][1] || b[2] != rp_nm_base[ni][2];
+				}
+				break;
+			}
+	}
+	return rp_nm_base[ni];
+}
+
+void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flags, const float ( *norms )[3], int count, byte ( *out )[3] )
+{
 	const int32_t g0 = rp_flit.g16[0], g1 = rp_flit.g16[1], g2 = rp_flit.g16[2];
 	const int     serial = rp_studio_serial;
 
@@ -3281,29 +3398,25 @@ void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flag
 			}
 		return;
 	}
-	/* kit 62: the gamma table chosen once a mesh (LightToTexGamma tests the
-	   engine's linear-gamma bit for every call; the index here is at most
-	   1020, inside the table), and the colour bytes in 32-bit products when
-	   every light colour is 0 <= g16 < 2^21 (g16 x 1023 then fits: the
-	   same value as rp_light_byte's 64-bit product) */
-	const uint16_t *gtab = FBitSet( gp_host->features, ENGINE_LINEAR_GAMMA_SPACE ) ? NULL : tr.lightgammatable;
-	const int   small = (uint32_t)g0 < ( 1u << 21 ) && (uint32_t)g1 < ( 1u << 21 ) && (uint32_t)g2 < ( 1u << 21 );
+	/* kit 72: recorded, lit when read (rp_lit 2: all now, and checked) */
+	if( rp_lit_on != 2 && rp_nm_base && rp_nm_n < RP_LM_MESHES && out >= rp_nm_base
+		&& out - rp_nm_base + count <= RP_STUDIO_VERTS )
+	{
+		rp_nm[rp_nm_n].bones = bones;
+		rp_nm[rp_nm_n].blight = blight;
+		rp_nm[rp_nm_n].norms = norms;
+		rp_nm[rp_nm_n].first = (int)( out - rp_nm_base );
+		rp_nm[rp_nm_n].count = count;
+		rp_nm[rp_nm_n].flags = flags;
+		rp_nm_n++;
+		rp_nm_lazy += (uint32_t)count;
+		return;
+	}
+	const uint16_t *gtab = RP_LitGamma( );
+	const int       small = RP_LitSmall( );
 
 	for( int i = 0; i < count; i++ )
 	{
-		unsigned bone = bones[i];
-		int32_t  n[3];
-		uint32_t gamma;
-		int      index;
-
-		if( bone >= RP_BONES )
-			bone = 0;
-		if( rp_flight_serial[bone] != serial )
-		{
-			rp_flight_serial[bone] = serial;
-			for( int j = 0; j < 3; j++ )
-				rp_flight[bone][j] = rp_fixq( blight[bones[i]][j], 28 );
-		}
 		/* the normals are read in order and miss: eight on asked for; the
 		   colour bytes' line asked for before it is written (kit 62: the
 		   PXA270 allocates on reads only, so RP_StudioCmdLit's reads of
@@ -3311,26 +3424,11 @@ void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flag
 		__builtin_prefetch( norms[i] + 24 );
 		if( !( i & 7 ))
 			__builtin_prefetch( out[i + 16] );
-		if( !rp_fixq3_fast( norms[i], 30, n ))
-			for( int j = 0; j < 3; j++ )
-				n[j] = rp_fixq( norms[i][j], 30 );
-		index = rp_light_index( rp_dot30( n, rp_flight[bone] ), a16, s16 );
-		gamma = gtab ? gtab[index] : (uint32_t)index;
-		if( small )
-		{
-			uint32_t c0 = (uint32_t)g0 * gamma >> 16, c1 = (uint32_t)g1 * gamma >> 16, c2 = (uint32_t)g2 * gamma >> 16;
-
-			out[i][0] = c0 > 255 ? 255 : (byte)c0;
-			out[i][1] = c1 > 255 ? 255 : (byte)c1;
-			out[i][2] = c2 > 255 ? 255 : (byte)c2;
-		}
-		else
-		{
-			out[i][0] = rp_light_byte( g0, gamma );
-			out[i][1] = rp_light_byte( g1, gamma );
-			out[i][2] = rp_light_byte( g2, gamma );
-		}
+		RP_LitNormal( bones, blight, norms, i, serial, gtab, small, out[i] );
 	}
+	if( rp_nm_base && out >= rp_nm_base && out - rp_nm_base + count <= RP_STUDIO_VERTS )
+		for( int i = 0; i < count; i++ )
+			rp_nm_serial[out - rp_nm_base + i] = serial; /* made: not again */
 	if( rp_lit_on == 2 )
 		for( int i = 0; i < count; i++ )
 		{
@@ -3795,7 +3893,10 @@ static void RP_LitFill( int k, uint32_t ( *c )[RP_VERTEX_WORDS], int32_t ( *cst 
 		s = rp_lz.smax;
 	if( tt > rp_lz.tmax )
 		tt = rp_lz.tmax;
-	c[k][4] = rp_lz.alpha | (uint32_t)rp_lz.ncol[ni][0] << 16 | (uint32_t)rp_lz.ncol[ni][1] << 8 | rp_lz.ncol[ni][2];
+	/* kit 72: the normal lit when first read */
+	const byte *nc = rp_lz.ncol == (const byte( * )[3] )rp_nm_base ? RP_StudioNCol( (int)ni ) : rp_lz.ncol[ni];
+
+	c[k][4] = rp_lz.alpha | (uint32_t)nc[0] << 16 | (uint32_t)nc[1] << 8 | nc[2];
 	c[k][5] = RP_FixBits( rp_lz.u0 + s, 5 + 9 );
 	c[k][6] = RP_FixBits( rp_lz.v0 + tt, 5 + 9 );
 	cst[k][0] = rp_lz.u0 + s;

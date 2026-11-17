@@ -998,6 +998,28 @@ The margin over 30 fps is 213 ms (0.2%) on this walk; the 5-second
 frame-rate lines over the whole run (the map's start and the corner where
 the walk turns included) average 27.85.
 
+**Kit 72 (2026-11-17, exact, widening the margin):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A model's normals lit (`RP_StudioLightMesh`) | GL and ref_soft light every vertex before culling; kit 61 lit a mesh's normals in one call, all of them | a mesh is recorded and each normal lit when a sent corner first reads its colour (`RP_StudioNCol`), with the same per-normal integer maths (`RP_LitNormal`, shared by both ways); full-bright and flat meshes made at once | run 69: 1,486 samples while ~60% of the model triangles are dropped before drawing (kit 68); `rp_lit 3` lights lazily and makes each such normal the old way too, counting differences |
+| The traces' BSP walk (`PM_RecursiveHullCheck`, `PM_HullPointContents`) | each level's clip node read when reached, then its plane: two misses one after the other a level | both children's clip nodes asked for while this node's plane is tested (a leaf's negative number skipped) | run 69: ~180 samples on the node's first load and ~230 on the plane's; a hint only |
+
+**Run 70 (2026-11-17, kit 72, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **90,161 ms (30.5 fps) against kit 71's 91,454 ms
+(30.07 fps): 1.4% less time**, every 250-frame window faster (by 17-212
+ms) and every one of the thirteen marks at the same place. The emulator
+first, twice: `rp_lit 3` lit 164,075 normals lazily and made each the
+old way too, 0 differed; plain, the corners' guard 0 (0 on the X51v
+too). On the X51v 208-563 of a frame's 2,200-2,900 recorded normals are
+lit (the rest belong only to dropped triangles): `RP_StudioLightMesh`
+1,486 -> 58 samples plus `RP_StudioNCol` 406. The traces' child hint
+cost more than it gave (`PM_RecursiveHullCheck` 1,215 -> 1,301,
+`PM_HullPointContents` 473 -> 548: one of the two children is always a
+fill wasted on the PXA270's four): out in the next kit (R318). From kit
+60: 103,808 -> 90,161 ms (13.1%); 30 fps is 91,667 ms: the margin is
+1,506 ms (1.6%).
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
