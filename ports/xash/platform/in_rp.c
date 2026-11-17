@@ -78,6 +78,11 @@ saved config carries the layout's number (`rp_layout`, archived);
 the saved layout is older than N, so the player's own bindings stay and a
 new layout from the kit still reaches him once.
 */
+/* How opaque the touch keys are (the owner, run 47: "make the flashlight
+   secondary fire buttons like 50% transparent"); saved, so it can be set
+   from the console and stays. */
+static CVAR_DEFINE_AUTO( rp_tk_alpha, "0.5", FCVAR_ARCHIVE, "RetroPane: how opaque the touch keys are, 0 to 1" );
+
 static CVAR_DEFINE_AUTO( rp_layout, "0", FCVAR_ARCHIVE, "RetroPane: the button layout the saved bindings follow (rp_defaults)" );
 
 static void RP_Defaults_f( void )
@@ -97,6 +102,7 @@ static void RP_Defaults_f( void )
 void RP_InputInit( void )
 {
 	Cvar_RegisterVariable( &rp_layout );
+	Cvar_RegisterVariable( &rp_tk_alpha );
 	Cvar_Get( "rp_touchkeys", "0", 0, "RetroPane: 1 while the touch keys are shown (in_rp.c sets it)" );
 	Cmd_AddCommand( "rp_defaults", RP_Defaults_f, "RetroPane: rp_binds.cfg when the saved layout is older than the argument" );
 }
@@ -112,17 +118,20 @@ cut from each corner rounds it.
 */
 static void RP_GlassKey( int x, int y, int w, int h, const char *label, qboolean held )
 {
+	float       k = bound( 0.0f, rp_tk_alpha.value, 1.0f );
+	byte        rim = (byte)( 210 * k ), body = (byte)( 200 * k ), shine = (byte)( 60 * k );
+
 	static const byte top[3] = { 238, 242, 246 }, bottom[3] = { 168, 178, 190 };
 	static const byte glow_top[3] = { 150, 200, 245 }, glow_bottom[3] = { 40, 110, 200 };
 	const byte *a = held ? glow_top : top, *b = held ? glow_bottom : bottom;
 	const int   bands = 8;
-	rgba_t      ink = { 34, 40, 48, 255 };
+	rgba_t      ink = { 34, 40, 48, (byte)( 255 * ( 0.4f + 0.6f * k )) }; /* the label stays readable */
 	int         tw = 0, th = 0;
 
 	/* the rim: the rectangle less its four corner pixels */
-	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 1, y, w - 2, h, 70, 82, 96, 210 );
-	ref.dllFuncs.FillRGBA( kRenderTransTexture, x, y + 1, 1, h - 2, 70, 82, 96, 210 );
-	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + w - 1, y + 1, 1, h - 2, 70, 82, 96, 210 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 1, y, w - 2, h, 70, 82, 96, rim );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x, y + 1, 1, h - 2, 70, 82, 96, rim );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + w - 1, y + 1, 1, h - 2, 70, 82, 96, rim );
 	/* the body, lit from the top */
 	for( int i = 0; i < bands; i++ )
 	{
@@ -130,10 +139,10 @@ static void RP_GlassKey( int x, int y, int w, int h, const char *label, qboolean
 
 		ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 1, y0, w - 2, y1 - y0,
 			a[0] + ( b[0] - a[0] ) * i / ( bands - 1 ), a[1] + ( b[1] - a[1] ) * i / ( bands - 1 ),
-			a[2] + ( b[2] - a[2] ) * i / ( bands - 1 ), 200 );
+			a[2] + ( b[2] - a[2] ) * i / ( bands - 1 ), body );
 	}
 	/* the glass's shine on its upper half */
-	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 2, y + 2, w - 4, ( h - 4 ) / 2, 255, 255, 255, 60 );
+	ref.dllFuncs.FillRGBA( kRenderTransTexture, x + 2, y + 2, w - 4, ( h - 4 ) / 2, 255, 255, 255, shine );
 	if( held )
 		ink[0] = ink[1] = ink[2] = 255;
 	Con_DrawStringLen( label, &tw, &th );

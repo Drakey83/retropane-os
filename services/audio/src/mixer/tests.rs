@@ -1482,3 +1482,66 @@ fn resampled_streams_are_the_resampler_s_output() {
         );
     }
 }
+
+/// Half-Life's sound as the port drives it (`ports/xash/platform/s_rp.c`
+/// over `ports/sys/src/sound.rs`): one own-pace 44.1 kHz stereo Media
+/// stream; each game frame (25 to 45 ms apart) the engine reads its played
+/// position, paints up to 120 ms past it (`_snd_mixahead` 0.12) and writes
+/// that; the port ticks the mixer before each write and again after one.
+/// Returns the mixer's counts after `secs`.
+fn half_life_pattern(secs: u32) -> Stats {
+    let mut sim = Sim::new(true);
+    let mut cfg = StreamConfig::new(Role::Media, 44_100, 2, 1_411);
+    cfg.own_pace = true;
+    let id = sim.open(cfg);
+    let (mut written, mut seed, mut next_frame) = (0u64, 0x1234_5678u32, 0u32);
+    while sim.ms < secs * 1_000 {
+        sim.ms += 1;
+        sim.pass_to(frames(sim.ms));
+        if sim.ms >= sim.next_wake {
+            sim.tick();
+        }
+        if sim.ms < next_frame {
+            continue;
+        }
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        next_frame = sim.ms + 25 + seed % 21;
+        // rp_snd_played (a tick), then the paint up to 120 ms ahead
+        sim.tick();
+        let played = sim.m.status(id, sim.ms).unwrap().played;
+        let end = played + 5_292;
+        if end <= written {
+            continue;
+        }
+        let room = sim.m.status(id, sim.ms).unwrap().room;
+        let n = (end - written).min(room);
+        let samples: Vec<i16> = (0..n as usize * 2)
+            .map(|k| noise(7, written + (k / 2) as u64, k % 2, 8_000))
+            .collect();
+        sim.tick();
+        let took = sim.m.write(id, &samples, sim.ms).unwrap();
+        written += took;
+        if took > 0 {
+            sim.tick();
+        }
+    }
+    sim.m.stats()
+}
+
+#[test]
+fn half_life_s_writes_are_mixed_about_once() {
+    let st = half_life_pattern(30);
+    let played = u64::from(30u32) * 44_100;
+    eprintln!(
+        "half-life pattern: {} wakes, mixed {} frames for {} played, {} re-mixed by {} rewrites, {} late, {} starved",
+        st.wakes, st.mixed, played, st.rewritten, st.rewrites, st.late, st.starved
+    );
+    // 2026-11-16: 1,338,304 mixed for 1,323,000 played, 1 rewrite. The
+    // emulator's 44% re-mixed (its game frames slower than the 120 ms
+    // mix-ahead) is not the X51v's; this guards the device's pattern.
+    assert!(st.rewritten * 50 < played, "re-mixed {} of {played}", st.rewritten);
+    assert!(st.mixed < played + played / 20, "mixed {} for {played}", st.mixed);
+    assert_eq!(st.late, 0);
+}
