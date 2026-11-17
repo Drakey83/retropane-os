@@ -915,6 +915,24 @@ are inlined (`AddToFullPack` 321 -> 439, `StudioCalcBoneQuaterion` 365
 `SV_Physics` 784 -> 762: about 340 samples less in all. From kit 60:
 103,808 -> 95,736 ms (7.8%); 30 fps is ~91,700 ms, 4.2% still to go.
 
+**Kit 68 (2026-11-17, exact):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A model command's corners (`RP_StudioCmdLit`, `RP_StudioClipCmd`) | GL and ref_soft light and set up every vertex before culling; kit 53's one pass made every corner's texels (two float-bit conversions, the wrap test) and colour (the normal's colour bytes, a miss) before the sort dropped any | the positions first; the sort (near plane, facing, off screen) decides which triangles are sent; only their corners get texels and colour (`RP_LitFill`, once a corner); a command wholly behind the near plane skips the copy of its view-space points | run 65: of a frame's ~3,500 model triangles ~1,050 face away or leave the screen and ~1,100 lie wholly behind the near plane; 4.4% + 3.2% of the play in the two functions. The same words for every corner sent (`rp_lit 2` builds every corner both ways; a guard counts any corner sent unfilled, 0) |
+| The engine's sound mixing loops (`S_MixMono*`, `S_MixStereo*`, `*Pitch*`, `*Lerp*`) | Xash's C: `data[i] * volume[0]` in the loop; the source bytes may alias the paint buffer, so the compiler loads each byte twice and a volume from the stack each sample | the volumes and each source sample read once into locals | run 65: `S_MixChannelToBuffer` 971 samples, the 8-bit loop's load-use stalls; the same integer sums |
+
+**Run 66 (2026-11-17, kit 68, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **94,204 ms (29.1 fps) against kit 67's 95,736 ms
+(28.7 fps): 1.6% less time**, ten of the eleven 250-frame windows
+faster (by 41-277 ms; frames 1,001-1,250 2 ms slower) and every one of the thirteen marks at the same place. The emulator
+first, twice: with `rp_lit 2`, 1,072,366 corners built both ways, 0
+differed in a word; plain, the guard's corners sent unfilled 0 (0 on the
+X51v too). Run 65 -> run 66 samples: `RP_StudioCmdLit` 2,500 -> 1,564,
+`RP_StudioCmdSend` 1,840 -> 1,634, `S_MixChannelToBuffer` 971 -> 896.
+From kit 60: 103,808 -> 94,204 ms (9.3%); 30 fps is ~91,700 ms, 2.7%
+still to go.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

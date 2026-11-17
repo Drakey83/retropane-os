@@ -326,10 +326,47 @@ index 2cd7030..7f02b39 100644
  
  	if((int)(endtime - snd.soundtime) > samps )
 diff --git a/engine/client/sound/s_mix.c b/engine/client/sound/s_mix.c
-index fe5ece4..f35b8f6 100644
+index fe5ece4..2c43331 100644
 --- a/engine/client/sound/s_mix.c
 +++ b/engine/client/sound/s_mix.c
-@@ -41,18 +41,39 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -19,14 +19,23 @@ GNU General Public License for more details.
+ 
+ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAINTBUFFER_SIZE+1)];
+ 
++/*
++RetroPane (kit 68, run 65: S_MixChannelToBuffer 1.7% of the play, its 8-bit
++loop loading each source byte twice and a volume from the stack each
++sample): the volumes and each source sample read once into locals (the
++source bytes may alias the paint buffer in C, so the compiler could not);
++the same integer sums.
++*/
+ #define S_MakeMixMono( x ) \
+ 	static void S_MixMono ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, int num_samples ) \
+ 	{ \
+ 		const int##x##_t *data = buf; \
++		const int v0 = volume[0], v1 = volume[1]; \
+ 		for( int i = 0; i < num_samples; i++ ) \
+ 		{ \
+-			pbuf[i].left  += ( data[i] * volume[0] ) >> ( x - 8 ); \
+-			pbuf[i].right += ( data[i] * volume[1] ) >> ( x - 8 ); \
++			const int d = data[i]; \
++			pbuf[i].left  += ( d * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( d * v1 ) >> ( x - 8 ); \
+ 		} \
+ 	} \
+ 
+@@ -34,25 +43,50 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+ 	static void S_MixStereo ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, int num_samples ) \
+ 	{ \
+ 		const int##x##_t *data = buf; \
++		const int v0 = volume[0], v1 = volume[1]; \
+ 		for( int i = 0; i < num_samples; i++ ) \
+ 		{ \
+-			pbuf[i].left  += ( data[i * 2 + 0] * volume[0] ) >> ( x - 8 ); \
+-			pbuf[i].right += ( data[i * 2 + 1] * volume[1] ) >> ( x - 8 ); \
++			const int dl = data[i * 2 + 0], dr = data[i * 2 + 1]; \
++			pbuf[i].left  += ( dl * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( dr * v1 ) >> ( x - 8 ); \
  		} \
  	} \
  
@@ -361,69 +398,83 @@ index fe5ece4..f35b8f6 100644
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
 +		RP_PHASE( offset_frac, rate_scale ) \
++		const int v0 = volume[0], v1 = volume[1]; \
  		for( int i = 0; i < num_samples; i++ ) \
  		{ \
- 			pbuf[i].left  += ( data[sample_idx] * volume[0] ) >> ( x - 8 ); \
- 			pbuf[i].right += ( data[sample_idx] * volume[1] ) >> ( x - 8 ); \
+-			pbuf[i].left  += ( data[sample_idx] * volume[0] ) >> ( x - 8 ); \
+-			pbuf[i].right += ( data[sample_idx] * volume[1] ) >> ( x - 8 ); \
 -			offset_frac += rate_scale; \
 -			sample_idx += (uint)offset_frac; \
 -			offset_frac -= (uint)offset_frac; \
++			const int d = data[sample_idx]; \
++			pbuf[i].left  += ( d * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( d * v1 ) >> ( x - 8 ); \
 +			RP_ADVANCE( 1 ) \
  		} \
  	} \
  
-@@ -61,13 +82,12 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -61,13 +95,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
 +		RP_PHASE( offset_frac, rate_scale ) \
++		const int v0 = volume[0], v1 = volume[1]; \
  		for( int i = 0; i < num_samples; i++ ) \
  		{ \
- 			pbuf[i].left  += ( data[sample_idx+0] * volume[0] ) >> ( x - 8 ); \
- 			pbuf[i].right += ( data[sample_idx+1] * volume[1] ) >> ( x - 8 ); \
+-			pbuf[i].left  += ( data[sample_idx+0] * volume[0] ) >> ( x - 8 ); \
+-			pbuf[i].right += ( data[sample_idx+1] * volume[1] ) >> ( x - 8 ); \
 -			offset_frac += rate_scale; \
 -			sample_idx += (uint)offset_frac << 1; \
 -			offset_frac -= (uint)offset_frac; \
++			const int dl = data[sample_idx+0], dr = data[sample_idx+1]; \
++			pbuf[i].left  += ( dl * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( dr * v1 ) >> ( x - 8 ); \
 +			RP_ADVANCE( 2 ) \
  		} \
  	} \
  
-@@ -76,14 +96,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -76,14 +111,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
 +		RP_PHASE( offset_frac, rate_scale ) \
++		const int v0 = volume[0], v1 = volume[1]; \
  		for( int i = 0; i < num_samples; i++ ) \
  		{ \
 -			int s = (int)( data[sample_idx] * ( 1.0 - offset_frac ) + data[sample_idx + 1] * offset_frac ); \
-+			int a = data[sample_idx], w = (int)( ph >> 16 ); \
-+			int s = a + ((( data[sample_idx + 1] - a ) * w ) >> 16 ); \
- 			pbuf[i].left  += ( s * volume[0] ) >> ( x - 8 ); \
- 			pbuf[i].right += ( s * volume[1] ) >> ( x - 8 ); \
+-			pbuf[i].left  += ( s * volume[0] ) >> ( x - 8 ); \
+-			pbuf[i].right += ( s * volume[1] ) >> ( x - 8 ); \
 -			offset_frac += rate_scale; \
 -			sample_idx += (uint)offset_frac; \
 -			offset_frac -= (uint)offset_frac; \
++			int a = data[sample_idx], w = (int)( ph >> 16 ); \
++			int s = a + ((( data[sample_idx + 1] - a ) * w ) >> 16 ); \
++			pbuf[i].left  += ( s * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( s * v1 ) >> ( x - 8 ); \
 +			RP_ADVANCE( 1 ) \
  		} \
  	} \
  
-@@ -92,15 +112,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -92,15 +128,16 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
 +		RP_PHASE( offset_frac, rate_scale ) \
++		const int v0 = volume[0], v1 = volume[1]; \
  		for( int i = 0; i < num_samples; i++ ) \
  		{ \
 -			int sl = (int)( data[sample_idx + 0] * ( 1.0 - offset_frac ) + data[sample_idx + 2] * offset_frac ); \
 -			int sr = (int)( data[sample_idx + 1] * ( 1.0 - offset_frac ) + data[sample_idx + 3] * offset_frac ); \
-+			int l = data[sample_idx + 0], r = data[sample_idx + 1], w = (int)( ph >> 16 ); \
-+			int sl = l + ((( data[sample_idx + 2] - l ) * w ) >> 16 ); \
-+			int sr = r + ((( data[sample_idx + 3] - r ) * w ) >> 16 ); \
- 			pbuf[i].left  += ( sl * volume[0] ) >> ( x - 8 ); \
- 			pbuf[i].right += ( sr * volume[1] ) >> ( x - 8 ); \
+-			pbuf[i].left  += ( sl * volume[0] ) >> ( x - 8 ); \
+-			pbuf[i].right += ( sr * volume[1] ) >> ( x - 8 ); \
 -			offset_frac += rate_scale; \
 -			sample_idx += (uint)offset_frac << 1; \
 -			offset_frac -= (uint)offset_frac; \
++			int l = data[sample_idx + 0], r = data[sample_idx + 1], w = (int)( ph >> 16 ); \
++			int sl = l + ((( data[sample_idx + 2] - l ) * w ) >> 16 ); \
++			int sr = r + ((( data[sample_idx + 3] - r ) * w ) >> 16 ); \
++			pbuf[i].left  += ( sl * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( sr * v1 ) >> ( x - 8 ); \
 +			RP_ADVANCE( 2 ) \
  		} \
  	} \

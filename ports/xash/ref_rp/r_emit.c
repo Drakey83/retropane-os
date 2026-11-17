@@ -126,6 +126,8 @@ static int      rp_lm_on;
    and corners that differed */
 static int      rp_lit_on, rp_lit_cap, rp_lit_capn;
 static uint32_t rp_lit_corners, rp_lit_differ;
+/* kit 68's guard: corners sent that RP_LitFill had not filled (must be 0) */
+static uint32_t rp_lit_unfilled;
 /* rp_lit 2 also checks kit 61's one-call meshes and parts against the call a
    normal (a vertex): items made both ways, items that differed */
 static uint32_t rp_b61_items, rp_b61_differ;
@@ -196,6 +198,8 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 && rp_lit_on == 2 )
 		fprintf( stderr, "rp-emit: rp_lit 2 (kit 53's check): %u corners built both ways, %u differed in a word\n",
 			rp_lit_corners, rp_lit_differ );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: kit 68's lazy corners: %u sent unfilled (must be 0)\n", rp_lit_unfilled );
 	if( rp_emit_on == 2 && rp_lit_on == 2 )
 		fprintf( stderr, "rp-emit: rp_lit 2 (kit 61's check): %u normals and vertices made both ways (one call a mesh, one a normal), %u differed\n",
 			rp_b61_items, rp_b61_differ );
@@ -3729,6 +3733,81 @@ static inline int RP_OffScreen( const int32_t a[2], const int32_t b[2], const in
 		|| ( a[1] < 0 && b[1] < 0 && c[1] < 0 ) || ( a[1] > h && b[1] > h && c[1] > h );
 }
 
+/*
+Kit 68 (run 65: ~2,150 of a frame's ~3,500 model triangles dropped, about
+1,050 facing away or off the screen and 1,100 wholly behind the near
+plane, yet RP_StudioCmdLit made every corner's texels and colour first):
+the one-pass path makes a command's positions, the sort decides which
+triangles are sent, and only their corners get the texels and the colour
+(RP_LitFill, once a corner). The same words for every corner sent; a
+corner no sent triangle uses is never sent. Iterate (rule 0): GL and
+ref_soft light and set up every vertex before culling; the TA needs words
+only for what it draws.
+*/
+static struct
+{
+	const short *cmd; /* the command's first corner (four shorts a corner) */
+	const byte ( *ncol )[3];
+	const int ( *chrome )[2];
+	int32_t     u0, v0, sw, th, smax, tmax;
+	uint32_t    alpha;
+	int         on;   /* the command's texels and colours are still to fill */
+	uint16_t    gen;  /* this command's mark in rp_lit_filled */
+} rp_lz;
+static uint16_t rp_lit_filled[RP_STUDIO_CMD];
+
+/* Corner k's texels and colour, as RP_StudioCmdLit made them before. */
+static void RP_LitFill( int k, uint32_t ( *c )[RP_VERTEX_WORDS], int32_t ( *cst )[2] )
+{
+	const short *cmd = rp_lz.cmd + 4 * k;
+	unsigned     ni = (unsigned)(int)cmd[1];
+	int32_t      s, tt;
+
+	if( rp_lit_filled[k] == rp_lz.gen )
+		return;
+	rp_lit_filled[k] = rp_lz.gen;
+	if( rp_lz.chrome )
+	{
+		s = rp_lz.chrome[ni][0];
+		tt = rp_lz.chrome[ni][1];
+	}
+	else
+	{
+		s = cmd[2] << 5;
+		tt = cmd[3] << 5;
+	}
+	/* RP_StudioCmd's texels: wrapped past the skin, kept inside it */
+	if( s < 0 || s > rp_lz.sw || tt < 0 || tt > rp_lz.th )
+	{
+		rp_count.wraps++;
+		s %= rp_lz.sw;
+		tt %= rp_lz.th;
+		if( s < 0 )
+			s += rp_lz.sw;
+		if( tt < 0 )
+			tt += rp_lz.th;
+	}
+	if( s > rp_lz.smax )
+		s = rp_lz.smax;
+	if( tt > rp_lz.tmax )
+		tt = rp_lz.tmax;
+	c[k][4] = rp_lz.alpha | (uint32_t)rp_lz.ncol[ni][0] << 16 | (uint32_t)rp_lz.ncol[ni][1] << 8 | rp_lz.ncol[ni][2];
+	c[k][5] = RP_FixBits( rp_lz.u0 + s, 5 + 9 );
+	c[k][6] = RP_FixBits( rp_lz.v0 + tt, 5 + 9 );
+	cst[k][0] = rp_lz.u0 + s;
+	cst[k][1] = rp_lz.v0 + tt;
+}
+
+/* Every corner of the command filled (a path that sends them all). */
+static void RP_LitFillAll( int n, uint32_t ( *c )[RP_VERTEX_WORDS], int32_t ( *cst )[2] )
+{
+	if( !rp_lz.on )
+		return;
+	for( int k = 0; k < n; k++ )
+		RP_LitFill( k, c, cst );
+	rp_lz.on = 0;
+}
+
 static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 	const int32_t ( *cq )[3], const int32_t ( *cst )[2], int32_t ( *cxy )[2] )
 {
@@ -3769,6 +3848,20 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 		else if( i + 2 < tris && state[i + 1] == RP_TRI_BACK && state[i + 2] == RP_TRI_KEEP )
 			state[i] = state[i + 1] = RP_TRI_KEEP;
 	}
+	/* kit 68: texels and colours only for the corners of what is sent */
+	uint16_t lazy = rp_lz.on ? rp_lz.gen : 0;
+
+	if( rp_lz.on )
+	{
+		for( int i = 0; i < tris; i++ )
+			if( state[i] == RP_TRI_KEEP || state[i] == RP_TRI_CUT )
+			{
+				RP_LitFill( fan ? 0 : i, c, (int32_t( * )[2] )cst );
+				RP_LitFill( i + 1, c, (int32_t( * )[2] )cst );
+				RP_LitFill( i + 2, c, (int32_t( * )[2] )cst );
+			}
+		rp_lz.on = 0;
+	}
 
 	for( int i = 0; i <= tris; i++ )
 	{
@@ -3789,6 +3882,9 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 				idx[m++] = 0;
 			for( int k = fan ? run + 1 : run; k <= i + 1; k++ )
 				idx[m++] = (uint16_t)k;
+			if( lazy )
+				for( int k = 0; k < m; k++ )
+					rp_lit_unfilled += rp_lit_filled[idx[k]] != lazy;
 			RP_StudioRun( fan, (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m );
 			run = -1;
 		}
@@ -3835,6 +3931,9 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 			sidx[2] = poly[pn - 1];
 			if( pn == 4 )
 				sidx[3] = poly[2];
+			if( lazy )
+				for( int k = 0; k < pn; k++ )
+					rp_lit_unfilled += sidx[k] < n && rp_lit_filled[sidx[k]] != lazy;
 			RP_StudioWords( RP_GFX_STRIP( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, sidx, pn );
 			rp_count.near_cut++;
 		}
@@ -4010,6 +4109,11 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 	uint16_t *idx = rp_sidx;
 	int       m;
 
+	/* kit 68: a path that sends every corner (or rp_lit 2's check) fills
+	   them all now; the sort below fills only the corners it sends */
+	if( rp_lit_cap || !( behind || rp_cull_on ))
+		RP_LitFillAll( n, c, rp_scst );
+
 	if( rp_lit_cap == 1 )
 	{
 		/* rp_lit 2: the one-pass corners kept, not sent */
@@ -4056,7 +4160,8 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 			/* the cut reads the view-space points: the fixed path's
 			   from rp_mq, only now (the float path made its own) */
 			rp_count.cmds_near++;
-			if( rp_fixed_on )
+			/* kit 68: wholly behind, nothing is cut: the points unread */
+			if( rp_fixed_on && behind < n )
 				for( int k = 0; k < n; k++ )
 				{
 					unsigned i = rp_scvi[k];
@@ -4149,30 +4254,24 @@ part, sends the command the staged way.
 int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], const int ( *chrome )[2] )
 {
 	uint32_t( *c )[RP_VERTEX_WORDS] = rp_sc;
-	int32_t( *cst )[2] = rp_scst, ( *cxy )[2] = rp_scxy;
+	int32_t( *cxy )[2] = rp_scxy;
 	const rp_skin_t *e = rp_cur_skin;
 	const int        serial = rp_studio_serial;
-	const uint32_t   alpha = rp_vert_alpha;
-	int32_t          u0, v0, smax, tmax, sw, th;
+	const short     *cmd0 = cmd;
 	int              behind = 0;
 
 	if( !e || n < 3 || n > RP_STUDIO_CMD || !rp_fixed_on )
 		return 0;
-	u0 = e->qx << 8;
-	v0 = e->qy << 8;
-	sw = e->w << 5;
-	th = e->h << 5;
-	smax = sw - 1;
-	tmax = th - 1;
 	RP_ViewFixed();
 	for( int k = 0; k < RP_MV_AHEAD && k < n; k++ )
 		__builtin_prefetch( &rp_mv[(uint16_t)cmd[4 * k] & ( RP_STUDIO_VERTS - 1 )] );
 
+	/* kit 68: the positions here; the texels and colours (RP_LitFill) only
+	   for the corners of the triangles RP_StudioCmdSend sends */
 	for( int k = 0; k < n; k++, cmd += 4 )
 	{
 		unsigned          vi = (unsigned)(int)cmd[0], ni = (unsigned)(int)cmd[1];
 		const rp_mvert_t *mv;
-		int32_t           s, tt;
 
 		/* the command stream: a 32-byte line every four corners, read in
 		   order, ahead of use (as RP_StudioMesh asked) */
@@ -4194,39 +4293,27 @@ int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], 
 		c[k][1] = mv->f[1];
 		c[k][2] = mv->zi;
 		c[k][3] = mv->zi;
-		if( chrome )
-		{
-			s = chrome[ni][0];
-			tt = chrome[ni][1];
-		}
-		else
-		{
-			s = cmd[2] << 5;
-			tt = cmd[3] << 5;
-		}
-		/* RP_StudioCmd's texels: wrapped past the skin, kept inside it */
-		if( s < 0 || s > sw || tt < 0 || tt > th )
-		{
-			rp_count.wraps++;
-			s %= sw;
-			tt %= th;
-			if( s < 0 )
-				s += sw;
-			if( tt < 0 )
-				tt += th;
-		}
-		if( s > smax )
-			s = smax;
-		if( tt > tmax )
-			tt = tmax;
-		c[k][4] = alpha | (uint32_t)ncol[ni][0] << 16 | (uint32_t)ncol[ni][1] << 8 | ncol[ni][2];
-		c[k][5] = RP_FixBits( u0 + s, 5 + 9 );
-		c[k][6] = RP_FixBits( v0 + tt, 5 + 9 );
-		cst[k][0] = u0 + s;
-		cst[k][1] = v0 + tt;
 	}
+	rp_lz.cmd = cmd0;
+	rp_lz.ncol = ncol;
+	rp_lz.chrome = chrome;
+	rp_lz.u0 = e->qx << 8;
+	rp_lz.v0 = e->qy << 8;
+	rp_lz.sw = e->w << 5;
+	rp_lz.th = e->h << 5;
+	rp_lz.smax = rp_lz.sw - 1;
+	rp_lz.tmax = rp_lz.th - 1;
+	rp_lz.alpha = rp_vert_alpha;
+	if( ++rp_lz.gen == 0 )
+	{
+		/* the marks wrapped: none may look filled */
+		memset( rp_lit_filled, 0, sizeof( rp_lit_filled ));
+		rp_lz.gen = 1;
+	}
+	rp_lz.on = 1;
 	rp_count.mreuse += n;
 	RP_StudioCmdSend( fan, n, behind );
+	rp_lz.on = 0;
 	return 1;
 }
 
