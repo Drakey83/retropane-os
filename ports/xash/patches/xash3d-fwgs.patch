@@ -519,10 +519,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..3570e79 100644
+index 1a7efd6..580447a 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,42 @@ typedef struct
+@@ -992,6 +992,43 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -530,6 +530,7 @@ index 1a7efd6..3570e79 100644
 +extern int rp_emit_on, rp_both, rp_scratch;
 +void RP_EmitInit( void );
 +void RP_EmitFrame( void );
++void RP_EmitNewMap( void );
 +void RP_EmitFace( msurface_t *fa );
 +void RP_EmitTriangle( void );
 +void RP_EmitSurfBuilt( qboolean relit );
@@ -566,7 +567,7 @@ index 1a7efd6..3570e79 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..8860558 100644
+index 2c644f6..232b1b7 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -959,7 +959,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
@@ -598,7 +599,15 @@ index 2c644f6..8860558 100644
  	if( r_norefresh->value )
  		return;
  
-@@ -1370,6 +1374,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1224,6 +1228,7 @@ void GAME_EXPORT R_NewMap( void )
+ {
+ 	model_t *world = WORLDMODEL;
+ 
++	RP_EmitNewMap(); // ref_rp: its per-map tables (the world is always mod_known[0])
+ 	r_viewcluster = -1;
+ 
+ 	tr.draw_list->num_solid_entities = 0;
+@@ -1370,6 +1375,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  

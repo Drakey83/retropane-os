@@ -933,16 +933,63 @@ static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy 
 }
 
 /* A page's state block, when it is not the last one's. */
+/*
+A brush entity's render mode (the owner, run 45: "I cant see through the
+microwave window"): glass and other see-through brushes are drawn in the
+engine's translucent pass with `tr.blend` (CL_FxBlend / 255). Rule 0:
+`ref_soft` blends them on the CPU through its tables (a few fixed
+levels), `ref_gl` makes a GL blend state; ours gives the 2700G the same
+words the models' blends proved (step 4c: source alpha over one minus it,
+or one plus one for the additive modes, depth compared and not written),
+the alpha in each corner's colour (TEX2 takes the vertex's alpha), a state
+block only when the page or the blend changes. The world and kRenderNormal
+brushes stay opaque; kRenderTransAlpha (the '{' grates) is R303's.
+*/
+static int      rp_face_blend;                  /* 0 opaque, 1 alpha, 2 additive */
+static uint32_t rp_face_colour = 0xFFFFFFFFu;    /* each corner's colour word */
+
+static void RP_FaceBlend( void )
+{
+	const cl_entity_t *e = RI.currententity;
+	int                mode = e && RI.currentmodel != WORLDMODEL ? e->curstate.rendermode : kRenderNormal;
+	int32_t            a;
+
+	rp_face_blend = 0;
+	rp_face_colour = 0xFFFFFFFFu;
+	if( mode == kRenderNormal || mode == kRenderTransAlpha )
+		return;
+	a = rp_fixq( tr.blend, 8 );
+	a = a < 0 ? 0 : a > 255 ? 255 : a;
+	if( mode == kRenderTransAdd || mode == kRenderGlow )
+	{
+		rp_face_blend = 2;
+		rp_face_colour = 0xFF000000u | (uint32_t)a * 0x010101u;
+	}
+	else
+	{
+		rp_face_blend = 1;
+		rp_face_colour = (uint32_t)a << 24 | 0x00FFFFFFu;
+	}
+}
+
 static void RP_PageState( int pg )
 {
-	const void *what = &rp_page[pg];
+	/* each blend its own key on the page (models use +1 to +6) */
+	const void *what = (const uint8_t *)&rp_page[pg] + ( rp_face_blend ? 8 + rp_face_blend : 0 );
+	uint32_t    tsp = RP_TSP_WORLD;
 
 	if( what == rp_state )
 		return;
+	if( rp_face_blend )
+	{
+		tsp = ( tsp & 0x03FFFFFFu ) | ( rp_face_blend == 2 ? 1u << 29 | 1u << 26 : 4u << 29 | 5u << 26 )
+			| 1u << 13 | 1u << 7;
+		rp_count.blended++;
+	}
 	rp_state = what;
 	rp_count.states++;
 	RP_Put( RP_GFX_STATE );
-	RP_Put( RP_TSP_WORLD );
+	RP_Put( tsp );
 	RP_Put( RP_ISP_ALWAYS );
 	RP_Put( RP_TEX0_PAGE );
 	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
@@ -1279,7 +1326,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 		RP_Put( RP_FixBits( y, 4 ));
 		RP_Put( cw[c][2] );
 		RP_Put( cw[c][2] );
-		RP_Put( 0xFFFFFFFFu );
+		RP_Put( rp_face_colour );
 		RP_Put( RP_FixBits( u, 8 + 9 ));
 		RP_Put( RP_FixBits( v, 8 + 9 ));
 	}
@@ -1311,6 +1358,7 @@ static void RP_ChipFace( msurface_t *fa )
 		return; /* the sky, water and conveyors: step 4 */
 	if( fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS )
 		return;
+	RP_FaceBlend();
 	/* the world's faces by the integer tables (steps 4b, 4d), and a brush
 	   entity's (a submodel: the world's own vertices and corners, its view
 	   turned into the entity's space) by the same tables in its own view */
@@ -1472,7 +1520,7 @@ static void RP_ChipFace( msurface_t *fa )
 		RP_Put( RP_Bits( (float)RP_GAME_W - sx ));
 		RP_Put( RP_Bits( c->z ));
 		RP_Put( RP_Bits( c->z ));
-		RP_Put( 0xFFFFFFFFu );
+		RP_Put( rp_face_colour );
 		RP_Put( RP_Bits( u0 + c->s * ks ));
 		RP_Put( RP_Bits( v0 + c->t * kt ));
 	}
@@ -2528,3 +2576,29 @@ void RP_EmitFace( msurface_t *fa )
 	rp_count.verts += m;
 }
 
+
+/*
+A new map (R_NewMap, the engine's own word for it). The world is always
+`mod_known[0]` (Mod_LoadWorld asserts it), so a pointer never tells one
+map from the next: run 45's level change into c1a0d drew c1a0d's faces
+from c1a0's tables (the walls black down its first hallway). Everything
+kept per map is let go here, once, from the engine's call: the world's
+tables, the skins' table, the atlas's places. Rule 0: ref_gl and ref_soft
+rebuild their per-map state here, in the load's own pause; ours builds the
+integer tables here too (not in the new map's first frame, which then
+pays nothing) and logs what that costs.
+*/
+void RP_EmitNewMap( void )
+{
+	uint64_t t0 = rp_time_us( );
+
+	rp_wmodel = NULL;
+	rp_skin_world = NULL;
+	rp_state = NULL;
+	for( int pg = 0; pg < rp_pages; pg++ )
+		RP_PageDrop( &rp_page[pg] );
+	if( rp_emit_on == 2 && rp_fixed_on )
+		RP_WorldTables( );
+	rp_map_frames = 0;
+	fprintf( stderr, "rp-emit: new map: per-map state reset, tables in %u us\n", (uint32_t)( rp_time_us( ) - t0 ));
+}
