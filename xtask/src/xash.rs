@@ -397,6 +397,8 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
         with: &[],
         hidden: true,
     };
+    // ref_rp's integer helpers (`rp_fixed.h`), for the walk in `r_bsp.c` too
+    ref_soft.flags.extend(includes(&ours, &["ref_rp"]));
     ref_soft.flags.push("-DREF_DLL=1".into());
     ref_soft.flags.extend(common.iter().cloned());
     ref_soft

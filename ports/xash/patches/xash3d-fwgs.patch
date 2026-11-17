@@ -509,7 +509,7 @@ index b490cfa..890f096 100644
  	{
  		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));
 diff --git a/ref/soft/r_bsp.c b/ref/soft/r_bsp.c
-index 8b213a2..4e0b05b 100644
+index 8b213a2..1009537 100644
 --- a/ref/soft/r_bsp.c
 +++ b/ref/soft/r_bsp.c
 @@ -369,6 +369,13 @@ void R_DrawSolidClippedSubmodelPolygons( model_t *pmodel, mnode_t *topnode )
@@ -526,6 +526,149 @@ index 8b213a2..4e0b05b 100644
  		// FIXME: use bounding-box-based frustum clipping info?
  
  		// copy the edges to bedges, flipping if necessary so always
+@@ -463,11 +470,56 @@ int r_leafkeys[MAX_MAP_LEAFS];
+ R_RecursiveWorldNode
+ ================
+ */
++/*
++RetroPane (ADR-0039, ref_rp's FPS work): the world's walk in integers.
++Quake's walk (ref_soft's) tests each visited node's box against the four
++frustum planes and picks its side in floats, here doubles: on the PXA270
++(no FPU) each a chain of software calls (run 47: R_RecursiveWorldNode 1.9%
++of the play, a sixth of rp_fmul_asm's 3.7%, most of __adddf3's 0.9%); its
++own FIXME asks for "integer tests". Ours: the planes as 2.30 normals and
++the eye as 16.16 made once a frame, each node's box corners read by their
++float bits (rp_fixq: no helper call; the map's boxes are whole numbers),
++the tests as three 64-bit multiply-adds. The rounding (under 2^-13 units)
++is met by a margin of 2^-12 on the safe side: a node is culled only when
++floats would cull it, never more.
++*/
++#include "rp_fixed.h" // ports/xash/ref_rp (the build adds it)
++
++#define RP_WN_MARGIN  ( (int64_t)1 << 34 )                  /* 2^-12 units, as 2^46 */
++#define RP_WN_BACK    ( (int64_t)( 0.01 * 70368744177664.0 )) /* BACKFACE_EPSILON as 2^46 */
++
++static struct
++{
++	int32_t n[4][3]; /* the frustum's normals, 2.30 */
++	int64_t d[4];    /* their distances, 2^46 */
++	int32_t o[3];    /* the eye, 16.16 */
++} rp_wn;
++
++static void RP_WalkView( void )
++{
++	for( int i = 0; i < 4; i++ )
++	{
++		for( int j = 0; j < 3; j++ )
++			rp_wn.n[i][j] = rp_fixq( qfrustum.view_clipplanes[i].normal[j], 30 );
++		rp_wn.d[i] = (int64_t)rp_fixq( qfrustum.view_clipplanes[i].dist, 16 ) << 30;
++	}
++	for( int j = 0; j < 3; j++ )
++		rp_wn.o[j] = rp_fixq( tr.modelorg[j], 16 );
++}
++
++/* a box corner (minmaxs at the three indexes) against frustum plane i, 2^46 */
++static inline int64_t RP_WalkPlane( const float *minmaxs, const int *pindex, int i )
++{
++	return (int64_t)rp_wn.n[i][0] * rp_fixq( minmaxs[pindex[0]], 16 )
++		+ (int64_t)rp_wn.n[i][1] * rp_fixq( minmaxs[pindex[1]], 16 )
++		+ (int64_t)rp_wn.n[i][2] * rp_fixq( minmaxs[pindex[2]], 16 )
++		- rp_wn.d[i];
++}
++
+ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ {
+-	int    c, side;
+-	vec3_t acceptpt, rejectpt;
+-	double d, dot;
++	int     c, side;
++	int64_t dot; // RetroPane: 2^46 units (RP_WalkView)
+ 
+ 	if( node->contents == CONTENTS_SOLID )
+ 		return; // solid
+@@ -491,24 +543,11 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ 
+ 			int *pindex = qfrustum.pfrustum_indexes[i];
+ 
+-			rejectpt[0] = (float)node->minmaxs[pindex[0]];
+-			rejectpt[1] = (float)node->minmaxs[pindex[1]];
+-			rejectpt[2] = (float)node->minmaxs[pindex[2]];
+-
+-			d = DotProduct( rejectpt, qfrustum.view_clipplanes[i].normal );
+-			d -= qfrustum.view_clipplanes[i].dist;
+-
+-			if( d <= 0 )
++			// RetroPane: in integers (RP_WalkView), safe side by the margin
++			if( RP_WalkPlane( node->minmaxs, pindex, i ) < -RP_WN_MARGIN )
+ 				return;
+ 
+-			acceptpt[0] = (float)node->minmaxs[pindex[3 + 0]];
+-			acceptpt[1] = (float)node->minmaxs[pindex[3 + 1]];
+-			acceptpt[2] = (float)node->minmaxs[pindex[3 + 2]];
+-
+-			d = DotProduct( acceptpt, qfrustum.view_clipplanes[i].normal );
+-			d -= qfrustum.view_clipplanes[i].dist;
+-
+-			if( d >= 0 )
++			if( RP_WalkPlane( node->minmaxs, pindex + 3, i ) > RP_WN_MARGIN )
+ 				clipflags &= ~( 1 << i ); // node is entirely on screen
+ 		}
+ 	}
+@@ -549,21 +588,14 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ 		// find which side of the node we are on
+ 		mplane_t *plane = node->plane;
+ 
+-		switch( plane->type )
+-		{
+-		case PLANE_X:
+-			dot = tr.modelorg[0] - plane->dist;
+-			break;
+-		case PLANE_Y:
+-			dot = tr.modelorg[1] - plane->dist;
+-			break;
+-		case PLANE_Z:
+-			dot = tr.modelorg[2] - plane->dist;
+-			break;
+-		default:
+-			dot = DotProduct( tr.modelorg, plane->normal ) - plane->dist;
+-			break;
+-		}
++		// RetroPane: the eye's side in integers, 2^46 units (RP_WalkView)
++		if( plane->type < 3 )
++			dot = ((int64_t)rp_wn.o[plane->type] - rp_fixq( plane->dist, 16 )) << 30;
++		else
++			dot = (int64_t)rp_fixq( plane->normal[0], 30 ) * rp_wn.o[0]
++				+ (int64_t)rp_fixq( plane->normal[1], 30 ) * rp_wn.o[1]
++				+ (int64_t)rp_fixq( plane->normal[2], 30 ) * rp_wn.o[2]
++				- ((int64_t)rp_fixq( plane->dist, 16 ) << 30 );
+ 
+ 		if( dot >= 0 )
+ 			side = 0;
+@@ -581,7 +613,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ 		{
+ 			msurface_t *surf = WORLDMODEL->surfaces + firstsurface;
+ 
+-			if( dot < -BACKFACE_EPSILON )
++			if( dot < -RP_WN_BACK )
+ 			{
+ 				do
+ 				{
+@@ -595,7 +627,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ 				}
+ 				while( --c );
+ 			}
+-			else if( dot > BACKFACE_EPSILON )
++			else if( dot > RP_WN_BACK )
+ 			{
+ 				do
+ 				{
+@@ -637,5 +669,6 @@ void R_RenderWorld( void )
+ 	RI.currentmodel = WORLDMODEL;
+ 	r_pcurrentvertbase = RI.currentmodel->vertexes;
+ 
++	RP_WalkView();
+ 	R_RecursiveWorldNode( RI.currentmodel->nodes, 15 );
+ }
 diff --git a/ref/soft/r_draw.c b/ref/soft/r_draw.c
 index 5e64fcd..53bcfc0 100644
 --- a/ref/soft/r_draw.c
@@ -977,10 +1120,37 @@ index 03790d8..733b3a8 100644
  		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
  		{
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
-index e47e115..7eada61 100644
+index e47e115..b609d29 100644
 --- a/ref/soft/r_surf.c
 +++ b/ref/soft/r_surf.c
-@@ -236,7 +236,7 @@ R_TextureAnimation
+@@ -133,14 +133,24 @@ static void R_AddDynamicLights( const msurface_t *surf )
+ 
+ 		int monolight = LightToTexGamma(( dl->color.r + dl->color.g + dl->color.b ) / 3 * 4 ) * 3;
+ 
+-		for( int t = 0; t < tmax; t++ )
++		// RetroPane (R305, ADR-0039): only the luxels the light can reach, as
++		// ref_gl's loop (dist >= max( sd, td ), so a luxel passes the test below
++		// only when sd and td are both under minlight): the same sums, the
++		// flashlight's spot no longer pays a float test for every luxel of a wall
++		float half = ( minlight + 1.0f ) / ( sample_size * sample_frac );
++		int s0 = Q_max( 0, (int)( sl / sample_size - half ));
++		int s1 = Q_min( smax - 1, (int)( sl / sample_size + half ));
++		int t0 = Q_max( 0, (int)( tl / sample_size - half ));
++		int t1 = Q_min( tmax - 1, (int)( tl / sample_size + half ));
++
++		for( int t = t0; t <= t1; t++ )
+ 		{
+ 			int td = ( tl - sample_size * t ) * sample_frac;
+ 
+ 			if( td < 0 )
+ 				td = -td;
+ 
+-			for( int s = 0; s < smax; s++ )
++			for( int s = s0; s <= s1; s++ )
+ 			{
+ 				int   sd = ( sl - sample_size * s ) * sample_frac;
+ 				float dist;
+@@ -236,7 +246,7 @@ R_TextureAnimation
  Returns the proper texture for a given time and surface
  ===============
  */
@@ -989,7 +1159,7 @@ index e47e115..7eada61 100644
  {
  	texture_t *base = s->texinfo->texture;
  	int       reletive;
-@@ -782,6 +782,13 @@ void R_InitCaches( void )
+@@ -782,6 +792,13 @@ void R_InitCaches( void )
  			size += ( pix - 64000 ) * 3;
  	}
  
@@ -1003,7 +1173,7 @@ index e47e115..7eada61 100644
  	// round up to page size
  	size = ( size + 8191 ) & ~8191;
  
-@@ -1137,9 +1144,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
+@@ -1137,9 +1154,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
  //
  // allocate memory if needed
  //

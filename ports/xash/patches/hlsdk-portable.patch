@@ -1,5 +1,5 @@
 diff --git a/cl_dll/studio_util.cpp b/cl_dll/studio_util.cpp
-index 441aca8..f0fc678 100644
+index 441aca8..31f8e33 100644
 --- a/cl_dll/studio_util.cpp
 +++ b/cl_dll/studio_util.cpp
 @@ -36,8 +36,99 @@ ConcatTransforms
@@ -102,6 +102,32 @@ index 441aca8..f0fc678 100644
  #if XASH_SIMD_NEON
  	float32x4_t in2_row0 = vld1q_f32( in2[0] );
  	float32x4_t in2_row1 = vld1q_f32( in2[1] );
+@@ -223,10 +314,25 @@ void QuaternionSlerp( vec4_t p, vec4_t q, float t, vec4_t qt )
+ 	{
+ 		if( ( 1.0f - cosom ) > 0.000001f )
+ 		{
++#if XASH_RETROPANE
++			// RetroPane OS (no FPU; ADR-0039's FPS work, run 47: the client's
++			// bones 3.4% of the play, this slerp a quarter of its float adds and
++			// the double acos's helpers): the SDK's scalar way is one acos, three
++			// sin and two divides, all in doubles (software, ~2x a float's cost).
++			// Ours in floats (the inputs are floats) by the identity the SDK's own
++			// NEON path uses: sin((1 - t)w) = sin w cos tw - cos w sin tw, so
++			// sclp = cos tw - cos w sclq; sin w = sqrt((1 - c)(1 + c)): one acosf,
++			// one sinf, one cosf, one sqrtf, one divide. The same slerp.
++			omega = acosf( cosom );
++			sinom = sqrtf(( 1.0f - cosom ) * ( 1.0f + cosom ));
++			sclq = sinf( t * omega ) / sinom;
++			sclp = cosf( t * omega ) - cosom * sclq;
++#else
+ 			omega = acos( cosom );
+ 			sinom = sin( omega );
+ 			sclp = sin( ( 1.0f - t ) * omega ) / sinom;
+ 			sclq = sin( t * omega ) / sinom;
++#endif
+ 		}
+ 		else
+ 		{
 diff --git a/common/cl_entity.h b/common/cl_entity.h
 index d5323aa..a66849e 100644
 --- a/common/cl_entity.h

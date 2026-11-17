@@ -60,6 +60,23 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     cwd: ([u8; CWD], usize),
     /// Who hears what each path looked up cost, where the image counts.
     looks: Option<Looks>,
+    /// The time the program's sound calls spent in the OS's mixer.
+    meter: SoundMeter,
+}
+
+/// The time spent in the OS's mixer (`snd_write`, `snd_played`), told
+/// once a minute with the mixer's own counts. Run 47's samples put 4.1%
+/// of Half-Life's play on the instruction after `snd_write` turned the
+/// interrupts back on (the mixer runs with them off, so the sampler could
+/// not see inside), and the mixer's report came only at the run's end,
+/// past the 64 KiB log: this says, in the run's log, what the mixer costs
+/// and whether it mixes once or re-mixes (the iWMMXt question, quality
+/// audit E1), before any change to it.
+#[derive(Default)]
+struct SoundMeter {
+    us: u64,
+    calls: u32,
+    since_us: Option<u64>,
 }
 
 /// How an image hears what looking a path up cost (a game asks for
@@ -151,6 +168,36 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             refused: None,
             cwd: ([0; CWD], 0),
             looks: None,
+            meter: SoundMeter::default(),
+        }
+    }
+
+    /// Counts a sound call that started at `t0` (microseconds) and, once
+    /// a minute, says what they took and the mixer's counts.
+    fn metered(&mut self, t0: u64) {
+        let t1 = self.clock.at((self.ticks)());
+        let m = &mut self.meter;
+        m.us += t1.saturating_sub(t0);
+        m.calls += 1;
+        let since = *m.since_us.get_or_insert(t0);
+        if t1.saturating_sub(since) >= 60_000_000 {
+            let span = t1 - since;
+            let _ = writeln!(
+                Line(&mut self.console),
+                "sound (the last {} s): the OS's mixer took {} ms in {} calls, {}.{}% of the time",
+                span / 1_000_000,
+                m.us / 1_000,
+                m.calls,
+                m.us * 100 / span.max(1),
+                m.us * 1000 / span.max(1) % 10
+            );
+            if let Some(v) = self.sound.as_mut() {
+                v.report(&mut Line(&mut self.console));
+            }
+            self.meter = SoundMeter {
+                since_us: Some(t1),
+                ..SoundMeter::default()
+            };
         }
     }
 
@@ -475,13 +522,23 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
     }
 
     fn snd_write(&mut self, samples: &[i16]) -> Result<u32, Errno> {
-        let (v, now) = self.voice()?;
-        v.write(samples, now)
+        let t0 = self.clock.at((self.ticks)());
+        let r = {
+            let (v, now) = self.voice()?;
+            v.write(samples, now)
+        };
+        self.metered(t0);
+        r
     }
 
     fn snd_played(&mut self) -> Result<u64, Errno> {
-        let (v, now) = self.voice()?;
-        v.played(now)
+        let t0 = self.clock.at((self.ticks)());
+        let r = {
+            let (v, now) = self.voice()?;
+            v.played(now)
+        };
+        self.metered(t0);
+        r
     }
 
     fn snd_close(&mut self) -> Result<(), Errno> {

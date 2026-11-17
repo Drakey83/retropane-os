@@ -93,6 +93,7 @@ static struct
 	uint32_t culled; /* the models' triangles facing away or off the screen, not sent */
 	uint32_t mipswitch; /* R297: faces drawn at a mip level other than their place's */
 	uint32_t blended; /* step 4c: meshes drawn blended */
+	uint32_t dlit, dlit_kib; /* R305: faces relit a frame for a dynamic light (never waiting) */
 	uint32_t oldplace, unjams, coarser, deferred; /* the black walls: faces drawn from their old place, pages dropped to unjam, faces taken coarser (too large) */
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
@@ -169,8 +170,9 @@ static void RP_EmitReport( void )
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
 			rp_count.mverts / f, rp_count.mreuse / f );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large or no room), %u faces a frame waiting for the upload budget\n",
-			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f, rp_count.deferred / f );
+		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large or no room), %u faces a frame waiting for the upload budget; %u faces a frame relit for a dynamic light (%u KiB, never waiting: R305)\n",
+			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f, rp_count.deferred / f,
+			rp_count.dlit / f, rp_count.dlit_kib / f );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: culling (rp_cull %d): %u model triangles a frame not sent (facing away or off the screen)\n",
 			rp_cull_on, rp_count.culled / f );
@@ -456,8 +458,32 @@ static inline uint32_t RP_Recip( uint32_t zn )
 	return y;
 }
 
+/*
+A face's divides by tables (FPS work after run 47: the PXA270 has no divide
+instruction; RP_ChipFaceFixed's four a face, the centre's and the far
+edges', were a third of __aeabi_idiv's 0.65% of the play). Exact: the
+centre's |x| / n as |x| ceil(2^32 / n) / 2^32 (exact for |x| below 2^26 and
+n up to 64: the sum of 64 corners' quarter pixels is under 2^24), its sign
+put back (C's division truncates); the far edges' (2048 + w / 2) / w made
+once for each width a page can hold.
+*/
+static uint32_t rp_recip_n[RP_MAX_CORNERS + 1];
+static int32_t  rp_kedge[512 + 1];
+
+static inline int32_t RP_DivN( int32_t x, int n )
+{
+	uint32_t a = x < 0 ? 0u - (uint32_t)x : (uint32_t)x;
+	int32_t  q = (int32_t)(( (uint64_t)a * rp_recip_n[n] ) >> 32 );
+
+	return x < 0 ? -q : q;
+}
+
 static void RP_FixedInit( void )
 {
+	for( int n = 1; n <= RP_MAX_CORNERS; n++ )
+		rp_recip_n[n] = (uint32_t)(( 0xFFFFFFFFull + n ) / n ); /* ceil( 2^32 / n ) */
+	for( int w = 1; w <= 512; w++ )
+		rp_kedge[w] = RP_ONE16 - ( 2048 + ( w >> 1 )) / w;
 	for( int i = 0; i < 128; i++ )
 	{
 		uint64_t n = ( 1ull << 63 ) / ((uint64_t)( 2 * ( 128 + i ) + 1 ) << 23 );
@@ -1040,6 +1066,19 @@ level, or goes in at a coarser level marked provisional (RP_PROVISIONAL:
 the mip hold lets it sharpen the next frame there is room); the coarsest
 level always goes in (1/64 of the face). A map's first view builds over
 a few frames, coarse first, instead of one long stall.
+
+R305 (the owner, run 47: the flashlight "doesnt shine in the correct
+location"; the log: 3-17 faces a frame waiting for the budget, the whole
+run). A placed face larger than the budget (48 KiB: a wall of 160 x 160
+texels at mip 0; pages hold 512 x 512) waited every frame, forever: the
+flashlight's spot stayed where it was when the face was last lit. Xash's
+ref_soft lights every face in the frame it is drawn (no budget: the
+hitches); ref_gl uploads each dlit lightmap every frame (a lightmap is
+1/256 a surface's texels). Ours: a face whose dynamic light changed (lit
+by one this frame, or by one when it was last lit) never waits, and the
+frame's first stale face always goes whatever its size, so no face starves;
+the misses and new places stay under the budget (no hitches). With R297's
+option B the dlit work shrinks to the lightmap, as ref_gl's.
 */
 
 static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, int *y, int *oldmip )
@@ -1049,7 +1088,7 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 	int          pg = loc >> 16 & 0xFF, stale, placed;
 	surfcache_t *cache;
 	uint64_t     t0;
-	int          over;
+	int          over, dlit;
 
 	placed = ( loc & RP_VALID ) && (int)( loc >> 24 & 3 ) == miplevel && pg < rp_pages
 		&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen;
@@ -1063,7 +1102,9 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 	for( int maps = 0; !stale && maps < MAXLIGHTMAPS && fa->styles[maps] != 255; maps++ )
 		if( g_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps] )
 			stale = 1;
-	over = stale && miplevel < 3 && w * h * 2 > rp_upload_left;
+	/* R305: a dynamic light's face never waits; the frame's first face always goes */
+	dlit = fa->dlightframe == tr.framecount || ( placed && ( RP_GEN( fa ) & 1 ));
+	over = stale && !dlit && miplevel < 3 && w * h * 2 > rp_upload_left && rp_upload_left < RP_UPLOAD_BUDGET;
 
 	if( placed )
 	{
@@ -1107,6 +1148,22 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 
 	/* lit into the scratch by the software renderer's own code */
 	t0 = rp_time_us();
+	if( fa->dlightframe == tr.framecount )
+	{
+		/* R305: the light into the face's own space, as D_DrawSurfaces sets it
+		   per surface (ref_rp lights at emit time, where the flag and the
+		   matrix were left by whichever entity set them last): the world's
+		   faces as they are, a brush entity's moved by its origin and angles */
+		if( RI.currentmodel == WORLDMODEL || !RI.currententity )
+			tr.modelviewIdentity = true;
+		else
+		{
+			Matrix4x4_CreateFromEntity( RI.objectMatrix, RI.currententity->angles, RI.currententity->origin, 1 );
+			tr.modelviewIdentity = false;
+		}
+		rp_count.dlit++;
+		rp_count.dlit_kib += ( w * h * 2 ) >> 10;
+	}
 	CACHESPOT( fa )[miplevel] = NULL;
 	rp_scratch = 1;
 	cache = D_CacheSurface( fa, miplevel );
@@ -1132,55 +1189,70 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 The world's tables, made when a map is first drawn: each vertex as 16.16;
 each face corner's s, t (mip 0 texels from the surface's corner, the same
 sums RP_ChipFace's float path makes) as 24.8, by surfedge; each vertex's
-words a frame (`frame` this frame's: `w[2]` 0 when nearer than a unit).
+words a frame (`frame` this frame's: `zi` 0 when nearer than a unit).
+*/
+/*
+The corner stream (FPS work after run 47: RP_ChipFaceFixed 6.4% of the
+play, most of it waiting on memory: a corner's surfedge, its edge, its
+vertex's words and its s, t, four loads from four tables, each a cache
+miss the next waits on). The software renderer and ref_gl walk the same
+chain (surfedge, edge, vertex) for every face every frame. Ours: a face's
+corners as one run of 12-byte records (vertex number and s, t) in the
+face's own order, read straight through; a vertex's position and its words
+this frame in one 32-byte record, one cache line (the PXA270's), aligned.
 */
 typedef struct
 {
 	int      frame;
-	uint32_t w[3];
+	uint32_t zi;    /* 1/z's float bits this frame, 0 when nearer than a unit */
 	int32_t  xy[2]; /* the TA's x, y as 28.4: the cracks' cure reads them */
+	int32_t  pos[3]; /* 16.16 */
+	int32_t  pad;
 } rp_wvert_t;
 
+typedef struct
+{
+	int32_t st[2]; /* the corner's s, t as 24.8 (mip 0 texels from the surface's corner) */
+	int32_t vi;    /* its vertex */
+} rp_wcorner_t;
+
 static const model_t *rp_wmodel;
-static int32_t     ( *rp_wpos )[3];
-static int32_t     ( *rp_wst )[2];
-static rp_wvert_t  *rp_wv;
+static rp_wcorner_t *rp_wc;
+static rp_wvert_t   *rp_wv;
+static void         *rp_wv_block; /* rp_wv's allocation (rp_wv on a cache line in it) */
 
 static int RP_WorldTables( void )
 {
 	const model_t *mod = WORLDMODEL;
 
 	if( mod == rp_wmodel )
-		return rp_wst != NULL;
+		return rp_wc != NULL;
 	rp_wmodel = mod;
 	rp_map_frames = 0;
-	free( rp_wpos );
-	free( rp_wst );
-	free( rp_wv );
-	rp_wpos = NULL;
-	rp_wst = NULL;
+	free( rp_wc );
+	free( rp_wv_block );
+	rp_wc = NULL;
 	rp_wv = NULL;
+	rp_wv_block = NULL;
 	if( !mod || !mod->numvertexes || !mod->numsurfedges )
 		return 0;
-	rp_wpos = malloc( sizeof( *rp_wpos ) * mod->numvertexes );
-	rp_wv = calloc( mod->numvertexes, sizeof( *rp_wv ));
-	rp_wst = malloc( sizeof( *rp_wst ) * mod->numsurfedges );
-	if( !rp_wpos || !rp_wv || !rp_wst )
+	rp_wv_block = calloc( 1, sizeof( *rp_wv ) * mod->numvertexes + 31 );
+	rp_wc = calloc( mod->numsurfedges, sizeof( *rp_wc ));
+	if( !rp_wv_block || !rp_wc )
 	{
-		free( rp_wpos );
-		free( rp_wv );
-		free( rp_wst );
-		rp_wpos = NULL;
-		rp_wv = NULL;
-		rp_wst = NULL;
+		free( rp_wv_block );
+		free( rp_wc );
+		rp_wv_block = NULL;
+		rp_wc = NULL;
 		fprintf( stderr, "rp-emit: no room for the world's tables: the float path\n" );
 		return 0;
 	}
+	rp_wv = (rp_wvert_t *)(((uintptr_t)rp_wv_block + 31 ) & ~(uintptr_t)31 );
 	for( int i = 0; i < mod->numvertexes; i++ )
 	{
 		rp_wv[i].frame = -1;
 		for( int j = 0; j < 3; j++ )
-			rp_wpos[i][j] = RP_Fix16( mod->vertexes[i].position[j] );
+			rp_wv[i].pos[j] = RP_Fix16( mod->vertexes[i].position[j] );
 	}
 	for( int f = 0; f < mod->numsurfaces; f++ )
 	{
@@ -1203,13 +1275,14 @@ static int RP_WorldTables( void )
 			const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
 			const float *world = mod->vertexes[lindex > 0 ? e->v[0] : e->v[1]].position;
 
-			rp_wst[fa->firstedge + i][0] = (int32_t)(( DotProduct( world, sv ) + sv[3] - smin ) * 256.0f );
-			rp_wst[fa->firstedge + i][1] = (int32_t)(( DotProduct( world, tv ) + tv[3] - tmin ) * 256.0f );
+			rp_wc[fa->firstedge + i].st[0] = (int32_t)(( DotProduct( world, sv ) + sv[3] - smin ) * 256.0f );
+			rp_wc[fa->firstedge + i].st[1] = (int32_t)(( DotProduct( world, tv ) + tv[3] - tmin ) * 256.0f );
+			rp_wc[fa->firstedge + i].vi = lindex > 0 ? e->v[0] : e->v[1];
 		}
 	}
 	fprintf( stderr, "rp-emit: the world's tables: %d vertices, %d face corners (%u KiB)\n",
 		mod->numvertexes, mod->numsurfedges,
-		(uint32_t)(( sizeof( *rp_wpos ) + sizeof( *rp_wv )) * mod->numvertexes + sizeof( *rp_wst ) * mod->numsurfedges ) >> 10 );
+		(uint32_t)( sizeof( *rp_wv ) * mod->numvertexes + sizeof( *rp_wc ) * mod->numsurfedges ) >> 10 );
 	return 1;
 }
 
@@ -1221,10 +1294,10 @@ is nearer than a unit (the float path clips it).
 */
 static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_t o[3], int serial )
 {
-	const model_t    *mod = RI.currentmodel;
-	const mtexinfo_t *tex = fa->texinfo;
-	const uint32_t   *cw[RP_MAX_CORNERS];
-	const int32_t    *st[RP_MAX_CORNERS], *cxy[RP_MAX_CORNERS];
+	const mtexinfo_t   *tex = fa->texinfo;
+	const rp_wcorner_t *wc = &rp_wc[fa->firstedge];
+	uint32_t           zis[RP_MAX_CORNERS];
+	const int32_t      *st[RP_MAX_CORNERS], *cxy[RP_MAX_CORNERS];
 	/* the face's centre on the screen, 28.4: 32 bits hold it (a corner within
 	   +-2^20 of the screen x 64 corners), and an int64 divide is a library
 	   call on the PXA270 (run 46: RP_ChipFaceFixed 4.0% of the play) */
@@ -1234,34 +1307,35 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 
 	for( int i = 0; i < n; i++ )
 	{
-		int         lindex = mod->surfedges[fa->firstedge + i];
-		const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
-		int         vi = lindex > 0 ? e->v[0] : e->v[1];
-		rp_wvert_t *c = &rp_wv[vi];
+		rp_wvert_t *c = &rp_wv[wc[i].vi];
 
 		if( c->frame != serial )
 		{
-			int32_t v[3];
+			int32_t  v[3];
+			uint32_t w[3];
 
 			c->frame = serial;
-			RP_ViewPoint( m, o, rp_wpos[vi], v );
+			RP_ViewPoint( m, o, c->pos, v );
 			if( v[2] < RP_ONE16 )
-				c->w[2] = 0;
+				c->zi = 0;
 			else
-				RP_ProjectS( v, c->w, c->xy );
+			{
+				RP_ProjectS( v, w, c->xy );
+				c->zi = w[2];
+			}
 		}
-		if( !c->w[2] )
+		if( !c->zi )
 			return 0;
-		if( c->w[2] > nearzi )
-			nearzi = c->w[2];
-		cw[i] = c->w;
+		if( c->zi > nearzi )
+			nearzi = c->zi;
+		zis[i] = c->zi;
 		cxy[i] = c->xy;
 		sx += c->xy[0] >> 2; /* quarter pixels: 64 far corners can't overflow */
 		sy += c->xy[1] >> 2;
-		st[i] = rp_wst[fa->firstedge + i];
+		st[i] = wc[i].st;
 	}
-	sx = sx / n * 4;
-	sy = sy / n * 4;
+	sx = RP_DivN( sx, n ) * 4;
+	sy = RP_DivN( sy, n ) * 4;
 
 	/* the software renderer's mip level for the nearest corner (positive
 	   floats compare as their bits) */
@@ -1325,8 +1399,8 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 
 	/* texels at the mip level, a 32nd of a texel inside the far edges:
 	   x (w - 1/32) / w as 0.16 */
-	kw = RP_ONE16 - ( 2048 + ( w >> 1 )) / w;
-	kh = RP_ONE16 - ( 2048 + ( h >> 1 )) / h;
+	kw = rp_kedge[w]; /* w, h at most RP_PAGE_SIDE (512): checked above */
+	kh = rp_kedge[h];
 
 	RP_Put( RP_GFX_STRIP( n ));
 	lo = 1;
@@ -1350,8 +1424,8 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 
 		RP_Put( RP_FixBits( x, 4 ));
 		RP_Put( RP_FixBits( y, 4 ));
-		RP_Put( cw[c][2] );
-		RP_Put( cw[c][2] );
+		RP_Put( zis[c] );
+		RP_Put( zis[c] );
 		RP_Put( rp_face_colour );
 		RP_Put( RP_FixBits( u, 8 + 9 ));
 		RP_Put( RP_FixBits( v, 8 + 9 ));
@@ -1580,14 +1654,19 @@ lighting's own colour, where the software renderer kept a grey in 32 steps.
 */
 
 /* Each vertex of the model's part being drawn, worked once (step 4b):
-   `serial` the part's (RP_StudioVerts), `w[2]` 0 when nearer than a unit. */
+   `serial` the part's (RP_StudioVerts), `zi` 0 when nearer than a unit.
+   One 32-byte record, one cache line (FPS work after run 47: the record was
+   36 bytes, so every vertex spanned two lines; RP_StudioCmd 6.5% of the
+   play, most of it waiting on them): x and y's float words are made from
+   xy at the corner (RP_FixBits, the same bits RP_ProjectS made). */
 typedef struct
 {
 	int      serial;
-	uint32_t w[3];
-	int32_t  q[3]; /* in view space, 16.16: the near plane's clip reads it */
+	uint32_t zi;    /* 1/z's float bits */
 	int32_t  xy[2]; /* the TA's x, y as 28.4: the culling reads them */
-} rp_mvert_t;
+	int32_t  q[3];  /* in view space, 16.16: the near plane's clip reads it */
+	int32_t  pad;
+} __attribute__(( aligned( 32 ))) rp_mvert_t;
 
 static rp_mvert_t rp_mv[RP_STUDIO_VERTS];
 static int        rp_studio_serial = 1;
@@ -1653,9 +1732,14 @@ void RP_StudioVertFixed( int idx, int bone, const float ( *bm )[4], const float 
 	mv->q[1] = q[1];
 	mv->q[2] = q[2];
 	if( q[2] < RP_ONE16 )
-		mv->w[2] = 0;
+		mv->zi = 0;
 	else
-		RP_ProjectS( q, mv->w, mv->xy );
+	{
+		uint32_t w[3];
+
+		RP_ProjectS( q, w, mv->xy );
+		mv->zi = w[2];
+	}
 	rp_count.mverts++;
 }
 
@@ -2239,9 +2323,14 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 				mv->q[1] = q[1];
 				mv->q[2] = q[2];
 				if( q[2] < RP_ONE16 )
-					mv->w[2] = 0;
+					mv->zi = 0;
 				else
-					RP_ProjectS( q, mv->w, mv->xy );
+				{
+					uint32_t w[3];
+
+					RP_ProjectS( q, w, mv->xy );
+					mv->zi = w[2];
+				}
 				rp_count.mverts++;
 			}
 			else
@@ -2251,12 +2340,12 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			cq[k][0] = mv->q[0];
 			cq[k][1] = mv->q[1];
 			cq[k][2] = mv->q[2];
-			if( !mv->w[2] )
+			if( !mv->zi )
 				behind++;
-			c[k][0] = mv->w[0];
-			c[k][1] = mv->w[1];
-			c[k][2] = mv->w[2];
-			c[k][3] = mv->w[2];
+			c[k][0] = RP_FixBits( mv->xy[0], 4 );
+			c[k][1] = RP_FixBits( mv->xy[1], 4 );
+			c[k][2] = mv->zi;
+			c[k][3] = mv->zi;
 		}
 		else
 		{
