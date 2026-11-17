@@ -126,6 +126,9 @@ static int      rp_lm_on;
    and corners that differed */
 static int      rp_lit_on, rp_lit_cap, rp_lit_capn;
 static uint32_t rp_lit_corners, rp_lit_differ;
+/* rp_lit 2 also checks kit 61's one-call meshes and parts against the call a
+   normal (a vertex): items made both ways, items that differed */
+static uint32_t rp_b61_items, rp_b61_differ;
 static uint32_t rp_tex_used, rp_tex_room; /* R297 B: the texture pool's bytes */
 
 void RP_EmitInit( void )
@@ -193,6 +196,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 && rp_lit_on == 2 )
 		fprintf( stderr, "rp-emit: rp_lit 2 (kit 53's check): %u corners built both ways, %u differed in a word\n",
 			rp_lit_corners, rp_lit_differ );
+	if( rp_emit_on == 2 && rp_lit_on == 2 )
+		fprintf( stderr, "rp-emit: rp_lit 2 (kit 61's check): %u normals and vertices made both ways (one call a mesh, one a normal), %u differed\n",
+			rp_b61_items, rp_b61_differ );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables (%u of them brush entities'), %u by floats; model vertices %u worked and %u used again a frame\n",
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
@@ -3216,6 +3222,122 @@ void RP_StudioLightFixed( int bone, const float *blight, int flags, const float 
 	for( int c = 0; c < 3; c++ )
 		out[c] = rp_light_byte( rp_flit.g16[c], gamma );
 	rp_count.lit++;
+}
+
+/*
+Kit 61 (run 56: RP_StudioLightFixed 3.0% and RP_StudioVertFixed 2.1% of the
+play, ~320 cycles a normal and ~340 a vertex): ref_soft and ref_gl light
+and move a model's normals and vertices with a call each (R_StudioLighting,
+Matrix3x4_VectorTransform), and kit 49's integer path kept that shape, so
+every normal paid a call, the flags' tests, the light's three globals
+loaded from memory and the counter's store. Here one call a mesh lights
+all its normals (and one a part moves all its vertices): the flags tested
+once (full-bright and flat-shade meshes made once and copied), the light
+kept in registers, the same integer maths a normal, so the same bytes and
+the same records as RP_StudioLightFixed and RP_StudioVertFixed.
+*/
+void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flags, const float ( *norms )[3], int count, byte ( *out )[3] )
+{
+	const int32_t a16 = rp_flit.a16, s16 = rp_flit.s16;
+	const int32_t g0 = rp_flit.g16[0], g1 = rp_flit.g16[1], g2 = rp_flit.g16[2];
+	const int     serial = rp_studio_serial;
+
+	if( count <= 0 )
+		return;
+	rp_count.lit += (uint32_t)count;
+	if( FBitSet( flags, STUDIO_NF_FULLBRIGHT | STUDIO_NF_FLATSHADE ))
+	{
+		uint32_t gamma = FBitSet( flags, STUDIO_NF_FULLBRIGHT ) ? 1023 : LightToTexGamma( (uint)rp_flit.flat );
+		byte     c0 = rp_light_byte( g0, gamma ), c1 = rp_light_byte( g1, gamma ), c2 = rp_light_byte( g2, gamma );
+
+		for( int i = 0; i < count; i++ )
+		{
+			out[i][0] = c0;
+			out[i][1] = c1;
+			out[i][2] = c2;
+		}
+		if( rp_lit_on == 2 )
+			for( int i = 0; i < count; i++ )
+			{
+				byte b[3];
+
+				RP_StudioLightFixed( bones[i], blight[bones[i]], flags, norms[i], b );
+				rp_b61_items++;
+				rp_b61_differ += b[0] != out[i][0] || b[1] != out[i][1] || b[2] != out[i][2];
+			}
+		return;
+	}
+	for( int i = 0; i < count; i++ )
+	{
+		unsigned bone = bones[i];
+		int32_t  n[3];
+		uint32_t gamma;
+
+		if( bone >= RP_BONES )
+			bone = 0;
+		if( rp_flight_serial[bone] != serial )
+		{
+			rp_flight_serial[bone] = serial;
+			for( int j = 0; j < 3; j++ )
+				rp_flight[bone][j] = rp_fixq( blight[bones[i]][j], 28 );
+		}
+		/* the normals are read in order and miss: eight on asked for */
+		__builtin_prefetch( norms[i] + 24 );
+		for( int j = 0; j < 3; j++ )
+			n[j] = rp_fixq( norms[i][j], 30 );
+		gamma = LightToTexGamma( (uint)rp_light_index( rp_dot30( n, rp_flight[bone] ), a16, s16 ));
+		out[i][0] = rp_light_byte( g0, gamma );
+		out[i][1] = rp_light_byte( g1, gamma );
+		out[i][2] = rp_light_byte( g2, gamma );
+	}
+	if( rp_lit_on == 2 )
+		for( int i = 0; i < count; i++ )
+		{
+			byte b[3];
+
+			RP_StudioLightFixed( bones[i], blight[bones[i]], flags, norms[i], b );
+			rp_b61_items++;
+			rp_b61_differ += b[0] != out[i][0] || b[1] != out[i][1] || b[2] != out[i][2];
+		}
+}
+
+void RP_StudioVertsFixed( int count, const byte *bones, const float ( *bm )[3][4], const float ( *verts )[3] )
+{
+	const int serial = rp_studio_serial;
+
+	for( int i = 0; i < count; i++ )
+	{
+		unsigned    bone = bones[i];
+		rp_mvert_t *mv = &rp_mv[i];
+		int32_t     a[3], q[3];
+
+		if( bone >= RP_BONES )
+			bone = 0;
+		if( rp_fbone_serial[bone] != serial )
+		{
+			rp_fbone_serial[bone] = serial;
+			rp_bone_join( (const int32_t( * )[3] )rp_view.m, rp_view.o, bm[bones[i]], &rp_fbone[bone] );
+			rp_count.bones++;
+		}
+		/* as RP_StudioVertFixed: the model's vertices eight on, the
+		   record four on (its stores then land in the cache) */
+		__builtin_prefetch( verts[i] + 24 );
+		__builtin_prefetch( &rp_mv[( i + 4 ) & ( RP_STUDIO_VERTS - 1 )] );
+		for( int j = 0; j < 3; j++ )
+			a[j] = rp_fixq( verts[i][j], 16 );
+		rp_bone_point( &rp_fbone[bone], a, q );
+		RP_StudioVertSet( i, mv, q );
+		if( rp_lit_on == 2 )
+		{
+			/* the record and the view-space point made again the old way */
+			rp_mvert_t kept = *mv;
+			int32_t    kq[3] = { rp_mq[i][0], rp_mq[i][1], rp_mq[i][2] };
+
+			RP_StudioVertFixed( i, bones[i], (const float( * )[4] )bm[bones[i]], verts[i] );
+			rp_b61_items++;
+			rp_b61_differ += memcmp( &kept, mv, sizeof( kept )) != 0 || memcmp( kq, rp_mq[i], sizeof( kq )) != 0;
+		}
+	}
 }
 
 /* The skins in the atlas, found by their texels' address. */

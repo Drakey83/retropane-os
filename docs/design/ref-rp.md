@@ -748,6 +748,35 @@ play): soft floats `rp_fadd` 6.8% and `rp_fmul` 3.7% (from the traces,
 3.0%, `rp_gfx_frame_parts` 2.9%, `RP_StudioCmdSend` 2.9%: the next
 levers, each judged on this walk.
 
+**Kit 61 (2026-11-17, the next exact levers from run 56's samples, biggest
+first that are exact; each checked in the emulator, `rp_lit 2` counting
+every difference):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The traces' plane sides (`PM_RecursiveHullCheck`, `PM_HullPointContents`) | Quake's and Xash's `PlaneDiff`: the point's coordinate (or its dot with the normal) minus the plane's distance, a software subtraction twice a node, the sign then tested | the two sides compared on their bits (`RP_LtSide`: the floats' order as integers); the subtraction made only for a node the line crosses, where its value is used; a NaN or an infinity takes the old way | for finite floats `a - d` rounded is `< 0` exactly when `a < d` (the sign survives rounding, zero only at `a == d`, subnormals kept): 200 million pairs on the PC (edges, neighbours, subnormals), none differ. Run 56: the subtractions ~1% of the play; a box hull (all axial planes) now walks with no float at all |
+| The flashlight's marks (`R_MarkLights`) | the light's foot on the plane made for every surface of a node | made once a plane and kept while the next surface has the same plane (a node's surfaces lie on its plane) | the same operations on the same values; the hoped-for ~1/4 of the marks' floats not seen on the X51v (run 57: a node's faces carry plane entries of their own) |
+| The models' light and vertices (`RP_StudioLightFixed`, `RP_StudioVertFixed`) | ref_soft and ref_gl: a call a normal (`R_StudioLighting`) and a vertex (`Matrix3x4_VectorTransform`); kit 49 kept that shape | one call a mesh (`RP_StudioLightMesh`) and one a part (`RP_StudioVertsFixed`): flags tested once, full-bright and flat meshes made once and copied, the light in registers | run 56: ~320 cycles a normal, ~340 a vertex, much of it the call's frame and the globals' loads; the same integer maths, so the same bytes (`rp_lit 2` remakes each the old way and counts differences) |
+| The server's entity walk (`SV_Physics`) | each edict read as the loop reaches it (the CPU's own prefetch does it on a desktop) | the edict two on and its movetype's line asked for with `PLD` | run 56: ~300 samples waiting on those first loads; a hint only, nothing read or written changes |
+
+**Run 57 (2026-11-17, kit 61, the X51v, the fixed-step walk, kit 60's
+default arguments, sound up the whole run):** frames 1-2,750 took
+**101,583 ms (27.0 fps) against kit 60's 103,808 ms (26.4 fps): 2.1% less
+time**, every one of the twelve marks at the same place as kit 60's (the
+traces' compares change nothing the game sees). The emulator first: `rp_lit
+2` made 948,617 normals and vertices both ways, 0 differed. Run 57's
+samples against run 56's: `PM_RecursiveHullCheck`'s float adds 780 -> 283,
+`SV_Physics` 758 -> 591, the models' light 1,752 -> 1,531 (the call's cost
+was the smaller part: the maths and the normals' misses stay), the
+vertices 1,220 -> 1,244 (no gain), `R_MarkLights`' adds unchanged (Xash's
+loader gives a node's faces plane entries of their own, so the kept foot is
+made again for nearly every surface; still exact). Next, biggest first:
+`RP_StudioCmdLit` 4.7%, the soft floats 9.4% (`R_MarkLights`,
+`PM_PlayerTraceExt`'s per-entity offsets), `RP_ChipFaceFixed` 3.4%,
+`rp_gfx_frame_parts` 3.0% (all its samples on the instruction after it
+turns interrupts back on: the chain's build with interrupts off, so the
+sampler cannot see inside it), the OS mixer 3.1%.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
