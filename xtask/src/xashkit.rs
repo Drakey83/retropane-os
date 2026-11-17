@@ -127,6 +127,7 @@ bind C_BUTTON impulse 100
 bind Z_BUTTON +attack2
 unbind MOUSE1
 sensitivity 12.8
+rp_tk_alpha 0.25
 echo rp_binds.cfg: the X51v's buttons bound
 ";
 /// The engine's names (Xash `engine/client/input/in_keys.c` `keynames`)
@@ -155,8 +156,9 @@ pub const BINDS_FILE: &str = "rp_binds.cfg";
 /// The layout's number: `rp_defaults` execs [`BINDS_FILE`] only when the
 /// saved config's `rp_layout` is older (the player's remaps kept; the
 /// owner, run 46: "make sure you make the key remappable"). Raise it with
-/// any change to [`BINDS`].
-pub const LAYOUT: u32 = 2;
+/// any change to [`BINDS`] (3: the touch keys at 25%, the owner after run
+/// 48: "the on screen buttons need to be more transparent").
+pub const LAYOUT: u32 = 3;
 
 /// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL
 /// M, N, P, the cores' divider): 125.67 / 1, the owner's ruling of
@@ -358,7 +360,7 @@ mod tests {
         assert_eq!(after("-rpbase"), Some("/rp-xash/game"));
         assert_eq!(after("-rodir"), Some("/Ports"));
         assert_eq!(after("-rpclock"), Some("29"));
-        assert_eq!(after("+rp_defaults"), Some("2"));
+        assert_eq!(after("+rp_defaults"), Some(LAYOUT.to_string().as_str()));
         assert!(words.contains(&"-rpfps") && words.contains(&"-rpendshot"));
         assert!(words.contains(&"-rpsample") && words.contains(&"-rpfloat"));
         // Nothing that fills the 64 KiB run log, nothing written while
