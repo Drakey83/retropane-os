@@ -663,6 +663,23 @@ and free while the chain runs (~65% of its memory speed, all of its
 cached work). On run B's load (~5 ms of feed a frame) that is ~3-4 ms back
 a 34 ms frame: ~29 -> ~32 fps, with write-allocate on.
 
+**Kit 55 (2026-11-17, the owner: "Yes, do both"): write-allocate the
+default, step 4f built behind `-rpchain`.**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The game's memory | read-allocate (Dell's WM, Linux's default) | write-allocate on the modules' 14 MiB by default (`-rpnowalloc` the control) | run 52: ~13% faster at the same load |
+| The feed (`ports/runner/src/gfx/chain.rs`) | Dell: the CPU writes every word, a full FIFO stalls the bus; P4: DMA pieces sized by the FIFO's room, the CPU polling | one unpaced descriptor chain a frame over the frame's words where they lie (no copy); the strip word without its count, each strip's end, the grid word with the scene's end and the end word from a table of constants, so the TA says done with no CPU; the scene's start and the background by the CPU, the chain armed, the call returns | the CPU's ~3-5 ms of feeding a frame comes back; no piece a run (run 52's probe: dearer than the CPU) |
+| The render's start | the CPU waits for the TA, then starts the render | a pump in the program's clock reads (`Screen::pump`, from `now_us`: a game reads the clock many times a frame) looks at the DMA and the TA's done bit and starts the render; the next frame's call waits for whatever is left (counted: "waiting at a frame's start for the last chain") | no interrupt, no new port call; the render starts within a clock read of the TA's done |
+| The frame's words | one buffer, reused as soon as the call returns | `RP_GFX_KEEP` (`struct rp_gfx`'s new `flags`): ref_rp writes the next frame into a second `rp_buf` and `rp_lm_buf` (640 KiB from the heap, only when the port asks; without room it waits for the last frame each frame) | zero copy; the DMA reads frame n while the emitter writes n+1 |
+| Alignment | 8-byte DMA addresses (the PXA27x's default) | the channel's `DALGN` bit (Linux's `pxa_dma` does the same for a misaligned transfer: a finding, to prove on the X51v) | the corners start on any word |
+
+The chain's channel is the USB controller's (3; the probe keeps CF's), its
+table and descriptors 192 KiB of the scratch RAM (12,284 descriptors, ~4
+a strip; a frame needing more goes by the CPU, counted). Off by default
+until the X51v draws it: its first run measures `-rpchain` against the
+CPU's feed on the same walk.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

@@ -80,7 +80,17 @@ static void RP_LmFrame( void );
 int rp_scratch;
 
 static cvar_t *rp_emit;
-static uint32_t rp_buf[RP_BUF_WORDS];
+/* Step 4f (RP_GFX_KEEP): the port layer reads a frame's words after
+   rp_gfx_frame_parts returns, while the 2700G is fed by DMA; so two of
+   each buffer, the next frame written into the other (rp_keep 1). The
+   second pair comes from the heap only when the port asks; if it cannot,
+   each frame waits for the last instead (rp_keep -1). */
+static uint32_t rp_buf_a[RP_BUF_WORDS];
+static uint32_t *rp_buf = rp_buf_a, *rp_buf_b;
+#define RP_LM_WORDS  ( 32 * 1024 ) /* the second pass's words (c1a0's view: ~19 Ki) */
+static uint32_t rp_lm_buf_a[RP_LM_WORDS];
+static uint32_t *rp_lm_buf = rp_lm_buf_a, *rp_lm_buf_b;
+static int rp_keep;
 static uint32_t rp_n;
 static const void *rp_state; /* what the last state block named */
 static uint32_t rp_lit_bytes, rp_block_bytes; /* this frame's lit surfaces (step 1b) */
@@ -255,6 +265,14 @@ static int RP_ChipOpen( void )
 		{
 			rp_chip = 1;
 			RP_AtlasInit();
+			if( rp_g.flags & RP_GFX_KEEP )
+			{
+				rp_buf_b = malloc( sizeof( rp_buf_a ));
+				rp_lm_buf_b = malloc( sizeof( rp_lm_buf_a ));
+				rp_keep = rp_buf_b && rp_lm_buf_b ? 1 : -1;
+				fprintf( stderr, "rp-emit: the frame's words are read after the call (step 4f): %s\n",
+					rp_keep > 0 ? "two buffers, the next frame written into the other" : "no room for a second buffer, each frame waits for the last" );
+			}
 			fprintf( stderr, "rp-emit: the 2700G is ours: %u x %u, %u KiB of texture memory\n",
 				rp_g.width, rp_g.height, rp_g.tex_bytes >> 10 );
 		}
@@ -276,6 +294,19 @@ static int rp_fixed_on, rp_fan_on;
 void RP_EmitFrame( void )
 {
 	int want = rp_emit ? (int)rp_emit->value : 0;
+
+	/* step 4f: the last frame's words are still being read */
+	if( rp_keep > 0 )
+	{
+		uint32_t *b = rp_buf, *l = rp_lm_buf;
+
+		rp_buf = rp_buf_b;
+		rp_buf_b = b;
+		rp_lm_buf = rp_lm_buf_b;
+		rp_lm_buf_b = l;
+	}
+	else if( rp_keep < 0 )
+		rp_gfx_wait();
 
 	if( want == 2 && !RP_ChipOpen( ))
 		want = 1;
@@ -1269,7 +1300,6 @@ any face whose texture or lightmap has no room stay on choice 2 A (their
 lit surface), so nothing is ever left out.
 */
 #define RP_TEX_SLOTS 512
-#define RP_LM_WORDS  ( 32 * 1024 ) /* the second pass's words (c1a0's view: ~19 Ki) */
 #define RP_LM_TEXELS 1024          /* a lightmap's samples at most (HL's: 18 x 18) */
 /* pass 1: the texture, opaque, depth written; pass 2: the lightmap,
    the destination's colour times the texel (the 2D layer's case 3),
@@ -1289,7 +1319,6 @@ typedef struct
 
 static rp_tex_t rp_tex[RP_TEX_SLOTS];
 static int      rp_tex_gen = 1, rp_tex_full;
-static uint32_t rp_lm_buf[RP_LM_WORDS];
 static uint32_t rp_lm_n;
 /*
 Kit 51 (R306: the second pass's memcpy into the frame, ~1-2% of the play

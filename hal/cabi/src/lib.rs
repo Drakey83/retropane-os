@@ -210,6 +210,18 @@ pub struct Gfx {
     /// The picture as drawn (`width` x `height` RGB565, rows of `width`
     /// x 2 bytes), for a test's eye: read only, after `rp_gfx_wait`.
     pub screen: *const core::ffi::c_void,
+    /// [`gfx_flags`]: how the screen takes a frame's words.
+    pub flags: u32,
+}
+
+/// [`Gfx::flags`] (`RP_GFX_*` in `retropane.h`).
+pub mod gfx_flags {
+    /// A frame's words are read after `rp_gfx_frame_parts` returns (the
+    /// chip fed by DMA while the program goes on: ref-rp.md step 4f), up
+    /// to the next `rp_gfx_frame_parts` (or `rp_gfx_wait`) returning: the
+    /// program keeps them (two buffers, one written while the other is
+    /// read).
+    pub const KEEP: u32 = 1;
 }
 
 /// The numbers in an [`Event`] and for `rp_input_open` (`RP_EV_*`,

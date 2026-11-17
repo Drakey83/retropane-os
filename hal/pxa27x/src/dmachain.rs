@@ -33,6 +33,28 @@ pub const STOP: u32 = 1;
 /// Bytes per descriptor slot.
 pub const SLOT: u32 = 16;
 
+/// A descriptor's `DDADR` with this bit: a caller-built chain
+/// ([`chain_descriptor`]) stops after it ([`STOP`]).
+pub const CHAIN_STOP: u32 = STOP;
+/// The most bytes one descriptor moves (`DCMD`'s length field).
+pub const CHAIN_MOST: u32 = 8191;
+
+/// One descriptor of a memory-to-memory chain (`Dma::arm_chain`): `len`
+/// bytes (1 to [`CHAIN_MOST`]) from `src` to `dst`, both counting up
+/// (`DCMD` INCSRC, INCTRG), no request line, 32-byte bursts of words; then
+/// the descriptor at `next` (16-byte aligned), or the chain's end
+/// ([`CHAIN_STOP`]). Words: DDADR, DSADR, DTADR, DCMD (PXA27x Developer's
+/// Manual, DMA descriptors).
+#[must_use]
+pub const fn chain_descriptor(next: Option<u32>, src: u32, dst: u32, len: u32) -> [u32; 4] {
+    let ddadr = match next {
+        Some(n) => n,
+        None => CHAIN_STOP,
+    };
+    // INCSRC 31, INCTRG 30, SIZE 32 bytes (3 << 16), WIDTH word (3 << 14).
+    [ddadr, src, dst, 1 << 31 | 1 << 30 | 3 << 16 | 3 << 14 | (len & CHAIN_MOST)]
+}
+
 /// A transfer, cut into descriptors of `chunk` bytes: descriptor `i` moves
 /// `min(chunk, len - i * chunk)` bytes from `src + i * src_step` to
 /// `dst + i * dst_step` (a step of 0: a device register, the same address
@@ -342,6 +364,25 @@ impl Stream {
 
 #[cfg(test)]
 mod tests {
+    /// The chain's descriptors as the PXA27x reads them (DDADR, DSADR,
+    /// DTADR, DCMD): linked or ended, both addresses counting up, no
+    /// request line, word bursts of 32 bytes, the length in DCMD's low 13
+    /// bits.
+    #[test]
+    fn a_chain_descriptor_is_the_controller_s_four_words() {
+        let d = chain_descriptor(Some(0xA880_0040), 0xA8C0_1234, 0x0FFF_4004, 28);
+        assert_eq!(d[0], 0xA880_0040);
+        assert_eq!((d[1], d[2]), (0xA8C0_1234, 0x0FFF_4004));
+        assert_eq!(d[3] & CHAIN_MOST, 28);
+        assert_eq!(d[3] >> 30, 0b11, "both addresses count up");
+        assert_eq!(d[3] & (3 << 28), 0, "memory to memory: no flow control");
+        assert_eq!((d[3] >> 16) & 3, 3, "32-byte bursts");
+        assert_eq!((d[3] >> 14) & 3, 3, "words");
+        assert_eq!(chain_descriptor(None, 0, 0, 4)[0], CHAIN_STOP);
+        // A length past the field is cut, never spills into the command.
+        assert_eq!(chain_descriptor(None, 0, 0, CHAIN_MOST + 1)[3] & 0xFFFF_E000, 0xC003_C000);
+    }
+
     extern crate std;
     use super::*;
 

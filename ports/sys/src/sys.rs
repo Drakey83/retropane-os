@@ -510,6 +510,11 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         if let Some(i) = self.input.as_mut() {
             i.pump(us);
         }
+        // And the screen's: a frame fed by DMA has its render started as
+        // soon as the chip has taken it (ref-rp.md step 4f).
+        if let Some(g) = self.screen.as_mut() {
+            g.pump();
+        }
         us
     }
 

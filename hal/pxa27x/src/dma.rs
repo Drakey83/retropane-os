@@ -46,6 +46,13 @@ const fn dtadr(ch: u32) -> usize {
     ddadr(ch) + 8
 }
 
+/// `DALGN`: a channel's bit set lets its addresses and lengths be any
+/// byte (clear: 8-byte aligned). PXA27x only; Linux's `pxa_dma` sets it for
+/// a misaligned transfer (`(src | dst | len) & 7`): a finding, proven on
+/// the X51v by ref_rp's chain (ref-rp.md step 4f).
+const DALGN: usize = BASE + 0xA0;
+pub use crate::dmachain::{CHAIN_MOST, CHAIN_STOP, chain_descriptor};
+
 const DCSR_RUN: u32 = 1 << 31;
 /// Descriptor-fetch mode is the reset default (NODESCFETCH clear).
 const DCSR_BUSERR: u32 = 1 << 0;
@@ -347,6 +354,40 @@ impl Dma {
             return false;
         }
         self.armed = Some((addr, len, true));
+        true
+    }
+
+    /// Runs a chain the caller built ([`chain_descriptor`], 4 words each,
+    /// linked in order, the last ending it), memory to memory with no
+    /// request line: ref_rp's frame into the TA window (ref-rp.md step 4f).
+    /// The chain is cleaned to memory here and the channel let take any
+    /// byte alignment (`DALGN`); the sources the descriptors name must be
+    /// in memory already (the caller cleans them: they are not one range).
+    /// Finish with [`DmaEngine::done`]. `false` if refused (busy, empty,
+    /// not 16-byte aligned, or not whole descriptors).
+    pub fn arm_chain(&mut self, chain: &[u32]) -> bool {
+        let base = chain.as_ptr() as u32;
+        let Ok(len) = u32::try_from(chain.len() * 4) else {
+            return false;
+        };
+        if self.armed.is_some()
+            || self.ring.is_some()
+            || chain.is_empty()
+            || !chain.len().is_multiple_of(4)
+            || base & 15 != 0
+        {
+            return false;
+        }
+        self.halt();
+        cpu::clean_range(base, len);
+        write(DALGN, read(DALGN) | 1 << self.ch);
+        write(dcsr(self.ch), 0);
+        write(ddadr(self.ch), base);
+        write(dcsr(self.ch), DCSR_RUN);
+        self.paced = false;
+        self.whole = true;
+        self.stream = None;
+        self.armed = Some((base, len, true));
         true
     }
 
@@ -652,3 +693,4 @@ impl DmaRing for Dma {
         r
     }
 }
+

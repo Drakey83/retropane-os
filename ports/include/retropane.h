@@ -176,7 +176,13 @@ struct rp_gfx {
     const void *screen;     /* the picture as drawn (width x height RGB565,
                                rows of width x 2 bytes): read only, after
                                rp_gfx_wait(), for a test's eye */
+    uint32_t flags;         /* RP_GFX_KEEP, ... */
 };
+
+/* A frame's words are read after rp_gfx_frame_parts returns (the 2700G fed
+ * by DMA while the program goes on), up to the next rp_gfx_frame_parts or
+ * rp_gfx_wait returning: keep them (write the next frame elsewhere). */
+#define RP_GFX_KEEP 1u
 
 #define RP_GFX_STATE 0x10000057u
 #define RP_GFX_STRIP(n) (0x40000000u | (uint32_t)(n)) /* 3 to 255 corners */

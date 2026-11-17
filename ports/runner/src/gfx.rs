@@ -43,7 +43,10 @@ use rp_port::gfx::{Piece, Screen, check, send, send_runs};
 
 use super::panel;
 
+mod chain;
 mod probe4f;
+pub use chain::{CHAIN_BYTES, Chain};
+use chain::Settled;
 pub use probe4f::{Probe, WALK_BYTES};
 
 const W: u32 = 480;
@@ -738,6 +741,17 @@ struct Counts {
     refused: u32,
     ta_hangs: u32,
     render_hangs: u32,
+    /// Step 4f: frames fed by the chain, their descriptors, the time from
+    /// the arm to the TA's done (us), how many the pump found done (the
+    /// rest waited for at the next frame), frames the chain could not
+    /// hold (fed by the CPU), and time waiting at a frame's start for the
+    /// last chain.
+    chained: u32,
+    descriptors: u32,
+    chain_us: u32,
+    pumped: u32,
+    unfit: u32,
+    settle_us: u32,
 }
 
 /// The screen while the program has it.
@@ -815,6 +829,8 @@ pub struct Chip {
     cpu: Option<u8>,
     /// Step 4f's probe (`-rp4f`).
     probe: Option<Probe>,
+    /// Step 4f: the frames fed by one DMA chain each (`None`: by the CPU).
+    chain: Option<Chain>,
 }
 
 impl Chip {
@@ -837,6 +853,12 @@ impl Chip {
                 refused: 0,
                 ta_hangs: 0,
                 render_hangs: 0,
+                chained: 0,
+                descriptors: 0,
+                chain_us: 0,
+                pumped: 0,
+                unfit: 0,
+                settle_us: 0,
             },
             since: 0,
             frame: 0,
@@ -846,6 +868,53 @@ impl Chip {
             bar: false,
             cpu: None,
             probe: None,
+            chain: None,
+        }
+    }
+
+    /// Step 4f: frames fed by a DMA chain ([`Chain`]; `None`: by the CPU).
+    #[must_use]
+    pub fn with_chain(mut self, chain: Option<Chain>) -> Self {
+        self.chain = chain;
+        self
+    }
+
+    /// Step 4f: the frame in flight waited for, its render started (or
+    /// the core reset if it failed). The time waited is counted.
+    fn settle(&mut self) {
+        let (Some(o), Some(regs), Some(ch)) =
+            (self.open.as_mut(), self.regs.as_mut(), self.chain.as_mut())
+        else {
+            return;
+        };
+        if !ch.busy() {
+            return;
+        }
+        let t0 = rt::ticks();
+        let s = ch.settle(regs);
+        self.counts.settle_us += us_since(t0);
+        Self::settled(&mut self.counts, self.log, o, regs, s, false);
+    }
+
+    /// What a settle or a pump found, acted on.
+    fn settled(c: &mut Counts, log: fn(Arguments<'_>), o: &mut Open, regs: &mut Mmio, s: Settled, pumped: bool) {
+        match s {
+            Settled::Idle => {}
+            Settled::Done(us) => {
+                c.chain_us += us;
+                c.pumped += u32::from(pumped);
+                o.start_render(regs);
+            }
+            Settled::Failed { dma } => {
+                c.ta_hangs += 1;
+                if c.ta_hangs == 1 {
+                    log(format_args!(
+                        "rp-gfx: step 4f: a frame's chain {}: the core reset",
+                        if dma { "did not finish (the DMA)" } else { "ran but the TA never said done" }
+                    ));
+                }
+                o.recover(regs);
+            }
         }
     }
 
@@ -912,6 +981,18 @@ impl Chip {
             c.ta_hangs,
             c.render_hangs
         ));
+        if c.chained > 0 || c.unfit > 0 {
+            let n = c.chained.max(1);
+            let (ch, ch_t) = tenths(c.chain_us, n);
+            let (st, st_t) = tenths(c.settle_us, f);
+            (self.log)(format_args!(
+                "rp-gfx: step 4f: {} frames fed by the DMA chain ({} descriptors a frame), the TA done {ch}.{ch_t} ms after the arm, {} of them seen done by the pump; waiting at a frame's start for the last chain {st}.{st_t} ms; {} frames too large for the chain (the CPU's)",
+                c.chained,
+                c.descriptors / n,
+                c.pumped,
+                c.unfit
+            ));
+        }
         self.counts = Counts::default();
         self.since = rt::ticks();
     }
@@ -1400,6 +1481,8 @@ impl Screen for Chip {
             tex_bytes: TEX_BYTES,
             tex,
             screen,
+            // Step 4f: the words are read by the chain after the call.
+            flags: if self.chain.is_some() { rp_hal_cabi::gfx_flags::KEEP } else { 0 },
         };
         (self.log)(format_args!(
             "rp-gfx: the screen is the program's: 480 x 640 drawn by the 3D core into the screen, MBXCLK 0x{clk0:x}, texture memory {} KiB at 0x{TEX_AT:x}",
@@ -1446,11 +1529,16 @@ impl Screen for Chip {
     }
 
     fn frame(&mut self, parts: &[&[u32]]) -> Result<(), Errno> {
+        if self.open.is_none() || self.regs.is_none() {
+            return Err(Errno::BadHandle);
+        }
+        // C2: the core's known answer every frame while past 624 MHz.
+        crate::cpu::check(self.log);
+        // Step 4f: the last frame's chain done and its render started.
+        self.settle();
         let (Some(o), true) = (self.open.as_mut(), self.regs.is_some()) else {
             return Err(Errno::BadHandle);
         };
-        // C2: the core's known answer every frame while past 624 MHz.
-        crate::cpu::check(self.log);
         let c = &mut self.counts;
         // Every part checked before any is fed (a refusal draws nothing).
         let mut counts = rp_port::gfx::Counts::default();
@@ -1526,6 +1614,34 @@ impl Screen for Chip {
             self.frame = self.frame.wrapping_add(1);
             self.report();
             return r;
+        }
+        // Step 4f: the frame as one DMA chain, the CPU let go at once.
+        if self.ladder.is_none()
+            && let Some(ch) = self.chain.as_mut()
+        {
+            let t1 = rt::ticks();
+            let _ = ta::clear(o.vram, &o.lay.ta);
+            cpu::drain_write_buffer();
+            match ch.start(regs, &o.lay.ta, &bg, parts) {
+                Ok(true) => {
+                    c.frames += 1;
+                    c.chained += 1;
+                    c.words += (bg.len() + parts.iter().map(|p| p.len()).sum::<usize>()) as u32;
+                    c.strips += counts.strips;
+                    c.descriptors += ch.last_descriptors;
+                    c.feed_us += us_since(t1);
+                    self.frame = self.frame.wrapping_add(1);
+                    self.report();
+                    return Ok(());
+                }
+                Ok(false) => c.unfit += 1,
+                Err(()) => {
+                    c.ta_hangs += 1;
+                    o.recover(regs);
+                    self.report();
+                    return Err(Errno::Io);
+                }
+            }
         }
         let _ = ta::clear(o.vram, &o.lay.ta);
         cpu::drain_write_buffer();
@@ -1645,7 +1761,20 @@ impl Screen for Chip {
         Ok(())
     }
 
+    fn pump(&mut self) {
+        let (Some(o), Some(regs), Some(ch)) =
+            (self.open.as_mut(), self.regs.as_mut(), self.chain.as_mut())
+        else {
+            return;
+        };
+        if ch.busy() {
+            let s = ch.pump(regs);
+            Self::settled(&mut self.counts, self.log, o, regs, s, true);
+        }
+    }
+
     fn wait(&mut self) -> Result<(), Errno> {
+        self.settle();
         let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
             return Err(Errno::BadHandle);
         };
@@ -1660,6 +1789,10 @@ impl Screen for Chip {
             return Err(Errno::BadHandle);
         };
         crate::cpu::put_back(self.log);
+        if let Some(ch) = self.chain.as_mut() {
+            let s = ch.settle(regs);
+            Self::settled(&mut self.counts, self.log, &mut o, regs, s, false);
+        }
         let _ = o.wait_render(regs);
         if o.stepped {
             // Windows Mobile's clock and bus timing back (ADR-0035 rule 2),

@@ -68,6 +68,11 @@ pub trait Screen {
     /// # Errors
     /// Not open (`EBADF`).
     fn close(&mut self) -> Result<(), Errno>;
+    /// A look at work the chip does after [`Self::frame`] returned (a
+    /// frame fed by DMA: its render started once the chip has taken it),
+    /// never a wait: called from the program's clock reads, which a game
+    /// makes many times a frame. Nothing by default.
+    fn pump(&mut self) {}
 }
 
 /// One thing for the tile accelerator.
@@ -262,6 +267,7 @@ mod tests {
         tex_bytes: 0x70_0000,
         tex: core::ptr::null_mut(),
         screen: core::ptr::null(),
+        flags: 0,
     };
 
     /// A state block naming a 512 x 512 RGB565 page at `addr`.

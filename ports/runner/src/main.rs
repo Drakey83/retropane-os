@@ -132,12 +132,14 @@ mod image {
     /// (`rp_hal_mem::float`, what the modules link), on numbers of a
     /// game's range, every result compared (R282).
     const FLOAT_WORD: &[u8] = b"-rpfloat";
-    /// A test run's word for write-allocate on the game modules' memory
-    /// (R306 item 2, measured against the default read-allocate in the
-    /// same batch of runs): [`WALLOC_FROM`]..[`WALLOC_TO`], the server's,
-    /// client's and engine's code, data and tables (kit 53's ELFs: the
-    /// server's text at 0xA8C00048, the engine's bss ending 0xA99F6284).
-    const WALLOC_WORD: &[u8] = b"-rpwalloc";
+    /// Write-allocate on the game modules' memory, the default since run
+    /// 52 (R306 item 2: ~13% faster than read-allocate at the same load
+    /// on c1a0's walk, 29.3 fps; the owner's go 2026-11-17):
+    /// [`WALLOC_FROM`]..[`WALLOC_TO`], the server's, client's and engine's
+    /// code, data and tables (kit 53's ELFs: the server's text at
+    /// 0xA8C00048, the engine's bss ending 0xA99F6284). This word turns it
+    /// off: the read-allocate control for an A/B run.
+    const NO_WALLOC_WORD: &[u8] = b"-rpnowalloc";
     const WALLOC_FROM: u32 = 0xA8C0_0000;
     /// A test run's word for step 4f's probe (`gfx::Probe`,
     /// docs/design/ref-rp.md "Step 4f's probe before the build"), with the
@@ -148,6 +150,13 @@ mod image {
     /// and its DMA channel is the CompactFlash reads' (the runner reads
     /// no CF card; `dma_map`'s chains are at their budget).
     const PROBE_WORD: &[u8] = b"-rp4f";
+    /// A test run's word for step 4f (`gfx::Chain`, docs/design/ref-rp.md
+    /// "Step 4f"): each frame fed to the TA by one DMA chain while the CPU
+    /// makes the next. Off by default until the X51v has drawn it (its
+    /// first run measures it against the CPU's feed). Its table and
+    /// descriptors take `gfx::CHAIN_BYTES` of the scratch RAM, its DMA
+    /// channel is the USB controller's (the runner has no USB device).
+    const CHAIN_WORD: &[u8] = b"-rpchain";
     const WALLOC_TO: u32 = 0xA9A0_0000;
     /// The program's command line as built in: its name alone. What a
     /// run asks of the program is in [`ARGS_FILE`], so a run on the X51v
@@ -1095,6 +1104,7 @@ mod image {
         let (work, room) = ram.split_at_mut(FAT_WORK);
         let (names, room) = room.split_at_mut(NAMES_ROOM);
         let (samples, room) = room.split_at_mut(SAMPLE_ROOM);
+        let (chain_mem, room) = room.split_at_mut(super::gfx::CHAIN_BYTES);
         let mut files: Files<'static, Disk, HANDLES> = Files::new(vol, work, room);
         files.remember(Names::new(names));
 
@@ -1277,6 +1287,23 @@ mod image {
             }
             None => (samples, None),
         };
+        // Step 4f: the DMA chain, if asked for.
+        let chain = if args[..arg_count].iter().any(|a| a.to_bytes() == CHAIN_WORD) {
+            let chain = rt::take_dma(rp_hal_pxa27x::dma_map::UDC)
+                .and_then(|dma| super::gfx::Chain::new(dma, chain_mem));
+            let _ = writeln!(
+                uart,
+                "runner: -rpchain: step 4f {}",
+                if chain.is_some() {
+                    "on: each frame fed to the TA by one DMA chain"
+                } else {
+                    "NOT on (no DMA channel or memory)"
+                }
+            );
+            chain
+        } else {
+            None
+        };
         match CHIP.put_with(|| {
             super::gfx::Chip::new(gfx_log, mbx)
                 .with_rung(rung)
@@ -1284,6 +1311,7 @@ mod image {
                 .with_bar(bar)
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
+                .with_chain(chain)
         }) {
             Some(c) => s.set_screen(c),
             None => {
@@ -1300,11 +1328,16 @@ mod image {
             float_bench();
             div_bench();
         }
-        if args[..arg_count].iter().any(|a| a.to_bytes() == WALLOC_WORD) {
+        if args[..arg_count].iter().any(|a| a.to_bytes() == NO_WALLOC_WORD) {
+            let _ = writeln!(
+                uart,
+                "runner: -rpnowalloc: the game's memory read-allocate (the control)"
+            );
+        } else {
             let n = rt::write_allocate_sections(WALLOC_FROM, WALLOC_TO);
             let _ = writeln!(
                 uart,
-                "runner: -rpwalloc: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
+                "runner: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
             );
         }
         let sampling = args[..arg_count]
