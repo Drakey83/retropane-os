@@ -128,3 +128,31 @@ RAM rule); or C2 closed for this unit at 624.
 
 **The owner's ruling (2026-11-16): "Close C2 at 624".** This unit runs 624
 MHz; the `-rpcpu` test stays in the port runner for other units.
+
+## 9. Route B, ordered (2026-11-16, the owner: "i want that option, i was confused")
+
+The close at 624 above is withdrawn: the owner wants 663 MHz tried, **the
+RAM rule ("RAM timing stays Dell's", 2026-10-19) lifted for this watched
+test alone**. Route B: L 17 x 2N 6, turbo, fast bus, A set: core 663, run
+and bus 221 MHz (Intel's 208), the memory clock 221 and the SDRAM 110.5
+(rated 104) with Dell's timing registers; ~+6% core and memory.
+
+Its risk is not route A's: RAM past its rating fails silently (a wrong bit
+read back, not a crash), and the bus's slower parts (CF's and the 2700G's
+timings are counted in memory-clock cycles) run ~6% tighter. So the test
+is memory first:
+1. **The HAL:** `Point::legal_route_b` (L 17-19, 2N 6, A and B; bus up to
+   247) and `clocks::change_route_b` behind `past-rating`, its refresh
+   interval worked out for the 221 MHz memory clock by the same
+   `mdrefr_around` (a stale interval corrupts SDRAM silently: the
+   memory-timing report), host tests on the plan's words.
+2. **Before the game, nothing written to any card:** step to 663, then
+   walking-ones and address-in-address over every free megabyte of SDRAM
+   (the heap's unused part and the scratch), several passes, a DMA copy
+   checked, the core's known answer; any wrong word puts 624 back and the
+   run says so. Then 624 back, the result logged.
+3. **Only if (2) is clean:** the game at 663 with the memory check repeated
+   (a few hundred KiB a frame, rotating through free RAM) beside the core's,
+   every card write gated on both.
+4. **The owner watches.** A silent error is the risk: the log's counts, not
+   the picture alone, decide.
