@@ -147,7 +147,7 @@ index d5323aa..a66849e 100644
  
  #include "entity_state.h"
 diff --git a/dlls/util.cpp b/dlls/util.cpp
-index 27c7ffe..10201f4 100644
+index 27c7ffe..c2a2cac 100644
 --- a/dlls/util.cpp
 +++ b/dlls/util.cpp
 @@ -32,6 +32,18 @@
@@ -169,7 +169,25 @@ index 27c7ffe..10201f4 100644
  float UTIL_WeaponTimeBase( void )
  {
  #if CLIENT_WEAPONS
-@@ -2174,7 +2186,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -408,6 +420,17 @@ int UTIL_EntitiesInBox( CBaseEntity **pList, int listMax, const Vector &mins, co
+ 
+ 	for( int i = 1; i < gpGlobals->maxEntities; i++, pEdict++ )
+ 	{
++#if defined( __arm__ )
++		// RetroPane (Half-Life FPS, run 49: this loop 2.5% of the play): each
++		// edict is ~800 bytes and its free flag and flags sit on different
++		// cache lines, two SDRAM misses an edict on a CPU without a
++		// hardware prefetcher (the PXA270). Ask for the ones four edicts on
++		// (PLD never faults); the test itself is unchanged, so the game's
++		// results are exactly Valve's.
++		__builtin_prefetch( &pEdict[4].free );
++		__builtin_prefetch( &pEdict[4].v.flags );
++		__builtin_prefetch( &pEdict[4].v.absmin );
++#endif
+ 		if( pEdict->free )	// Not in use
+ 			continue;
+ 
+@@ -2174,7 +2197,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  						timeData += time;
  						memcpy( pOutputData, &timeData, 4 );
  					#else
@@ -178,7 +196,7 @@ index 27c7ffe..10201f4 100644
  						// Re-base time variables
  						timeData += time;
  						*( (float *)pOutputData ) = timeData;
-@@ -2216,7 +2228,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -2216,7 +2239,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  						}
  						break;
  					case FIELD_EVARS:
@@ -187,7 +205,7 @@ index 27c7ffe..10201f4 100644
  						pent = EntityFromIndex( entityIndex );
  						if( pent )
  							*( (entvars_t **)pOutputData ) = VARS( pent );
-@@ -2224,7 +2236,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -2224,7 +2247,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  							*( (entvars_t **)pOutputData ) = NULL;
  						break;
  					case FIELD_CLASSPTR:
@@ -196,7 +214,7 @@ index 27c7ffe..10201f4 100644
  						pent = EntityFromIndex( entityIndex );
  						if( pent )
  							*( (CBaseEntity **)pOutputData ) = CBaseEntity::Instance( pent );
-@@ -2232,14 +2244,14 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -2232,14 +2255,14 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  							*( (CBaseEntity **)pOutputData ) = NULL;
  						break;
  					case FIELD_EDICT:
@@ -213,7 +231,7 @@ index 27c7ffe..10201f4 100644
  						pent = EntityFromIndex( entityIndex );
  						if( pent )
  							*( (EHANDLE *)pOutputData ) = CBaseEntity::Instance( pent );
-@@ -2247,7 +2259,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -2247,7 +2270,7 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  							*( (EHANDLE *)pOutputData ) = NULL;
  						break;
  					case FIELD_ENTITY:
@@ -222,7 +240,7 @@ index 27c7ffe..10201f4 100644
  						pent = EntityFromIndex( entityIndex );
  						if( pent )
  							*( (EOFFSET *)pOutputData ) = OFFSET( pent );
-@@ -2261,9 +2273,9 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -2261,9 +2284,9 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  						ULittleToHostSW( ( (float*)pOutputData)[1] );
  						ULittleToHostSW( ( (float*)pOutputData)[2] );
  						#else
@@ -235,7 +253,7 @@ index 27c7ffe..10201f4 100644
  						#endif
  						break;
  					case FIELD_POSITION_VECTOR:
-@@ -2278,24 +2290,24 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
+@@ -2278,24 +2301,24 @@ int CRestore::ReadField( void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCou
  							memcpy( pOutputData, &tmp, sizeof( Vector ) );
  						}
  						#else
@@ -266,7 +284,7 @@ index 27c7ffe..10201f4 100644
  						break;
  					case FIELD_FUNCTION:
  						if( ( (char *)pInputData )[0] == '\0' )
-@@ -2400,7 +2412,7 @@ int CRestore::ReadNamedInt( const char *pName )
+@@ -2400,7 +2423,7 @@ int CRestore::ReadNamedInt( const char *pName )
  	HEADER header;
  
  	BufferReadHeader( &header );
@@ -275,7 +293,7 @@ index 27c7ffe..10201f4 100644
  }
  
  char *CRestore::ReadNamedString( const char *pName )
-@@ -2409,7 +2421,7 @@ char *CRestore::ReadNamedString( const char *pName )
+@@ -2409,7 +2432,7 @@ char *CRestore::ReadNamedString( const char *pName )
  
  	BufferReadHeader( &header );
  #if TOKENIZE
