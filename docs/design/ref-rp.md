@@ -815,6 +815,20 @@ first 250 slower.) From kit 60: 103,808 -> 98,686 ms (4.9%); 30 fps is
 it frees: the DMA now holds the bus ~2-3 ms longer a frame while the game
 runs.
 
+**Kit 64 (2026-11-17, exact):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A world face's corners (`RP_ChipFaceFixed`) | each corner's vertex record read as the loop reaches it (a desktop CPU's prefetcher hides the misses) | every corner's record asked for with `PLD` before the loop | run 60: ~450 samples waiting on those misses one after another; run 62: 2,008 -> ~1,800 |
+| The client's physics entities (`CL_CopyEntityToPhysEnt`) | Xash: `pe->player` written, then read back (the compiler must: `pe` and `state` may alias), the state read as it comes | the value kept in a register; the state's lines asked for first | run 60: its hottest load was that read-back (the PXA270 does not allocate on a store, so it waited on memory); 815 -> ~490 samples |
+| R316, the fused dot product in C (`ports/xash/include/rp_fdot.h`) | C's five software-float calls | one call, every product and sum rounded as C rounds them (1,000,000,000 vectors on the PC, none differ; run 61's marks all the same) | **measured slower, not used**: run 61 (kit 64 with it) 98,804 ms against kit 63's 98,686; `rp_fdot3` took 1,591 samples where the five assembly calls it replaced cost ~850. The compiled C loses to the hand-written assembly routines; an assembly version is the next try (R316) |
+
+**Run 62 (2026-11-17, kit 64 without the fused dot, the X51v, the
+fixed-step walk, sound up):** frames 1-2,750 took **98,191 ms (28.0 fps)
+against kit 63's 98,686 ms (27.8 fps): 0.5% less time**, every window
+faster, every mark the same. From kit 60: 103,808 -> 98,191 ms (5.4%);
+30 fps is ~91,700 ms, 6.6% still to go.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

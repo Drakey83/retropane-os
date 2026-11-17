@@ -172,6 +172,48 @@ index 95c85f7..4d67425 100644
  	{
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
+diff --git a/engine/client/dll_int/cl_pmove.c b/engine/client/dll_int/cl_pmove.c
+index 9ca1f79..3c2550e 100644
+--- a/engine/client/dll_int/cl_pmove.c
++++ b/engine/client/dll_int/cl_pmove.c
+@@ -305,16 +305,24 @@ void CL_ClipPMoveToEntity( physent_t *pe, const vec3_t start, vec3_t mins, vec3_
+ static void CL_CopyEntityToPhysEnt( physent_t *pe, entity_state_t *state, qboolean visent )
+ {
+ 	model_t	*mod = CL_ModelHandle( state->modelindex );
++	// RetroPane (kit 64, run 60: 1.4% of the play here, its hottest load
++	// pe->player read back after its store: the PXA270 does not allocate
++	// on a store, so the read waited on memory; the compiler reloads it as
++	// pe and state may alias): the value kept in a register, and the
++	// state's lines asked for before they are read (PLD, a hint)
++	int	player = 0;
+ 
+-	pe->player = 0;
++	for( size_t at = 0; at < sizeof( *state ); at += 32 )
++		__builtin_prefetch((const byte *)state + at );
+ 
+ 	if( state->number >= 1 && state->number <= cl.maxclients )
+-		pe->player = state->number;
++		player = state->number;
++	pe->player = player;
+ 
+-	if( pe->player )
++	if( player )
+ 	{
+ 		// client or bot
+-		Q_snprintf( pe->name, sizeof( pe->name ), "player %i", pe->player - 1 );
++		Q_snprintf( pe->name, sizeof( pe->name ), "player %i", player - 1 );
+ 	}
+ 	else if( mod != NULL )
+ 	{
+@@ -364,7 +372,7 @@ static void CL_CopyEntityToPhysEnt( physent_t *pe, entity_state_t *state, qboole
+ 	memcpy( &pe->blending[0], &state->blending[0], sizeof( pe->blending ));
+ 
+ 	pe->movetype = state->movetype;
+-	pe->takedamage = (pe->player) ? DAMAGE_YES : DAMAGE_NO;
++	pe->takedamage = ( player ) ? DAMAGE_YES : DAMAGE_NO;
+ 	pe->team = state->team;
+ 	pe->classnumber = state->playerclass;
+ 	pe->blooddecal = 0;	// unused in GoldSrc
 diff --git a/engine/client/input/input.c b/engine/client/input/input.c
 index 712a86e..bccf97f 100644
 --- a/engine/client/input/input.c

@@ -1890,6 +1890,12 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	/* a face across the near plane: its corners cut in integers (below) */
 	int32_t           kxy[RP_MAX_CORNERS][2], kst[RP_MAX_CORNERS][2];
 
+	/* kit 64 (run 60: ~450 of this function's 2,008 samples waiting on
+	   each corner's first load of its vertex record, the misses one after
+	   another): every corner's record asked for first (PLD, a hint), so
+	   the PXA270's four line fills overlap */
+	for( int i = 0; i < n; i++ )
+		__builtin_prefetch( &rp_wv[wc[i].vi] );
 	for( int i = 0; i < n; i++ )
 	{
 		rp_wvert_t *c = &rp_wv[wc[i].vi];
