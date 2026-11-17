@@ -93,7 +93,7 @@ static struct
 	uint32_t culled; /* the models' triangles facing away or off the screen, not sent */
 	uint32_t mipswitch; /* R297: faces drawn at a mip level other than their place's */
 	uint32_t blended; /* step 4c: meshes drawn blended */
-	uint32_t oldplace, unjams, coarser; /* the black walls: faces drawn from their old place, pages dropped to unjam, faces taken coarser (too large) */
+	uint32_t oldplace, unjams, coarser, deferred; /* the black walls: faces drawn from their old place, pages dropped to unjam, faces taken coarser (too large) */
 	uint32_t fixed, mverts, mreuse; /* steps 4b, 4d */
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
@@ -126,6 +126,9 @@ static int rp_mip_force, rp_cull_on, rp_chip;
 static uint32_t RP_AtlasFill( void );
 static void RP_HoleCheck( void );
 static void RP_AtlasUnjam( void );
+#define RP_UPLOAD_BUDGET ( 24 * 1024 ) /* bytes lit and written a frame: the hitches (RP_SurfacePlace) */
+#define RP_PROVISIONAL 0x40000000u /* a place coarser than wanted (the upload budget) */
+static int32_t rp_upload_left;
 
 static void RP_EmitReport( void )
 {
@@ -159,8 +162,8 @@ static void RP_EmitReport( void )
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
 			rp_count.mverts / f, rp_count.mreuse / f );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large)\n",
-			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f );
+		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large or no room), %u faces a frame waiting for the upload budget\n",
+			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f, rp_count.deferred / f );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: culling (rp_cull %d): %u model triangles a frame not sent (facing away or off the screen)\n",
 			rp_cull_on, rp_count.culled / f );
@@ -261,6 +264,7 @@ void RP_EmitFrame( void )
 	}
 	if( rp_emit_on == 2 )
 		RP_AtlasUnjam();
+	rp_upload_left = RP_UPLOAD_BUDGET;
 	rp_n = 0;
 	rp_good = 0;
 	rp_lit_bytes = rp_block_bytes = 0;
@@ -624,7 +628,7 @@ static int RP_MipHold( msurface_t *fa, int level, uint32_t zi )
 	uint32_t loc = RP_Loc( fa );
 	int      p;
 
-	if( !loc )
+	if( !loc || ( loc & RP_PROVISIONAL ))
 		return level;
 	p = (int)( loc >> 24 & 3 );
 	if( level < p )
@@ -940,6 +944,21 @@ The face's lit surface in video memory at `miplevel`, built if it is not
 there or its light or texture frame changed (D_CacheSurface's own tests);
 its page, and its place in `*x`, `*y` (squares), or -1 (not drawn).
 */
+/*
+The hitches (the owner, run 40: "it kept hitching"; its log: a dropped
+page's faces lit and written again in one frame, up to 94 KiB, 6.5 ms a
+frame averaged and far more in the frame it landed). Iterate, don't
+imitate: the software renderer and ref_gl build what the view needs in
+the frame it needs it; texture streaming in today's engines spends a
+budget a frame and shows a coarser level until the full one is in. Here
+each frame may light and write RP_UPLOAD_BUDGET bytes: a face over it keeps
+its old texels (its light a frame late), or its old place at another
+level, or goes in at a coarser level marked provisional (RP_PROVISIONAL:
+the mip hold lets it sharpen the next frame there is room); the coarsest
+level always goes in (1/64 of the face). A map's first view builds over
+a few frames, coarse first, instead of one long stall.
+*/
+
 static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, int *y, int *oldmip )
 {
 	uint32_t     loc = (uint32_t)RP_LOC( fa );
@@ -947,6 +966,7 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 	int          pg = loc >> 16 & 0xFF, stale, placed;
 	surfcache_t *cache;
 	uint64_t     t0;
+	int          over;
 
 	placed = ( loc & RP_VALID ) && (int)( loc >> 24 & 3 ) == miplevel && pg < rp_pages
 		&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen;
@@ -960,18 +980,27 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 	for( int maps = 0; !stale && maps < MAXLIGHTMAPS && fa->styles[maps] != 255; maps++ )
 		if( g_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps] )
 			stale = 1;
+	over = stale && miplevel < 3 && w * h * 2 > rp_upload_left;
 
 	if( placed )
 	{
 		*x = loc & 0xFF;
 		*y = loc >> 8 & 0xFF;
+		if( over )
+		{
+			/* its old texels this frame, relit when there is room */
+			rp_count.deferred++;
+			stale = 0;
+		}
 	}
 	else
 	{
-		int npg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, x, y );
+		int npg = over ? -1 : RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, x, y );
 
 		if( npg < 0 )
 		{
+			if( over )
+				rp_count.deferred++;
 			/* no room: drawn from the place it has at its old level,
 			   never left out (the caller takes the level back) */
 			if(( loc & RP_VALID ) && pg < rp_pages && (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen )
@@ -1006,6 +1035,7 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 		return -1;
 	}
 	RP_Upload((const pixel_t *)cache->data, w, h, pg, *x, *y );
+	rp_upload_left -= w * h * 2;
 	RP_LOC( fa ) = (intptr_t)( RP_VALID | (uint32_t)miplevel << 24 | (uint32_t)pg << 16 | (uint32_t)*y << 8 | (uint32_t)*x );
 	RP_IMAGE( fa ) = (intptr_t)image;
 	RP_GEN( fa ) = (intptr_t)( rp_page[pg].gen << 1 | ( cache->dlight ? 1 : 0 ));
@@ -1113,7 +1143,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	const int32_t    *st[RP_MAX_CORNERS], *cxy[RP_MAX_CORNERS];
 	int64_t           sx = 0, sy = 0; /* the face's centre on the screen, 28.4 */
 	uint32_t          nearzi = 0;
-	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh, oldmip = -1;
+	int               n = fa->numedges, miplevel, w, h, qx, qy, pg, luxels, lo, hi, kw, kh, oldmip = -1, wanted;
 
 	for( int i = 0; i < n; i++ )
 	{
@@ -1179,6 +1209,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy, &oldmip );
 	/* no room at its level: each smaller level (a quarter the room each)
 	   before a face is ever left out (the black walls) */
+	wanted = miplevel;
 	while( pg < 0 && miplevel < 3 && 2 << miplevel <= gEngfuncs.Mod_SampleSizeForFace( fa ))
 	{
 		miplevel++;
@@ -1194,6 +1225,8 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 		rp_count.skipped++;
 		return 1;
 	}
+	if( miplevel > wanted && oldmip < 0 )
+		RP_LOC( fa ) |= RP_PROVISIONAL; /* coarser than its distance asks: sharpens when there is room */
 	if( oldmip >= 0 )
 	{
 		/* drawn from its old place, at that place's level */
@@ -1257,7 +1290,7 @@ static void RP_ChipFace( msurface_t *fa )
 	const model_t *mod = RI.currentmodel;
 	const mtexinfo_t *tex = fa->texinfo;
 	const float *sv, *tv;
-	int n = 0, m = 0, lo, hi, miplevel, k, w, h, qx, qy, pg, luxels, oldmip = -1;
+	int n = 0, m = 0, lo, hi, miplevel, k, w, h, qx, qy, pg, luxels, oldmip = -1, wanted;
 	float nearzi = 0.0f, smin, tmin, scale, ks, kt, u0, v0;
 
 	if( fa->flags & ( SURF_DRAWSKY | SURF_DRAWTURB | SURF_CONVEYOR ))
@@ -1377,6 +1410,7 @@ static void RP_ChipFace( msurface_t *fa )
 	pg = RP_SurfacePlace( fa, miplevel, w, h, &qx, &qy, &oldmip );
 	/* no room at its level: each smaller level (a quarter the room each)
 	   before a face is ever left out (the black walls) */
+	wanted = miplevel;
 	while( pg < 0 && miplevel < 3 && 2 << miplevel <= gEngfuncs.Mod_SampleSizeForFace( fa ))
 	{
 		miplevel++;
@@ -1392,6 +1426,8 @@ static void RP_ChipFace( msurface_t *fa )
 		rp_count.skipped++;
 		return;
 	}
+	if( miplevel > wanted && oldmip < 0 )
+		RP_LOC( fa ) |= RP_PROVISIONAL; /* coarser than its distance asks: sharpens when there is room */
 	if( oldmip >= 0 )
 	{
 		/* drawn from its old place, at that place's level */

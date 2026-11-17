@@ -1,3 +1,21 @@
+diff --git a/common/cl_entity.h b/common/cl_entity.h
+index 8784293..3f97e3f 100644
+--- a/common/cl_entity.h
++++ b/common/cl_entity.h
+@@ -59,7 +59,12 @@ typedef struct
+ 
+ typedef struct cl_entity_s cl_entity_t;
+ 
+-#define HISTORY_MAX		64		// Must be power of 2
++// RetroPane (R298, run 40: the next map's load short of 1.3 MB): 16, not
++// 64: every entity carries this ring (1.6 MB of the 64 MB device's heap
++// at 900 entities) for multiplayer smoothing; cl_interp's 0.1 s needs 3
++// entries at 25 a second, 16 keeps 0.6 s. The engine and the game's
++// client share this struct: both copies change together.
++#define HISTORY_MAX		16		// Must be power of 2
+ #define HISTORY_MASK	( HISTORY_MAX - 1 )
+ 
+ #include "entity_state.h"
 diff --git a/common/port.h b/common/port.h
 index 9581a61..ed3529c 100644
 --- a/common/port.h
@@ -14,6 +32,146 @@ index 9581a61..ed3529c 100644
  #endif
  
  #if !XASH_WIN32
+diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
+index 95c85f7..4d67425 100644
+--- a/engine/client/cl_tent.c
++++ b/engine/client/cl_tent.c
+@@ -37,7 +37,20 @@ TEMPENTS MANAGEMENT
+ 
+ static TEMPENTITY *cl_active_tents;
+ static TEMPENTITY *cl_free_tents;
+-static TEMPENTITY *cl_tempents = NULL;		// entities pool
++/*
++RetroPane (R298; the owner, 2026-11-16: "we arent limited to Xash, rule 0"):
++Xash holds the worst case, max_tents (500) temporary entities of ~3 KB at
++once, 1.46 MB whether one spark is alive or none. Here the pool grows in
++chunks of RP_TENT_CHUNK as effects need them, up to the same 500, and its
++memory is the C heap's (a chunk not had is the same "overflow" the full
++pool always gave, never the engine's fatal error): a quiet room holds a
++chunk or two, a firefight the full count, the ceiling unchanged.
++*/
++#define RP_TENT_CHUNK  50
++#define RP_TENT_CHUNKS 41 // 2048 (Xash's own ceiling) / 50, rounded up
++static TEMPENTITY *cl_tent_chunk[RP_TENT_CHUNKS];
++static int         cl_tent_chunks;
++static TEMPENTITY *cl_tempents = NULL;		// the first chunk
+ 
+ static model_t *cl_sprite_muzzleflash[MAX_MUZZLEFLASH];	// muzzle flashes
+ static model_t *cl_sprite_ricochet = NULL;
+@@ -178,17 +191,47 @@ static void CL_ClearTempEnts( void )
+ {
+ 	if( !cl_tempents ) return;
+ 
+-	for( int i = 0; i < GI->max_tents - 1; i++ )
++	cl_free_tents = NULL;
++	for( int c = cl_tent_chunks - 1; c >= 0; c-- )
+ 	{
+-		cl_tempents[i].next = &cl_tempents[i+1];
+-		cl_tempents[i].entity.trivial_accept = INVALID_HANDLE;
++		for( int i = RP_TENT_CHUNK - 1; i >= 0; i-- )
++		{
++			cl_tent_chunk[c][i].next = cl_free_tents;
++			cl_tent_chunk[c][i].entity.trivial_accept = INVALID_HANDLE;
++			cl_free_tents = &cl_tent_chunk[c][i];
++		}
+ 	}
+-
+-	cl_tempents[GI->max_tents-1].next = NULL;
+-	cl_free_tents = cl_tempents;
+ 	cl_active_tents = NULL;
+ }
+ 
++/* One more chunk on the free list, while under max_tents: 1, or 0. */
++static int CL_TentGrow( void )
++{
++	TEMPENTITY *c;
++
++	if( cl_tent_chunks >= RP_TENT_CHUNKS || ( cl_tent_chunks + 1 ) * RP_TENT_CHUNK > GI->max_tents )
++		return 0;
++	if( !( c = calloc( RP_TENT_CHUNK, sizeof( TEMPENTITY ))))
++		return 0;
++	cl_tent_chunk[cl_tent_chunks++] = c;
++	for( int i = RP_TENT_CHUNK - 1; i >= 0; i-- )
++	{
++		c[i].entity.trivial_accept = INVALID_HANDLE;
++		c[i].next = cl_free_tents;
++		cl_free_tents = &c[i];
++	}
++	return 1;
++}
++
++/* A temporary entity's number in the pool (its sound's entity). */
++static int CL_TentIndex( const TEMPENTITY *p )
++{
++	for( int c = 0; c < cl_tent_chunks; c++ )
++		if( p >= cl_tent_chunk[c] && p < cl_tent_chunk[c] + RP_TENT_CHUNK )
++			return c * RP_TENT_CHUNK + (int)( p - cl_tent_chunk[c] );
++	return 0;
++}
++
+ /*
+ ================
+ CL_InitTempents
+@@ -197,7 +240,10 @@ CL_InitTempents
+ */
+ void CL_InitTempEnts( void )
+ {
+-	cl_tempents = Mem_Calloc( cls.mempool, sizeof( TEMPENTITY ) * GI->max_tents );
++	cl_tent_chunks = 0;
++	cl_free_tents = NULL;
++	CL_TentGrow();
++	cl_tempents = cl_tent_chunks ? cl_tent_chunk[0] : NULL;
+ 	CL_ClearTempEnts();
+ 
+ 	// load tempent sprites (glowshell, muzzleflashes etc)
+@@ -212,8 +258,10 @@ CL_FreeTempEnts
+ */
+ void CL_FreeTempEnts( void )
+ {
+-	if( cl_tempents )
+-		Mem_Free( cl_tempents );
++	for( int c = 0; c < cl_tent_chunks; c++ )
++		free( cl_tent_chunk[c] );
++	cl_tent_chunks = 0;
++	cl_free_tents = cl_active_tents = NULL;
+ 	cl_tempents = NULL;
+ }
+ 
+@@ -338,7 +386,7 @@ static void CL_TempEntPlaySound( TEMPENTITY *pTemp, float damp )
+ 		else pitch = PITCH_NORM;
+ 
+ 		sound_t handle = S_RegisterSound( soundname );
+-		S_StartSound( pTemp->entity.origin, -(pTemp - cl_tempents), CHAN_BODY, handle, fvol, ATTN_NORM, pitch, SND_STOP_LOOPING );
++		S_StartSound( pTemp->entity.origin, -CL_TentIndex( pTemp ), CHAN_BODY, handle, fvol, ATTN_NORM, pitch, SND_STOP_LOOPING );
+ 	}
+ }
+ 
+@@ -440,7 +488,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
+ 	static float cl_lasttimewarn;
+ 	TEMPENTITY	*pTemp;
+ 
+-	if( !cl_free_tents )
++	if( !cl_free_tents && !CL_TentGrow( ))
+ 	{
+ 		if( cl_lasttimewarn < host.realtime )
+ 		{
+@@ -475,14 +523,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
+ {
+ 	TEMPENTITY	*pTemp;
+ 
+-	if( !cl_free_tents )
++	if( !cl_free_tents && !CL_TentGrow( ))
+ 	{
+ 		// no temporary ents free, so find the first active low-priority temp ent
+ 		// and overwrite it.
+ 		CL_FreeLowPriorityTempEnt();
+ 	}
+ 
+-	if( !cl_free_tents )
++	if( !cl_free_tents && !CL_TentGrow( ))
+ 	{
+ 		// didn't find anything? The tent list is either full of high-priority tents
+ 		// or all tents in the list are still due to live for > 10 seconds.
 diff --git a/engine/client/parse/cl_parse.c b/engine/client/parse/cl_parse.c
 index 61de1f4..041bb8e 100644
 --- a/engine/client/parse/cl_parse.c
@@ -232,7 +390,7 @@ index 4b1e40c..41d0718 100644
  #else
  static inline void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h ) { }
 diff --git a/engine/server/sv_save.c b/engine/server/sv_save.c
-index 54975d6..3b2e3e4 100644
+index 54975d6..9b08e2f 100644
 --- a/engine/server/sv_save.c
 +++ b/engine/server/sv_save.c
 @@ -33,7 +33,11 @@ half-life implementation of saverestore system
@@ -241,10 +399,10 @@ index 54975d6..3b2e3e4 100644
  
 -#define SAVE_HEAPSIZE		0x400000				// reserve 4Mb for now
 +// RetroPane (R298, run 37: the level change's 4 MiB refused with 34 of the
-+// heap's 35 MiB in use): 1 MiB, its use logged at every save and an
++// heap's 35 MiB in use): 512 KiB, its use logged at every save and an
 +// overflow said plainly (a level's save is a few hundred KiB in GoldSrc's
 +// own files); Xash reserves 4 MiB "for now", a PC's habit
-+#define SAVE_HEAPSIZE		0x100000
++#define SAVE_HEAPSIZE		0x80000 // run 40: c1a0's level change used 78 KB
  #define SAVE_HASHSTRINGS		0xFFF				// 4095 unique strings
  
  // savedata headers
