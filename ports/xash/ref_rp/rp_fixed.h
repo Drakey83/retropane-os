@@ -51,6 +51,36 @@ static inline int32_t rp_fixq( float f, int q )
 	return u >> 31 ? -v : v;
 }
 
+/*
+Kit 62 (run 57: rp_fixq ~22% of RP_StudioLightMesh, three a normal and three
+a vertex, each a chain of tests and branches): f times 2^q when f's
+exponent field is at most 157 - q (|f| < 2^(30 - q), every normal and
+model point; anything larger, an infinity or a NaN returns 0 for the
+caller to take rp_fixq), with no branch: the significand kept 7 bits up
+(below bit 31) and shifted right by 157 - q - e, which is rp_fixq's left
+shift by sh or right shift by -sh in one (no bit lost on the way up), and
+a shift of 32 or more is 0, as rp_fixq's below 2^-24. Checked against
+rp_fixq on every one of the 2^32 floats for q = 16, 28 and 30.
+*/
+static inline int rp_fixq3_fast( const float *f, int q, int32_t out[3] )
+{
+	uint32_t u[3];
+
+	__builtin_memcpy( u, f, sizeof( u ));
+	__asm__( "" : "+r"( u[0] ), "+r"( u[1] ), "+r"( u[2] ));
+	if((( u[0] >> 23 & 0xFF ) > (uint32_t)( 157 - q )) | (( u[1] >> 23 & 0xFF ) > (uint32_t)( 157 - q ))
+		| (( u[2] >> 23 & 0xFF ) > (uint32_t)( 157 - q )))
+		return 0;
+	for( int j = 0; j < 3; j++ )
+	{
+		uint32_t sh = 157 - q - ( u[j] >> 23 & 0xFF ), m = (( u[j] | 0x00800000u ) << 8 ) >> 1;
+		int32_t  v = sh < 32 ? (int32_t)( m >> sh ) : 0;
+
+		out[j] = ( u[j] >> 31 ) ? -v : v;
+	}
+	return 1;
+}
+
 /* A bone joined with the view: model space to view space. */
 typedef struct
 {

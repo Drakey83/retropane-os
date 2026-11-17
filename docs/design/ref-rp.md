@@ -777,6 +777,26 @@ made again for nearly every surface; still exact). Next, biggest first:
 turns interrupts back on: the chain's build with interrupts off, so the
 sampler cannot see inside it), the OS mixer 3.1%.
 
+**Kit 62 (2026-11-17, from run 57's samples, all exact):**
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A model's float normals and points to fixed point | a C cast (a software call), or kit 49's `rp_fixq`: the exponent tested for zero, underflow and overflow, a branch each, a shift left or right | `rp_fixq3_fast`: when all three exponents are at most 157 - q (every normal and model point), the significand kept 7 bits up and shifted right once; a shift of 32 or more is 0; anything else goes to `rp_fixq` | run 57: ~22% of the lighting loop; the same integers on every one of the 2^32 floats for q = 16, 28 and 30 (6.7 billion on the fast path, none differ) |
+| The gamma table and the colour bytes | `LightToTexGamma` tests the engine's linear-gamma bit for every normal; `rp_light_byte` a 64-bit product | the table chosen once a mesh; 32-bit products when every light colour is below 2^21 (16.16), so `g16 x 1023` fits | the same values; a load, a test and three 64-bit multiplies a normal gone |
+| The colour bytes' lines | written, then read by `RP_StudioCmdLit` (the PXA270 allocates on reads only, so the reads missed: run 57's hottest instruction there) | asked for with `PLD` sixteen normals ahead of their stores | a hint only |
+| `PM_PlayerTraceExt`'s per-entity result | Quake's and Xash's: every entity's end point (a lerp) and plane distance (a dot product) made, then dropped unless that entity is the nearest so far | made only for an entity whose trace is kept | the same kept values; ~10 float operations an entity a trace gone (most traces miss most entities) |
+
+**Run 58 (2026-11-17, kit 62, the X51v, the fixed-step walk, sound up):**
+frames 1-2,750 took **100,359 ms (27.4 fps) against kit 61's 101,583 ms
+(27.0 fps): 1.2% less time**, every 250-frame window faster (by 84-130 ms)
+and every mark at the same place; the emulator first: 948,617 normals and
+vertices both ways, 0 differed. From kit 60: 103,808 -> 100,359 ms (3.3%).
+30 fps is ~91,700 ms: 8.6% still to go. Run 58's samples, the play:
+`rp_fadd_asm` 5.6%, `RP_StudioCmdLit` 4.5%, `RP_ChipFaceFixed` 3.5%,
+`rp_fmul_asm` 3.5%, `RP_StudioCmdSend` 3.1%, the OS mixer 3.1%,
+`rp_gfx_frame_parts` 3.0% (interrupts off), `RP_StudioLightMesh` 2.5%
+(1,531 -> 1,453: its misses, not its maths, are most of what is left).
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

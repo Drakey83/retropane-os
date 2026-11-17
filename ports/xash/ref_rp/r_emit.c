@@ -3267,11 +3267,20 @@ void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flag
 			}
 		return;
 	}
+	/* kit 62: the gamma table chosen once a mesh (LightToTexGamma tests the
+	   engine's linear-gamma bit for every call; the index here is at most
+	   1020, inside the table), and the colour bytes in 32-bit products when
+	   every light colour is 0 <= g16 < 2^21 (g16 x 1023 then fits: the
+	   same value as rp_light_byte's 64-bit product) */
+	const uint16_t *gtab = FBitSet( gp_host->features, ENGINE_LINEAR_GAMMA_SPACE ) ? NULL : tr.lightgammatable;
+	const int   small = (uint32_t)g0 < ( 1u << 21 ) && (uint32_t)g1 < ( 1u << 21 ) && (uint32_t)g2 < ( 1u << 21 );
+
 	for( int i = 0; i < count; i++ )
 	{
 		unsigned bone = bones[i];
 		int32_t  n[3];
 		uint32_t gamma;
+		int      index;
 
 		if( bone >= RP_BONES )
 			bone = 0;
@@ -3281,14 +3290,32 @@ void RP_StudioLightMesh( const byte *bones, const float ( *blight )[3], int flag
 			for( int j = 0; j < 3; j++ )
 				rp_flight[bone][j] = rp_fixq( blight[bones[i]][j], 28 );
 		}
-		/* the normals are read in order and miss: eight on asked for */
+		/* the normals are read in order and miss: eight on asked for; the
+		   colour bytes' line asked for before it is written (kit 62: the
+		   PXA270 allocates on reads only, so RP_StudioCmdLit's reads of
+		   them missed: run 57) */
 		__builtin_prefetch( norms[i] + 24 );
-		for( int j = 0; j < 3; j++ )
-			n[j] = rp_fixq( norms[i][j], 30 );
-		gamma = LightToTexGamma( (uint)rp_light_index( rp_dot30( n, rp_flight[bone] ), a16, s16 ));
-		out[i][0] = rp_light_byte( g0, gamma );
-		out[i][1] = rp_light_byte( g1, gamma );
-		out[i][2] = rp_light_byte( g2, gamma );
+		if( !( i & 7 ))
+			__builtin_prefetch( out[i + 16] );
+		if( !rp_fixq3_fast( norms[i], 30, n ))
+			for( int j = 0; j < 3; j++ )
+				n[j] = rp_fixq( norms[i][j], 30 );
+		index = rp_light_index( rp_dot30( n, rp_flight[bone] ), a16, s16 );
+		gamma = gtab ? gtab[index] : (uint32_t)index;
+		if( small )
+		{
+			uint32_t c0 = (uint32_t)g0 * gamma >> 16, c1 = (uint32_t)g1 * gamma >> 16, c2 = (uint32_t)g2 * gamma >> 16;
+
+			out[i][0] = c0 > 255 ? 255 : (byte)c0;
+			out[i][1] = c1 > 255 ? 255 : (byte)c1;
+			out[i][2] = c2 > 255 ? 255 : (byte)c2;
+		}
+		else
+		{
+			out[i][0] = rp_light_byte( g0, gamma );
+			out[i][1] = rp_light_byte( g1, gamma );
+			out[i][2] = rp_light_byte( g2, gamma );
+		}
 	}
 	if( rp_lit_on == 2 )
 		for( int i = 0; i < count; i++ )
@@ -3323,8 +3350,9 @@ void RP_StudioVertsFixed( int count, const byte *bones, const float ( *bm )[3][4
 		   record four on (its stores then land in the cache) */
 		__builtin_prefetch( verts[i] + 24 );
 		__builtin_prefetch( &rp_mv[( i + 4 ) & ( RP_STUDIO_VERTS - 1 )] );
-		for( int j = 0; j < 3; j++ )
-			a[j] = rp_fixq( verts[i][j], 16 );
+		if( !rp_fixq3_fast( verts[i], 16, a ))
+			for( int j = 0; j < 3; j++ )
+				a[j] = rp_fixq( verts[i][j], 16 );
 		rp_bone_point( &rp_fbone[bone], a, q );
 		RP_StudioVertSet( i, mv, q );
 		if( rp_lit_on == 2 )

@@ -410,7 +410,7 @@ index 64bc35e..c471621 100644
  
  	if( pField->flags & DT_BYTE )
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
-index b1e8e57..230fde2 100644
+index b1e8e57..c7dce0d 100644
 --- a/engine/common/pm_trace.c
 +++ b/engine/common/pm_trace.c
 @@ -102,6 +102,77 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
@@ -555,6 +555,19 @@ index b1e8e57..230fde2 100644
  
  	if( side ) frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );
  	else frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );
+@@ -504,7 +592,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
+ 		if( trace_bbox.startsolid )
+ 			trace_bbox.fraction = 0.0f;
+ 
+-		if( !trace_bbox.startsolid )
++		// RetroPane (kit 62, run 57: PM_PlayerTraceExt's floats ~0.9% of
++		// the play): the end point and the plane's distance are made only
++		// for an entity whose trace is kept below; one that is not kept
++		// (most: a miss leaves the fraction 1) had them made and dropped
++		if( !trace_bbox.startsolid && trace_bbox.fraction < trace_total.fraction )
+ 		{
+ 			VectorLerp( start, trace_bbox.fraction, end, trace_bbox.endpos );
+ 
 diff --git a/engine/common/zone.c b/engine/common/zone.c
 index a0d9c23..8b0e24a 100644
 --- a/engine/common/zone.c
