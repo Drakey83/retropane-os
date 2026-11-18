@@ -965,30 +965,36 @@ mod image {
         // against Intel's documented map (memory-map.md). Peripheral
         // pages' first words have no read side effects that matter here
         // (a FIFO's first word at worst gives up one entry).
-        say!("hw: pass C: the PXA270's buses 0x40000000-0x5FFFFFFF, a word a 4 KiB page...");
-        let mut run: Option<(usize, usize, u32)> = None;
-        let mut runs = 0;
-        let mut page = 0x4000_0000usize;
-        while page < 0x6000_0000 {
-            let v = rt::try_read(rp_hal_pxa27x::devmap::va(page));
-            let live = matches!(v, Some(x) if x != 0);
-            match (live, run) {
-                (true, None) => run = Some((page, page, v.unwrap_or(0))),
-                (true, Some((s, _, f))) => run = Some((s, page, f)),
-                (false, Some((s, e, f))) => {
-                    say!("hw: C {s:08x}-{:08x} answers (first {f:08x})", e + 0xFFF);
-                    runs += 1;
-                    run = None;
+        // From RP_PROBE_FROM (hex; default 0x4C100000: run probe-0078
+        // stopped on an imprecise abort past the USB host's first page) to
+        // 0x5FFFFFFF: a line a MiB, its 256 pages counted by what their
+        // first word does (non-zero, zero, a precise abort) and its first
+        // non-zero word; the MiB is named before it is read.
+        let from = match option_env!("RP_PROBE_FROM") {
+            Some(h) => usize::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or(0x4C10_0000),
+            None => 0x4C10_0000,
+        };
+        say!("hw: pass C from {from:08x} to 5fffffff, a line a MiB (non-zero / zero / abort pages)");
+        let mut mib = from & !0xF_FFFF;
+        while mib < 0x6000_0000 {
+            say!("hw: C {mib:08x}...");
+            let (mut nz, mut z, mut ab, mut first) = (0, 0, 0, 0u32);
+            for page in (mib..mib + 0x10_0000).step_by(0x1000) {
+                match rt::try_read(rp_hal_pxa27x::devmap::va(page)) {
+                    Some(0) => z += 1,
+                    Some(v) => {
+                        if nz == 0 {
+                            first = v;
+                        }
+                        nz += 1;
+                    }
+                    None => ab += 1,
                 }
-                (false, None) => {}
             }
-            page += 0x1000;
+            say!("hw: C {mib:08x} {nz} / {z} / {ab}, first non-zero {first:08x}");
+            mib += 0x10_0000;
         }
-        if let Some((s, e, f)) = run {
-            say!("hw: C {s:08x}-{:08x} answers (first {f:08x})", e + 0xFFF);
-            runs += 1;
-        }
-        say!("hw: pass C done, {runs} runs of pages answering");
+        say!("hw: pass C done");
 
     }
 
