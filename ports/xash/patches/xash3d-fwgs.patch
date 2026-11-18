@@ -1841,7 +1841,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..072cd3b 100644
+index dd01c0f..2a52b9d 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1933,7 +1933,7 @@ index dd01c0f..072cd3b 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -364,6 +399,521 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -364,6 +399,539 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
  }
  
@@ -2136,6 +2136,16 @@ index dd01c0f..072cd3b 100644
 +}
 +
 +/* one surface tried at the crossing point: 1 hit, -1 a deluxemap, 0 not it */
++/* Option C's capture (the light grid, kit 95): the surface and luxel the
++   last surface sample lit from (lm NULL: the surface has no samples),
++   reset by the trace before each walk */
++static struct
++{
++	const msurface_t *surf;
++	const color24    *lm;
++	int               size;
++} rp_cap;
++
 +static inline int RP_LightSurfFix( const msurface_t *surf, const int32_t (*lv)[4], const int32_t mid[3], int32_t midf, colorVec *cv )
 +{
 +	const mextrasurf_t *info = surf->info;
@@ -2174,6 +2184,8 @@ index dd01c0f..072cd3b 100644
 +	for( int k = 0; k < 3; k++ )
 +		g_trace_lightspot[k] = mid[k] * ( 1.0f / 65536.0f );
 +
++	rp_cap.surf = surf;
++	rp_cap.lm = NULL;
 +	if( !surf->samples )
 +		return 1;
 +
@@ -2188,6 +2200,8 @@ index dd01c0f..072cd3b 100644
 +
 +	const color24 *lm = surf->samples + it * smax + is;
 +	int            size = smax * tmax;
++	rp_cap.lm = lm;
++	rp_cap.size = size;
 +
 +	for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
 +	{
@@ -2316,6 +2330,8 @@ index dd01c0f..072cd3b 100644
 +		for( int k = 0; k < 3; k++ )
 +			g_trace_lightspot[k] = mid[k] * ( 1.0f / 65536.0f );
 +
++		rp_cap.surf = surf;
++		rp_cap.lm = NULL;
 +		if( !surf->samples )
 +			return 1;
 +
@@ -2330,6 +2346,8 @@ index dd01c0f..072cd3b 100644
 +
 +		const color24 *lm = surf->samples + it * smax + is;
 +		int            size = smax * tmax;
++		rp_cap.lm = lm;
++		rp_cap.size = size;
 +
 +		for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
 +		{
@@ -2455,8 +2473,14 @@ index dd01c0f..072cd3b 100644
  /*
  =================
  R_LightVecInternal
-@@ -373,6 +923,11 @@ check bspmodels to get light from
+@@ -371,8 +939,17 @@ R_LightVecInternal
+ check bspmodels to get light from
+ =================
  */
++/* option C: the winning hit's capture and its physent (-1: none) */
++static __typeof__( rp_cap ) rp_cap_win;
++static int rp_cap_win_i = -1;
++
  static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t lvec )
  {
 +#if defined( __retropane__ )
@@ -2467,10 +2491,13 @@ index dd01c0f..072cd3b 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -385,18 +940,122 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -385,18 +962,125 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  	float last_fraction = 1.0f;
  	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
  	colorVec light = { 0 };
++#if defined( __retropane__ )
++	rp_cap_win_i = -1;
++#endif
 +#if defined( __retropane__ )
 +	/* kit 82 (run 81: R_LightVecInternal 3.1% of the cascade's heavy half,
 +	   521 traces a frame each testing every brush physent's box in floats):
@@ -2590,7 +2617,7 @@ index dd01c0f..072cd3b 100644
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
  
-@@ -419,8 +1078,47 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,11 +1103,57 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -2614,6 +2641,7 @@ index dd01c0f..072cd3b 100644
 +			const rp_lnode_t *ln = rp_ln_off ? NULL : RP_LnFor( pe->model );
 +			ptrdiff_t         ni = pnodes - pe->model->nodes;
 +
++			rp_cap.surf = NULL;
 +			if( ln && ni >= 0 && ni < rp_ln.numnodes && pnodes->contents >= 0 )
 +				rp_hit = RP_LightPointLn( pe->model, ln, (int)ni, 0, 1 << 16, &cv, s16, e16 );
 +			else
@@ -2628,6 +2656,8 @@ index dd01c0f..072cd3b 100644
 +			}
 +		}
 +		if( rp_hit < 0 )
++			rp_cap.surf = NULL; /* the float walk: not captured */
++		if( rp_hit < 0 )
 +			rp_hit = R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l );
 +		if( !rp_hit )
 +			continue;
@@ -2638,7 +2668,14 @@ index dd01c0f..072cd3b 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +1187,409 @@ void R_GatherPlayerLight( cl_entity_t *view )
++#if defined( __retropane__ )
++			rp_cap_win = rp_cap;
++			rp_cap_win_i = i;
++#endif
+ 			if( lspot ) VectorCopy( g_trace_lightspot, lspot );
+ 			if( lvec ) VectorNormalize2( g_trace_lightvec, lvec );
+ 
+@@ -489,6 +1219,471 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2719,16 +2756,25 @@ index dd01c0f..072cd3b 100644
 +#define RP_GRID_XY    32
 +#define RP_GRID_Z     64
 +#define RP_GRID_SLOTS 4096
++#define RP_GRID_AGE   30 /* frames a world hit is kept before it is traced again */
 +typedef struct
 +{
-+	uint64_t key;
-+	int32_t  x, y, z;
-+	float    r, g, b, spotz;
-+	int      hit;
++	uint64_t       key;   /* RP_LightKey for a colour kept; the world model for a hit */
++	int32_t        x, y, z;
++	int            mode;  /* 0 nothing hit, 1 a world hit (its luxel kept), 2 a colour kept */
++	unsigned       made;  /* the grid frame it was traced */
++	const color24 *lm;
++	int            size;
++	const byte    *styles;
++	int32_t        rgb[3]; /* the colour (mode 2), or the luxel's colour at `lit` */
++	uint64_t       lit;
++	int32_t        spotz;
 +} rp_grid_t;
 +static rp_grid_t rp_grid[RP_GRID_SLOTS];
 +static int       rp_light_grid = -1;
-+unsigned         rp_grid_counts[2]; /* points made, points reused */
++static unsigned  rp_grid_frame;
++static double    rp_grid_time = -1.0;
++unsigned         rp_grid_counts[2]; /* points traced, points reused */
 +
 +static uint64_t RP_LightKey( void );
 +
@@ -2736,10 +2782,33 @@ index dd01c0f..072cd3b 100644
 +{
 +	uint32_t   h = ( (uint32_t)x * 73856093u ) ^ ( (uint32_t)y * 19349663u ) ^ ( (uint32_t)z * 83492791u );
 +	rp_grid_t *g = &rp_grid[h % RP_GRID_SLOTS];
++	uint64_t   world = (uintptr_t)gp_cl->models[1];
 +
-+	if( g->key == key && g->x == x && g->y == y && g->z == z )
++	if( g->x == x && g->y == y && g->z == z
++		&& (( g->mode == 2 && g->key == key )
++			|| ( g->mode != 2 && g->key == world && rp_grid_frame - g->made < RP_GRID_AGE )))
 +	{
 +		rp_grid_counts[1]++;
++		if( g->mode == 1 && g->lit != key )
++		{
++			/* a light style changed: the same luxel, the styles' values now
++			   (RP_LightSurfFix's sum and R_LightVecInternal's clamp) */
++			uint32_t c[3] = { 0, 0, 0 };
++			const color24 *lm = g->lm;
++
++			for( int map = 0; map < MAXLIGHTMAPS && g->styles[map] != 255; map++ )
++			{
++				uint scale = g_lightstylevalue[g->styles[map]];
++
++				c[0] += lm->r * scale;
++				c[1] += lm->g * scale;
++				c[2] += lm->b * scale;
++				lm += g->size;
++			}
++			for( int k = 0; k < 3; k++ )
++				g->rgb[k] = Q_min( c[k] >> 8, 255 );
++			g->lit = key;
++		}
 +		return g;
 +	}
 +	rp_grid_counts[0]++;
@@ -2749,55 +2818,85 @@ index dd01c0f..072cd3b 100644
 +	vec3_t   spot;
 +	colorVec c = R_LightVec( s, e, spot, NULL );
 +
-+	g->key = key;
 +	g->x = x;
 +	g->y = y;
 +	g->z = z;
-+	g->r = (float)c.r;
-+	g->g = (float)c.g;
-+	g->b = (float)c.b;
-+	g->spotz = spot[2];
-+	/* a point whose trace found no surface (inside a wall, past the map)
-+	   is left out of the blend */
-+	g->hit = !VectorIsNull( spot );
++	g->made = rp_grid_frame;
++	g->rgb[0] = c.r;
++	g->rgb[1] = c.g;
++	g->rgb[2] = c.b;
++	g->spotz = (int32_t)spot[2];
++	g->lit = key;
++	if( VectorIsNull( spot ))
++	{
++		/* nothing hit (inside a wall, past the map): left out of the blend */
++		g->mode = 0;
++		g->key = world;
++	}
++	else if( rp_cap_win_i == 0 && rp_cap_win.surf && rp_cap_win.lm && ( c.r + c.g + c.b ) != 0 )
++	{
++		/* the world's surface: its luxel kept, re-read when a style changes */
++		g->mode = 1;
++		g->key = world;
++		g->lm = rp_cap_win.lm;
++		g->size = rp_cap_win.size;
++		g->styles = rp_cap_win.surf->styles;
++	}
++	else
++	{
++		/* a brush model's surface, or a light from elsewhere: the colour,
++		   while the light key holds */
++		g->mode = 2;
++		g->key = key;
++	}
 +	return g;
 +}
 +
-+/* The floor light at `p` from the grid's eight points around it, each
-+   weighed by nearness; `spot`, if asked, under `p` at the points' floor */
++/* The floor light at `p` from the grid's eight points around it, weighed
++   by nearness in integers (1/8 of a unit across, 1/4 up); `spot`, if
++   asked, under `p` at the points' floor */
 +static colorVec RP_GridLight( const vec3_t p, vec3_t spot )
 +{
 +	uint64_t key = RP_LightKey( );
-+	float    fx = p[0] / RP_GRID_XY, fy = p[1] / RP_GRID_XY, fz = p[2] / RP_GRID_Z;
-+	int32_t  x0 = (int32_t)floorf( fx ), y0 = (int32_t)floorf( fy ), z0 = (int32_t)floorf( fz );
-+	float    ax = fx - x0, ay = fy - y0, az = fz - z0;
-+	float    sum[4] = { 0 }, wsum = 0.0f, zsum = 0.0f;
++	int32_t  qx = (int32_t)floorf( p[0] * ( 256.0f / RP_GRID_XY ));
++	int32_t  qy = (int32_t)floorf( p[1] * ( 256.0f / RP_GRID_XY ));
++	int32_t  qz = (int32_t)floorf( p[2] * ( 256.0f / RP_GRID_Z ));
++	int32_t  x0 = qx >> 8, y0 = qy >> 8, z0 = qz >> 8;
++	uint32_t ax = qx & 255, ay = qy & 255, az = qz & 255;
++	uint32_t sum[3] = { 0, 0, 0 }, wsum = 0;
++	int64_t  zsum = 0;
 +	colorVec out = { 0 };
 +
++	if( rp_grid_time != gp_cl->time )
++	{
++		rp_grid_time = gp_cl->time;
++		rp_grid_frame++;
++	}
 +	for( int k = 0; k < 8; k++ )
 +	{
 +		const rp_grid_t *g = RP_GridPoint( x0 + ( k & 1 ), y0 + ( k >> 1 & 1 ), z0 + ( k >> 2 ), key );
-+		float            w = ( k & 1 ? ax : 1.0f - ax ) * ( k & 2 ? ay : 1.0f - ay ) * ( k & 4 ? az : 1.0f - az );
++		uint32_t         wx = k & 1 ? ax : 256 - ax, wy = k & 2 ? ay : 256 - ay, wz = k & 4 ? az : 256 - az;
++		uint32_t         w = (( wx * wy ) >> 8 ) * wz >> 8; /* up to 256 */
 +
-+		if( !g->hit )
++		if( !g->mode || !w )
 +			continue;
-+		sum[0] += w * g->r;
-+		sum[1] += w * g->g;
-+		sum[2] += w * g->b;
-+		zsum += w * g->spotz;
++		sum[0] += w * g->rgb[0];
++		sum[1] += w * g->rgb[1];
++		sum[2] += w * g->rgb[2];
++		zsum += (int64_t)w * g->spotz;
 +		wsum += w;
 +	}
-+	if( wsum > 0.0f )
++	if( wsum )
 +	{
-+		out.r = (uint)( sum[0] / wsum + 0.5f );
-+		out.g = (uint)( sum[1] / wsum + 0.5f );
-+		out.b = (uint)( sum[2] / wsum + 0.5f );
++		out.r = ( sum[0] + wsum / 2 ) / wsum;
++		out.g = ( sum[1] + wsum / 2 ) / wsum;
++		out.b = ( sum[2] + wsum / 2 ) / wsum;
 +	}
 +	if( spot )
 +	{
 +		VectorCopy( p, spot );
-+		if( wsum > 0.0f )
-+			spot[2] = zsum / wsum;
++		if( wsum )
++			spot[2] = (float)( zsum / (int64_t)wsum );
 +		else
 +			VectorClear( spot );
 +	}
@@ -3048,7 +3147,7 @@ index dd01c0f..072cd3b 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -499,6 +1600,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -499,6 +1694,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  {
  	if( !plight || !ent )
  		return;
@@ -3086,7 +3185,7 @@ index dd01c0f..072cd3b 100644
  
  	if( !draw_world || r_fullbright->value || FBitSet( ent->curstate.effects, EF_FULLBRIGHT ))
  	{
-@@ -520,11 +1652,65 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1746,65 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -3153,7 +3252,7 @@ index dd01c0f..072cd3b 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1724,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1818,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -3197,7 +3296,7 @@ index dd01c0f..072cd3b 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -561,9 +1778,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -561,9 +1872,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorScale( lightDir, 2048.0f, vecEnd );
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
@@ -3232,7 +3331,7 @@ index dd01c0f..072cd3b 100644
  		{
  			float grad[4];
  			colorVec gcolor;
-@@ -603,7 +1844,39 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -603,7 +1938,39 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  			VectorCopy( lightvec, lightDir );
  		}
  	}
@@ -3273,7 +3372,7 @@ index dd01c0f..072cd3b 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1894,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1988,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
