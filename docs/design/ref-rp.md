@@ -1312,6 +1312,26 @@ run 165's end picture is the new reference. The calm frames are at 30;
 the heavy half (44 ms against 33) is the debris' own path: the next
 lever (roadmap 7e).
 
+**7e, where the debris' time goes now (kit 106, 2026-11-18).** Run 165
+(the 1 kHz sampler): the heavy half costs 9.3 ms a frame more than the
+calm one for ~110 pieces, ~85 us (53,000 cycles) a piece: lighting ~3.4
+ms (`R_EntityDynamicLight` +0.86, `R_StudioEntityLight` +0.83, the sky
+trace +0.40, `RP_PreDlSame` +0.38, `RP_LPlane` +0.31, a 64-bit division
++0.22), drawing ~3.0 ms (`RP_StudioCmdSend` +1.02, `RP_StudioCmdLit`
++0.80, `RP_StudioVertsFixed` +0.50; no instruction above 14 of their 696
+samples: the cost is spread, not a hot spot), bones ~1 ms (the client's
+float matrices: game code, unchanged). Run 168 (`-rpsampleon 1`): the
+I-cache now takes 14.6% of the heavy half's cycles (44.5% before kits
+89-93), so staging the draw no longer has a big share to win. Runs 169-172:
+the yardstick without any sampler gives the same 29.8 / 23.0 as with the 1
+kHz sampler (the sampler costs nothing measurable); run 168's 30.5 / 24.4
+did not repeat (run 171: 29.8 / 22.9), a one-off, closed by the stop rule.
+What it means: the exact per-piece levers left are each 0.3-0.9 ms; all of
+them together are worth ~3 ms (heavy ~23 -> ~25 fps). 30 on the heavy half
+needs ~10 ms, about the debris' whole cost, so it needs a change to what the
+debris does (fewer pieces drawn, lit more simply), which is the owner's
+call.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
