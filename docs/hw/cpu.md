@@ -179,3 +179,29 @@ interrupt controller) and **CP7** answer, both `0` at c0; CP7 is not in our
 documents (open). **No FPU:** the VFP's FPSID (`MRC p10, 7, r0, c0, c0, 0`)
 traps with CP10 access granted: the X51v's CPU has no floating-point unit,
 shown on the device.
+
+**CP7, mapped (2026-11-18, probe-0078):** read at every CRn x CRm
+(`MRC p7, 0, r0, cN, cM, 0`, 256 reads): **every pair answers and reads 0**
+(no trap anywhere); one earlier run read `0x15` at every cN, c0
+(probe-0077), so its value changes with the system's state. Windows
+Mobile's only use (found by scanning `nk.exe`'s instruction words; Ghidra
+had not made the code a function): its interrupt entry at `0x8C246678`
+(reached through the pointer at `0x8C20D770`, right after the idle routine
+that writes PWRMODE 1) opens CP0-CP9 (`CPAR 0x3FF`), reads `c4, c1`, tests
+**bit 5**, then goes on into the kernel's interrupt path. A status
+register read on every interrupt, with no state to configure and nothing
+to compute with: not a hidden processor. Likely a bus or interrupt status
+word (Intel's other XScale chips reach their bus controller's error
+registers through a coprocessor); its exact meaning open.
+
+**The PXA270's buses scanned (probe-0078, pass C):** the first word of every
+4 KiB page from `0x40000000`, read through `try_read`, runs of pages whose
+first word is non-zero: `0x40000000`-`0x400FFFFF`, `0x40300000`-`0x40400FFF`,
+`0x40600000`-`0x406FFFFF`, `0x40900000`-`0x40AFFFFF`, `0x40C00000`-
+`0x40CFFFFF`, `0x40E00000`-`0x40EFFFFF`, `0x41000000`-`0x410FFFFF`,
+`0x41300000`-`0x413FFFFF`, `0x41500000`-`0x416FFFFF`, `0x43000000`-
+`0x43FFFFFF`, `0x48000000`-`0x4C000FFF`; past `0x4C000FFF` (the USB host's
+page) a read raised an imprecise data abort the fault catch could not
+resume (the image stopped and the loader took over by itself). Still to
+do: compare each run with the documented map, pages whose first word is
+0, and `0x4C001000`-`0x5FFFFFFF` (resumed past the USB host's MiB).

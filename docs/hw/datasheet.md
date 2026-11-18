@@ -609,4 +609,4 @@ the 2700G's TA vertex formats for fog and a second texture unit. Each is
 listed with its next step on its own page and in
 [../quality-audit.md](../quality-audit.md).
 
-- CPU coprocessors asked directly on the X51v (2026-11-18, cpu.md): CP1 (iWMMXt), CP6 (interrupt controller), CP7 (unknown, reads 0); **no FPU** (the VFP's FPSID traps with access granted).
+- CPU coprocessors asked directly on the X51v (2026-11-18, cpu.md): CP1 (iWMMXt), CP6 (interrupt controller), CP7 (every CRn x CRm answers, 0 or a run-dependent `0x15`; Windows Mobile reads its c4, c1 bit 5 on every interrupt entry: a status register, not a processor); **no FPU** (the VFP's FPSID traps with access granted).
