@@ -570,6 +570,24 @@ static void RP_End( void )
 		RP_Walk( now - played_from );
 		RP_WalkScore();
 	}
+	/* R321's check (-rpcam x,y,z,pitch,yaw): the player put at one spot
+	   facing one way, held there (noclip), so the end frame shows it */
+	{
+		static int cam_done;
+		char       cam[64];
+
+		if( state == 1 && !cam_done && now - played_from > 2000000u && Sys_GetParmFromCmdLine( "-rpcam", cam ))
+		{
+			char cmd[128];
+
+			cam_done = 1;
+			for( char *c = cam; *c; c++ )
+				if( *c == ',' )
+					*c = ' ';
+			Q_snprintf( cmd, sizeof( cmd ), "sv_cheats 1\nnoclip\nrp_setpos %s\n", cam );
+			Cbuf_AddText( cmd );
+		}
+	}
 	if( state == 1 && end && now - played_from >= (uint64_t)end * 1000000u )
 		why = "its time of play|is over";
 	else if( limit && now >= (uint64_t)limit * 1000000u )

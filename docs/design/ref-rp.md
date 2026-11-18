@@ -1061,6 +1061,27 @@ frame on the 2700G shows the gluon beam, its spiral and the blood
 particles where the software renderer's picture of the same frame has
 them (`local/half-life/kit-74`). Not yet on the X51v.
 
+**Kit 75 (2026-11-17, R321: c1a0e's ladder).** Found with the emulator and
+a new test word, `-rpcam x,y,z,pitch,yaw` (the player put at one spot,
+noclip, through a cheat command `rp_setpos`): the ladder (`func_wall` *18,
+render mode 4, `{ladder2`) drew as a solid black strip. Measured, not
+guessed: 63,476 of the 103,040 see-through texels uploaded were the key,
+written as ARGB1555 with alpha 0, and still drew black. Two causes, both
+fixed: (1) ref_soft keeps the see-through key only in a texture's mip 0
+and in three of its five surface block drawers, while ref_rp picks its
+own mip a face (the mip hold), so a face at mip 1-3 had its holes lit
+black: every level now keeps the key by the same rule on its averaged
+alpha, and every drawer keeps it unlit; (2) the 2700G's alpha test acts
+only on a punch-through object, TSP bit 14 (2700g.md "Alpha test": Dell's
+GLES sets it with `GL_ALPHA_TEST`), which ref_rp never set for
+see-through faces or masked model skins: set now. The emulator's model
+applies the alpha test from the object word alone and still drew the
+strip black, so the X51v is the check.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| See-through ('{') textures at every distance | ref_soft: the key at mip 0 only (it draws the world at its own mip, mostly 0 near); GL: alpha in every level, alpha-tested | the key at every level by the same alpha rule, kept unlit by every block drawer; the punch-through bit with the alpha test, as Dell's driver does | ladders, rails, grates and fences see-through at any level ref_rp's mip hold picks |
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

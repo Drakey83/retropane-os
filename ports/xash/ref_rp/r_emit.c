@@ -113,6 +113,7 @@ static struct
 	uint32_t bparts, bones, lit; /* 4d's rest: the bones and lighting in integers */
 	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
+	uint32_t mask_texels, mask_keys; /* R321: see-through faces' texels uploaded, the key among them */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
@@ -229,6 +230,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: kit 74's effects (sprites, beams, particles): %u triangles a frame, %u of them plain (no picture), %u not drawn (no room)\n",
 			rp_count.fx_tris / f, rp_count.fx_plain / f, rp_count.fx_skipped / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: R321: see-through faces' texels uploaded %u, %u of them the see-through key\n",
+			rp_count.mask_texels, rp_count.mask_keys );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: R297 B (rp_lm %d): %u faces a frame as texture and lightmap, %u lightmaps written a frame (%u for a dynamic light), %u second-pass words a frame, %u faces with no second-pass room; %u textures written (%u KiB), the texture pool %u of %u KiB, %u pool resets\n",
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
@@ -794,6 +798,9 @@ Step 3: the lit surfaces in video memory, the world to the 2700G
    rp-glesfeat A). */
 #define RP_TSP_GOURAUD    ( 1u << 22 )
 #define RP_ISP_ALPHA      0x80000000u
+/* The punch-through object kind (TSP bit 14): the alpha test acts only on
+   it (2700g.md "Alpha test"; R321) */
+#define RP_TSP_PUNCH      ( 1u << 14 )
 #define RP_TEX0_PAGE_1555 ( 0xA0000000u | 6u << 24 | 6u << 20 | 0u << 13 )
 
 typedef struct
@@ -1034,8 +1041,12 @@ static inline uint32_t RP_FaceTexel( pixel_t p )
 		return p;
 	if( !rp_face_masked )
 		return vid.screen[p];
+	rp_count.mask_texels++; /* R321's check */
 	if( p == TRANSPARENT_COLOR )
+	{
+		rp_count.mask_keys++;
 		return 0;
+	}
 	c = vid.screen[p];
 	return 0x8000u | ( c >> 1 & 0x7FE0u ) | ( c & 0x1Fu );
 }
@@ -1144,6 +1155,11 @@ static void RP_PageState( int pg )
 			| 1u << 13 | 1u << 7;
 		rp_count.blended++;
 	}
+	/* R321 (c1a0e's ladder drawn as a black strip): the alpha test works
+	   only on a punch-through object, TSP bit 14 (2700g.md: Dell's GLES
+	   sets it with GL_ALPHA_TEST); without it the holes drew black */
+	if( rp_face_masked )
+		tsp |= RP_TSP_PUNCH;
 	rp_state = what;
 	rp_count.states++;
 	RP_Put( RP_GFX_STATE );
@@ -3679,7 +3695,7 @@ int RP_StudioSkin( void )
 		rp_state = what;
 		rp_count.states++;
 		RP_Put( RP_GFX_STATE );
-		RP_Put( tsp );
+		RP_Put( e->masked ? tsp | RP_TSP_PUNCH : tsp ); /* R321: the alpha test's object kind */
 		RP_Put( e->masked ? RP_ISP_ALPHA : RP_ISP_ALWAYS );
 		RP_Put( e->masked ? RP_TEX0_PAGE_1555 : RP_TEX0_PAGE );
 		RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)e->pg * RP_PAGE_BYTES ));
