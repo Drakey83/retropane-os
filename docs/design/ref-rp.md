@@ -1096,6 +1096,16 @@ picks which, by measurement, before any is built.
 | The server's per-frame work (thinks, triggers, scripted scenes, sounds) | GoldSrc runs every entity's think at the drawn frame rate; Quake's server ran at a fixed 10-20 Hz with client interpolation, Source at a fixed tick | first the exact way: the samples name the costly entities and their work is made cheaper without changing what it computes (as the traces and the lighting were); a fixed server tick only as the owner's ruling (it changes the game's timing slightly) | exact first; the timing change is the owner's to weigh, with numbers |
 | The CPU's clock | Dell runs the PXA270 at 624 MHz | the runner's past-rating step (`-rpcpu`), the divide-1 way: measured per device by the self-test | lifts everything at once; the owner's decision, kept as the last margin, not the plan |
 
+**Kit 76 (2026-11-17).** (1) The owner on the X51v, kit 75: "lines next to
+LOADING and some other HUD elements". The 2D pictures and the effects'
+frames are tiles in the shared atlas; the filter read the texels beside a
+tile at its edges (since kit 74 those neighbours are sprite frames, not
+blank). Rule 0: Direct3D 9's half-texel rule, an atlas's gutter: the
+texels sampled are kept half a texel inside each tile (the positions as
+they were), the cheapest of the two and enough for 1:1 HUD pictures.
+(2) `-rpsuit`: a map started on its own (c1a0e) gives no HEV suit and its
+scripted doors stay shut; the test word gives the suit once the map plays.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

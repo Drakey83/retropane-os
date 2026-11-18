@@ -4985,9 +4985,19 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 				continue;
 			}
 			RP_2DState( e->pg, fmt );
-			RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y + ( b0 - T1 ) / ( T2 - T1 ) * h,
-				x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,
-				e->qx * 8 + ( a0 - tx ), e->qy * 8 + ( b0 - ty ), e->qx * 8 + ( a1 - tx ), e->qy * 8 + ( b1 - ty ));
+			{
+				/* kit 76 (the owner on the X51v: "lines next to LOADING
+				   and some other HUD elements"): the filter read the atlas
+				   texels beside the tile at its edges; the texels sampled are
+				   kept half a texel inside the tile (Direct3D 9's half-texel
+				   rule), the positions as they were */
+				float ua = a0 - tx < 0.5f ? 0.5f : a0 - tx, ub = a1 - tx > tw - 0.5f ? tw - 0.5f : a1 - tx;
+				float va = b0 - ty < 0.5f ? 0.5f : b0 - ty, vb = b1 - ty > th - 0.5f ? th - 0.5f : b1 - ty;
+
+				RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y + ( b0 - T1 ) / ( T2 - T1 ) * h,
+					x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,
+					e->qx * 8 + ua, e->qy * 8 + va, e->qx * 8 + ub, e->qy * 8 + vb );
+			}
 		}
 }
 
@@ -5071,7 +5081,7 @@ static void RP_FxTriangle( void )
 	const image_t     *img = rp_tri_image;
 	const int          mode = vid.rendermode;
 	const rp_skin_t   *e = NULL;
-	int32_t            u0, v0, smax, tmax;
+	int32_t            u0, v0, smin, tmin, smax, tmax;
 	int                fmt = 0, pg;
 
 	if( img && img->pixels[0] && img->width >= 1 && img->height >= 1
@@ -5082,11 +5092,15 @@ static void RP_FxTriangle( void )
 	}
 	if( e )
 	{
+		/* half a texel inside the frame's edges (kit 76: the filter read
+		   the atlas texels beside a tile, the HUD's lines) */
 		pg = e->pg;
 		u0 = e->qx * 8 << 16;
 		v0 = e->qy * 8 << 16;
-		smax = ( e->w << 16 ) - 1;
-		tmax = ( e->h << 16 ) - 1;
+		smin = 1 << 15;
+		tmin = 1 << 15;
+		smax = ( e->w << 16 ) - ( 1 << 15 );
+		tmax = ( e->h << 16 ) - ( 1 << 15 );
 	}
 	else
 	{
@@ -5100,7 +5114,7 @@ static void RP_FxTriangle( void )
 		fmt = 0;
 		u0 = ( rp_white.qx * 8 + 4 ) << 16;
 		v0 = ( rp_white.qy * 8 + 4 ) << 16;
-		smax = tmax = 0;
+		smin = tmin = smax = tmax = 0;
 		rp_count.fx_plain++;
 	}
 	RP_FxState( pg, fmt, mode );
@@ -5109,8 +5123,8 @@ static void RP_FxTriangle( void )
 	{
 		int32_t s = v[i]->s, t = v[i]->t;
 
-		s = s < 0 ? 0 : s > smax ? smax : s;
-		t = t < 0 ? 0 : t > tmax ? tmax : t;
+		s = s < smin ? smin : s > smax ? smax : s;
+		t = t < tmin ? tmin : t > tmax ? tmax : t;
 		/* the upright picture: x = the game's y, y = 640 - the game's x */
 		RP_Put( RP_FixBits( v[i]->v, 0 ));
 		RP_Put( RP_FixBits( RP_GAME_W - v[i]->u, 0 ));

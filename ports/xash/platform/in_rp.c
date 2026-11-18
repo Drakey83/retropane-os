@@ -576,6 +576,16 @@ static void RP_End( void )
 		static int cam_done;
 		char       cam[64];
 
+		/* -rpsuit (the owner, kit 75's run: a map started on its own, such
+		   as c1a0e, gives no HEV suit, so its scripted doors stay shut):
+		   the suit given once the map plays */
+		static int suit_done;
+
+		if( state == 1 && !suit_done && now - played_from > 2000000u && Sys_CheckParm( "-rpsuit" ))
+		{
+			suit_done = 1;
+			Cbuf_AddText( "sv_cheats 1\ngive item_suit\n" );
+		}
 		if( state == 1 && !cam_done && now - played_from > 2000000u && Sys_GetParmFromCmdLine( "-rpcam", cam ))
 		{
 			char cmd[128];
