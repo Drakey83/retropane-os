@@ -51,6 +51,11 @@ pub const WMHOP_ONLY: bool = option_env!("RP_PROBE_WMHOP").is_some();
 /// size and whether streaming through it keeps a hot set in the main one
 /// (`suite::mini_cache`).
 pub const MINI_ONLY: bool = option_env!("RP_PROBE_MINI").is_some();
+/// `RP_PROBE_HW` (ADR-0040 step 7g7, the owner 2026-11-18: "we need to
+/// probe the hardware"; "Test for an FPU too"): the coprocessor survey (an
+/// FPU, any coprocessor past iWMMXt's) and a read-only scan of the 2700G's
+/// register space, every word read twice, in place of the benchmarks.
+pub const HW_ONLY: bool = option_env!("RP_PROBE_HW").is_some();
 
 /// Which build produced a photo: set by `cargo xtask sdkit` (`RP_BUILD_ID`).
 pub const BUILD: &str = match option_env!("RP_BUILD_ID") {
@@ -360,6 +365,9 @@ mod image {
                 }
             }
 
+            if super::HW_ONLY {
+                hw(&mut log);
+            }
             let _ = writeln!(log, "benchmarks...");
             let mut r = suite::Runner::new(&mut results);
             if super::MINI_ONLY {
@@ -891,6 +899,84 @@ mod image {
                 "tlblock_16_sram_dtlb",
             ],
         );
+    }
+
+    /// [`super::HW_ONLY`]: the coprocessors, then the 2700G's registers.
+    /// The scan reads `0x0FFE0000`-`0x0FFEFFFF` (the chip's register
+    /// space: display `+0x2000`, video decoder `+0x3000`, MBX core
+    /// `+0x4000`, the rest unknown) a word at a time, twice, and logs each
+    /// 256-byte row holding anything but the space's most common word: its
+    /// count, the first eight words that differ, and the words that changed
+    /// between the two reads (live registers). A block is named in the log
+    /// before it is read, so a read that never answers (a VLIO cycle with
+    /// no ready) leaves its block as the last line.
+    fn hw(log: &mut impl Write) {
+        let was = rt::irqs_enabled_now();
+        rt::irq_disable();
+        let s = diag::coprocessor_survey();
+        if was {
+            rt::irq_enable();
+        }
+        let _ = writeln!(log, "hw: CPAR {:08x}, all asked {:08x}; MRC answered by {:014b} (CP13..CP0)", s.cpar_was, s.cpar_settable, s.answered);
+        for n in 0..14 {
+            if s.answered & 1 << n != 0 {
+                let _ = writeln!(log, "hw: CP{n} c0 {:08x}", s.c0[n]);
+            }
+        }
+        match s.fpsid {
+            Some(v) => { let _ = writeln!(log, "hw: FPU: FPSID {v:08x}"); }
+            None => { let _ = writeln!(log, "hw: FPU: none (FPSID read trapped)"); }
+        }
+        const BASE: usize = 0x0FFE_0000;
+        // The space's most common word first (a sample of every 64th).
+        let read = |a: usize| -> u32 {
+            // A read of the 2700G's register space (device memory in the
+            // bring-up map); an abort reads as 0xDEADDEAD (see the
+            // function's notes on a read that never answers).
+            rt::try_read(rp_hal_pxa27x::devmap::va(a)).unwrap_or(0xDEAD_DEAD)
+        };
+        let mut common = [(0u32, 0u32); 8];
+        for k in (0..0x1_0000).step_by(256) {
+            let v = read(BASE + k);
+            if let Some(c) = common.iter_mut().find(|c| c.0 == v && c.1 > 0) {
+                c.1 += 1;
+            } else if let Some(c) = common.iter_mut().min_by_key(|c| c.1) {
+                *c = (v, 1);
+            }
+        }
+        let filler = common.iter().max_by_key(|c| c.1).map_or(0, |c| c.0);
+        let _ = writeln!(log, "hw: 2700G scan of {BASE:08x}+64K, the common word {filler:08x}");
+        let mut live_rows = 0;
+        for block in (0..0x1_0000usize).step_by(0x1000) {
+            let _ = writeln!(log, "hw: block +{block:05x}");
+            for row in (block..block + 0x1000).step_by(256) {
+                let mut n = 0;
+                let mut first = [(0u16, 0u32); 8];
+                let mut changed = 0;
+                for w in (row..row + 256).step_by(4) {
+                    let a = read(BASE + w);
+                    let b = read(BASE + w);
+                    if a != b {
+                        changed += 1;
+                    }
+                    if a != filler {
+                        if n < 8 {
+                            first[n] = (w as u16, a);
+                        }
+                        n += 1;
+                    }
+                }
+                if n > 0 || changed > 0 {
+                    live_rows += 1;
+                    let _ = write!(log, "hw: +{row:05x} {n} words, {changed} changing:");
+                    for (o, v) in &first[..n.min(8)] {
+                        let _ = write!(log, " {o:04x}={v:08x}");
+                    }
+                    let _ = writeln!(log);
+                }
+            }
+        }
+        let _ = writeln!(log, "hw: scan done, {live_rows} rows answered");
     }
 
     /// [`super::MINI_ONLY`]: the first MiB of the RAM pool as the window,

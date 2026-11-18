@@ -210,6 +210,16 @@ rp_irq_entry:
     @ its own entry into the vector page, iwmmxt.rs, and falls back here.)
     .global rp_undef_entry
 rp_undef_entry:
+    @ A probe's instruction registered in .rp_fixup (a coprocessor that
+    @ may not exist, diag::coprocessor_survey) resumes at its fixup
+    @ instead (ADR-0040 step 7g7); anything else is reported as before.
+    stmfd   sp!, {{r0-r3, r12, lr}}
+    sub     r0, lr, #4
+    bl      rp_undef_fixup
+    cmp     r0, #0
+    strne   r0, [sp, #20]
+    ldmfdne sp!, {{r0-r3, r12, pc}}^
+    ldmfd   sp!, {{r0-r3, r12, lr}}
 "#,
     fp_asm!(keep r1),
     r#"
@@ -1201,6 +1211,13 @@ pub fn stack_used() -> (usize, usize) {
         }
         (top as usize - p as usize, size)
     }
+}
+
+/// The undefined-instruction entry's question: where a registered probe
+/// instruction at `pc` resumes (0: none, report the fault).
+#[unsafe(no_mangle)]
+extern "C" fn rp_undef_fixup(pc: u32) -> u32 {
+    fixup_for(pc).unwrap_or(0)
 }
 
 /// The fixup address registered for a faulting instruction at `pc`.

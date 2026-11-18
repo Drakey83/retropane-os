@@ -329,6 +329,96 @@ mod target {
         c
     }
 
+    /// One `MRC` (its encoding `enc`, the result in r0) that resumes
+    /// with `None` if the instruction is undefined (no such coprocessor,
+    /// or no access to it): the undefined entry's fixup (rt.rs).
+    macro_rules! try_mrc {
+        ($enc:expr) => {{
+            let (v, failed): (u32, u32);
+            // SAFETY: one coprocessor read with no side effects in any
+            // coprocessor RetroPane knows of; if it is undefined the
+            // undefined entry resumes at label 2 (registered in
+            // .rp_fixup), which only sets the flag.
+            unsafe {
+                core::arch::asm!(
+                    "mov {f}, #0",
+                    "1: .inst {e}",
+                    "b 3f",
+                    "2: mov {f}, #1",
+                    "mov r0, #0",
+                    "3:",
+                    ".pushsection .rp_fixup, \"a\"",
+                    ".word 1b, 2b",
+                    ".popsection",
+                    e = const $enc,
+                    f = out(reg) failed,
+                    out("r0") v,
+                    options(nostack, nomem),
+                );
+            }
+            (failed == 0).then_some(v)
+        }};
+    }
+
+    /// What [`coprocessor_survey`] found.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct CoSurvey {
+        /// `CPAR` as found.
+        pub cpar_was: u32,
+        /// The access bits that stuck when all of CP0-CP13 were asked for.
+        pub cpar_settable: u32,
+        /// Bit n: `MRC pn, 0, r0, c0, c0, 0` ran (CP0-CP13) without trapping.
+        pub answered: u16,
+        /// What each answering coprocessor's c0 read gave.
+        pub c0: [u32; 14],
+        /// The VFP's ID register (`MRC p10, 7, r0, c0, c0, 0`, FPSID), if
+        /// it answered: an FPU.
+        pub fpsid: Option<u32>,
+    }
+
+    /// Asks the CPU itself which coprocessors exist (ADR-0040 step 7g7, the
+    /// owner: "Test for an FPU too"): every access bit of `CPAR` set, each
+    /// of CP0-CP13 read once (a trap means absent), the VFP's FPSID read;
+    /// `CPAR` put back as found. Interrupts masked by the caller.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn coprocessor_survey() -> CoSurvey {
+        let mut s = CoSurvey::default();
+        let cpwait = || {
+            // SAFETY: CPWAIT (Intel's sequence: read CP15, use it, branch),
+            // no side effects.
+            unsafe {
+                core::arch::asm!("mrc p15, 0, {t}, c2, c0, 0", "mov {t}, {t}", "sub pc, pc, #4", t = out(reg) _, options(nostack, nomem));
+            }
+        };
+        let set = |v: u32| {
+            // SAFETY: CPAR only gates coprocessor access (put back below).
+            unsafe { core::arch::asm!("mcr p15, 0, {v}, c15, c1, 0", v = in(reg) v, options(nostack, nomem)) };
+        };
+        let get = || {
+            let v: u32;
+            // SAFETY: a read of CPAR.
+            unsafe { core::arch::asm!("mrc p15, 0, {v}, c15, c1, 0", v = out(reg) v, options(nostack, nomem)) };
+            v
+        };
+        s.cpar_was = get();
+        set(0x3FFF);
+        cpwait();
+        s.cpar_settable = get();
+        macro_rules! cp {
+            ($($n:literal)*) => {$(
+                if let Some(v) = try_mrc!(0xEE10_0010u32 | ($n << 8)) {
+                    s.answered |= 1 << $n;
+                    s.c0[$n] = v;
+                }
+            )*};
+        }
+        cp!(0 1 2 3 4 5 6 7 8 9 10 11 12 13);
+        s.fpsid = try_mrc!(0xEEF0_0A10u32);
+        set(s.cpar_was);
+        cpwait();
+        s
+    }
+
     /// The live `MSC1`.
     #[must_use]
     pub fn msc1() -> u32 {
@@ -883,7 +973,7 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessors, hot_code_off_sram, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
+    coprocessor_survey, coprocessors, CoSurvey, hot_code_off_sram, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
     msc2, set_cs2_half, set_cs3_timing,
     set_cs3_vlio, set_cs4_vlio, set_section_memory, snapshot, take_sram, take_sram_words,
     with_window,
