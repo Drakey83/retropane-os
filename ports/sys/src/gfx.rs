@@ -38,6 +38,26 @@ pub const STRIP_CORNERS: (u32, u32) = (3, 255);
 /// Words in a corner: x, y, z, 1/w, colour, u, v (the GLES driver's
 /// textured vertex).
 pub const CORNER_WORDS: usize = 7;
+/// A strip's or fan's header bit 21 (ADR-0040 step 7g7, shown on the
+/// X51v, run 144): its corners have no z word, [`CORNER_WORDS_NO_Z`]
+/// words each (x, y, 1/w, colour, u, v), the depth taken from 1/w. Sent to
+/// the TA with the header.
+pub const NO_Z: u32 = 1 << 21;
+/// Words in a corner of a [`NO_Z`] strip or fan.
+pub const CORNER_WORDS_NO_Z: usize = 6;
+
+/// Whether `w` is a strip's or a fan's header (either corner layout).
+#[must_use]
+pub const fn is_prim(w: u32) -> bool {
+    let k = w & !NO_Z & 0xFFFF_FF00;
+    k == STRIP || k == FAN
+}
+
+/// Words in each corner of the strip or fan whose header is `w`.
+#[must_use]
+pub const fn corner_words(w: u32) -> usize {
+    if w & NO_Z != 0 { CORNER_WORDS_NO_Z } else { CORNER_WORDS }
+}
 
 /// TEX0's texel formats a texture may have here, all 16 bits a texel
 /// (`rp_drv_mbx3d::tex`: ARGB1555, RGB565, ARGB4444, RGB332).
@@ -171,8 +191,8 @@ pub fn send_runs<T>(
                 break;
             }
             at += 1 + STATE_WORDS;
-        } else if w & 0xFFFF_FF00 == STRIP || w & 0xFFFF_FF00 == FAN {
-            let len = (w & 0xFF) as usize * CORNER_WORDS;
+        } else if is_prim(w) {
+            let len = (w & 0xFF) as usize * corner_words(w);
             let Some(corners) = words.get(at + 1..=at + len) else {
                 break;
             };
@@ -228,7 +248,7 @@ fn walk(
                 return Ok(c);
             }
             at += 1 + STATE_WORDS;
-        } else if w & 0xFFFF_FF00 == STRIP || w & 0xFFFF_FF00 == FAN {
+        } else if is_prim(w) {
             if !stated {
                 return refuse(at, Why::NoState);
             }
@@ -236,7 +256,7 @@ fn walk(
             if n < STRIP_CORNERS.0 || n > STRIP_CORNERS.1 {
                 return refuse(at, Why::Corners);
             }
-            let len = n as usize * CORNER_WORDS;
+            let len = n as usize * corner_words(w);
             let Some(corners) = words.get(at + 1..=at + len) else {
                 return refuse(at, Why::Short);
             };
@@ -283,6 +303,24 @@ mod tests {
             0,
             0,
         ]
+    }
+
+    #[test]
+    fn a_strip_without_z_words_has_six_word_corners_and_keeps_its_bit() {
+        let mut words = state(G.tex_at).to_vec();
+        words.push(STRIP | NO_Z | 3);
+        words.extend(0..3 * CORNER_WORDS_NO_Z as u32);
+        words.extend(strip(3, 100));
+        let (r, out) = run(&words);
+        let c = r.expect("accepted");
+        assert_eq!((c.strips, c.corners), (2, 6));
+        assert_eq!(out[8], Piece::Word(STRIP | NO_Z));
+        assert_eq!(out[9 + 3 * CORNER_WORDS_NO_Z], Piece::End);
+        assert_eq!(out[10 + 3 * CORNER_WORDS_NO_Z], Piece::Word(STRIP));
+        let mut runs = Vec::new();
+        send_runs(&words, &mut runs, |r, ws| { r.push(ws.to_vec()); true }, |_| true);
+        assert_eq!(runs[1], vec![STRIP | NO_Z]);
+        assert_eq!(runs[2].len(), 3 * CORNER_WORDS_NO_Z);
     }
 
     fn strip(n: u32, first: u32) -> Vec<u32> {

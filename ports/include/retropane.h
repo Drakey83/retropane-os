@@ -165,7 +165,8 @@ const char *rp_module_error(void);
  *    words each (x, y, z, 1/w, colour 0xAARRGGBB, u, v; floats but the
  *    colour), after a state block;
  *  - a fan: RP_GFX_FAN(n), then n corners as a strip's (every triangle
- *    shares the first corner).
+ *    shares the first corner);
+ *  - either with RP_GFX_NO_Z in its header: corners without the z word.
  * Anything else refuses the whole frame (EINVAL), nothing of it drawn.
  */
 struct rp_gfx {
@@ -188,6 +189,11 @@ struct rp_gfx {
 #define RP_GFX_STRIP(n) (0x40000000u | (uint32_t)(n)) /* 3 to 255 corners */
 #define RP_GFX_FAN(n) (0x50000000u | (uint32_t)(n))   /* 3 to 255 corners */
 #define RP_GFX_CORNER_WORDS 7
+/* A strip's or fan's header with RP_GFX_NO_Z (ADR-0040 step 7g7, shown on
+ * the X51v, run 144): its corners have no z word, RP_GFX_CORNER_WORDS_NO_Z
+ * words each (x, y, 1/w, colour, u, v), the depth taken from 1/w. */
+#define RP_GFX_NO_Z (1u << 21)
+#define RP_GFX_CORNER_WORDS_NO_Z 6
 
 /* Takes the screen: 0 with *g filled in, or -1 with errno. */
 int rp_gfx_open(struct rp_gfx *g);

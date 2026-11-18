@@ -66,6 +66,11 @@ extern unsigned rp_ln_counts[2]; /* kit 90: light nodes met, surfaces tried (ref
 #define RP_TA_END        0xF0000000u
 #define RP_STATE_WORDS   8
 #define RP_VERTEX_WORDS  7
+/* ADR-0040 step 7g7 (shown on the X51v, run 144): strips and fans whose
+   corners leave out the z word (RP_GFX_NO_Z: depth from 1/w, which every
+   corner here carries as the same word as z, the sky's own depth word
+   apart). RP_GFX_NO_Z by default, 0 with -rpz7 (the control). */
+static uint32_t rp_noz = RP_GFX_NO_Z;
 
 /* A frame's words: 512 KiB (c1a0's opening view in the emulator: about
    83 Ki words, 4,200 triangles). Words past it are counted, not kept. */
@@ -154,6 +159,8 @@ void RP_EmitInit( void )
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
 	rp_cull = gEngfuncs.Cvar_Get( "rp_cull", "1", 0, "ref_rp: 1 the models' triangles facing away or off the screen not sent (Half-Life's GL rule), 0 all sent, -1 the other winding" );
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
+	if( gEngfuncs.Sys_CheckParm( "-rpz7" ))
+		rp_noz = 0; /* the control: seven-word corners */
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
@@ -1837,8 +1844,8 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 		RP_LmPut( 0 );
 	}
 
-	RP_Put( RP_GFX_STRIP( n ));
-	RP_LmPut( RP_GFX_STRIP( n ));
+	RP_Put( RP_GFX_STRIP( n ) | rp_noz);
+	RP_LmPut( RP_GFX_STRIP( n ) | rp_noz);
 	lo = 1;
 	hi = n - 1;
 	for( int k = 0; k < n; k++ )
@@ -1859,14 +1866,14 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 
 		RP_Put( fx );
 		RP_Put( fy );
-		RP_Put( zis[c] );
+		if( !rp_noz ) RP_Put( zis[c] );
 		RP_Put( zis[c] );
 		RP_Put( 0xFFFFFFFFu );
 		RP_Put( RP_FixBits( u, 16 ));
 		RP_Put( RP_FixBits( v, 16 ));
 		RP_LmPut( fx );
 		RP_LmPut( fy );
-		RP_LmPut( zis[c] );
+		if( !rp_noz ) RP_LmPut( zis[c] );
 		RP_LmPut( zis[c] );
 		RP_LmPut( 0xFFFFFFFFu );
 		RP_LmPut( RP_FixBits( lu, 8 + 9 ));
@@ -2173,7 +2180,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	kw = rp_kedge[w]; /* w, h at most RP_PAGE_SIDE (512): checked above */
 	kh = rp_kedge[h];
 
-	RP_Put( RP_GFX_STRIP( n ));
+	RP_Put( RP_GFX_STRIP( n ) | rp_noz);
 	lo = 1;
 	hi = n - 1;
 	for( int k = 0; k < n; k++ )
@@ -2195,7 +2202,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 
 		RP_Put( RP_FixBits( x, 4 ));
 		RP_Put( RP_FixBits( y, 4 ));
-		RP_Put( zis[c] );
+		if( !rp_noz ) RP_Put( zis[c] );
 		RP_Put( zis[c] );
 		RP_Put( rp_face_colour );
 		RP_Put( RP_FixBits( u, 8 + 9 ));
@@ -2312,7 +2319,7 @@ static void RP_PolyEmit( int n, const int32_t ( *q )[3], const int32_t ( *uv )[2
 		rp_count.nearclipped++;
 	for( int i = 0; i < m; i++ )
 		RP_ProjectS( o[i], w[i], NULL );
-	RP_Put( RP_GFX_STRIP( m ));
+	RP_Put( RP_GFX_STRIP( m ) | ( zword ? 0 : rp_noz ));
 	lo = 1;
 	hi = m - 1;
 	for( int k = 0; k < m; k++ )
@@ -2321,7 +2328,7 @@ static void RP_PolyEmit( int n, const int32_t ( *q )[3], const int32_t ( *uv )[2
 
 		RP_Put( w[c][0] );
 		RP_Put( w[c][1] );
-		RP_Put( zword ? zword : w[c][2] );
+		if( zword || !rp_noz ) RP_Put( zword ? zword : w[c][2] );
 		RP_Put( w[c][2] );
 		RP_Put( colour );
 		RP_Put( RP_FixBits( ouv[c][0], 16 ));
@@ -2844,7 +2851,7 @@ static void RP_ChipWater( msurface_t *fa )
 						break;
 					run++;
 				}
-				RP_Put( RP_GFX_STRIP( 2 * ( run + 1 )));
+				RP_Put( RP_GFX_STRIP( 2 * ( run + 1 )) | rp_noz);
 				for( int r = 0; r <= run; r++ )
 				{
 					for( int e = 0; e < 2; e++ )
@@ -2853,7 +2860,7 @@ static void RP_ChipWater( msurface_t *fa )
 
 						RP_Put( gw[g][0] );
 						RP_Put( gw[g][1] );
-						RP_Put( gw[g][2] );
+						if( !rp_noz ) RP_Put( gw[g][2] );
 						RP_Put( gw[g][2] );
 						RP_Put( colour );
 						RP_Put( RP_FixBits( guv[g][0], 16 ));
@@ -3081,7 +3088,7 @@ static void RP_ChipFace( msurface_t *fa )
 	ks = ( w - 1.0f / 32.0f ) / ( (float)w * (float)( 1 << miplevel ) * RP_PAGE_SIDE );
 	kt = ( h - 1.0f / 32.0f ) / ( (float)h * (float)( 1 << miplevel ) * RP_PAGE_SIDE );
 
-	RP_Put( RP_GFX_STRIP( m ));
+	RP_Put( RP_GFX_STRIP( m ) | rp_noz);
 	lo = 1;
 	hi = m - 1;
 	for( k = 0; k < m; k++ )
@@ -3092,7 +3099,7 @@ static void RP_ChipFace( msurface_t *fa )
 
 		RP_Put( RP_Bits( sy ));
 		RP_Put( RP_Bits( (float)RP_GAME_W - sx ));
-		RP_Put( RP_Bits( c->z ));
+		if( !rp_noz ) RP_Put( RP_Bits( c->z ));
 		RP_Put( RP_Bits( c->z ));
 		RP_Put( rp_face_colour );
 		RP_Put( RP_Bits( u0 + c->s * ks ));
@@ -3805,6 +3812,40 @@ static void RP_StudioWords( uint32_t prim, const uint32_t ( *c )[RP_VERTEX_WORDS
 	} rp_corner_t;
 	uint32_t need = 1u + (uint32_t)n * RP_VERTEX_WORDS;
 
+	if( rp_noz )
+	{
+		/* six words a corner: the record's z (its word 2, the same as its
+		   1/w, word 3) left out */
+		need = 1u + (uint32_t)n * ( RP_VERTEX_WORDS - 1 );
+		if( rp_n + need <= RP_BUF_WORDS )
+		{
+			uint32_t *o = &rp_buf[rp_n];
+
+			*o++ = prim | rp_noz | (uint32_t)n;
+			for( int k = 0; k < n; k++ )
+			{
+				const uint32_t *s = c[idx[k]];
+
+				o[0] = s[0];
+				o[1] = s[1];
+				o[2] = s[3];
+				o[3] = s[4];
+				o[4] = s[5];
+				o[5] = s[6];
+				o += 6;
+			}
+			rp_n += need;
+			RP_Whole();
+			return;
+		}
+		RP_Put( prim | rp_noz | (uint32_t)n );
+		for( int k = 0; k < n; k++ )
+			for( int j = 0; j < RP_VERTEX_WORDS; j++ )
+				if( j != 2 )
+					RP_Put( c[idx[k]][j] );
+		RP_Whole();
+		return;
+	}
 	if( rp_n + need <= RP_BUF_WORDS )
 	{
 		rp_corner_t       *out = (rp_corner_t *)&rp_buf[rp_n + 1];
@@ -5013,12 +5054,12 @@ static void RP_2DQuad( float x0, float y0, float x1, float y1, float u0, float v
 	const float gx[4] = { x0, x1, x0, x1 }, gy[4] = { y0, y0, y1, y1 };
 	const float gu[4] = { u0, u1, u0, u1 }, gv[4] = { v0, v0, v1, v1 };
 
-	RP_Put( RP_GFX_STRIP( 4 ));
+	RP_Put( RP_GFX_STRIP( 4 ) | rp_noz);
 	for( int k = 0; k < 4; k++ )
 	{
 		RP_Put( RP_Bits( gy[k] ));                   /* the upright picture: x = the game's y */
 		RP_Put( RP_Bits( (float)RP_GAME_W - gx[k] )); /* y = 640 - the game's x */
-		RP_Put( 0x3F800000u );
+		if( !rp_noz ) RP_Put( 0x3F800000u );
 		RP_Put( 0x3F800000u );
 		RP_Put( rp_2d_colour );
 		RP_Put( RP_Bits( gu[k] * ( 1.0f / RP_PAGE_SIDE )));
@@ -5240,14 +5281,14 @@ static void RP_FxTriangle( void )
 
 	if( !RP_FxSetup( &c ))
 		return;
-	RP_Put( RP_GFX_STRIP( 3 ));
+	RP_Put( RP_GFX_STRIP( 3 ) | rp_noz);
 	for( int i = 0; i < 3; i++ )
 	{
 		/* the upright picture: x = the game's y, y = 640 - the game's x */
 		RP_Put( RP_FixBits( v[i]->v, 0 ));
 		RP_Put( RP_FixBits( RP_GAME_W - v[i]->u, 0 ));
 		RP_Put( RP_FixBits( v[i]->zi, 31 )); /* 1/z, the world's own units */
-		RP_Put( RP_FixBits( v[i]->zi, 31 ));
+		if( !rp_noz ) RP_Put( RP_FixBits( v[i]->zi, 31 ));
 		RP_Put( rp_2d_colour );
 		RP_FxTexel( &c, v[i]->s, v[i]->t );
 	}
@@ -5353,12 +5394,12 @@ static void RP_TriEmit( const rp_tv_t *a, const rp_tv_t *b, const rp_tv_t *c3 )
 	}
 	if( !RP_FxSetup( &c ))
 		return;
-	RP_Put( RP_GFX_STRIP( 3 ));
+	RP_Put( RP_GFX_STRIP( 3 ) | rp_noz);
 	for( int i = 0; i < 3; i++ )
 	{
 		RP_Put( v[i]->w[0] );
 		RP_Put( v[i]->w[1] );
-		RP_Put( v[i]->w[2] );
+		if( !rp_noz ) RP_Put( v[i]->w[2] );
 		RP_Put( v[i]->w[2] );
 		RP_Put( rp_2d_colour );
 		RP_FxTexel( &c, v[i]->s << 16, v[i]->t << 16 );

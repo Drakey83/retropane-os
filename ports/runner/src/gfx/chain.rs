@@ -23,7 +23,7 @@ use rp_drv_mbx3d::ta;
 use rp_hal_api::{DmaEngine, RegisterBus};
 use rp_hal_pxa27x::dma::{CHAIN_MOST, Dma, chain_descriptor};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
-use rp_port::gfx::{CORNER_WORDS, FAN, STATE, STATE_WORDS, STRIP};
+use rp_port::gfx::{FAN, NO_Z, STATE, STATE_WORDS, STRIP, corner_words};
 
 use super::us_since;
 
@@ -56,6 +56,9 @@ const T_FAN: usize = 1;
 const T_ONE: usize = 2;
 const T_END: usize = 3;
 const T_GRID: usize = 4;
+/// The no-z strip and fan headers (`NO_Z`, ADR-0040 step 7g7).
+const T_STRIP_NO_Z: usize = 5;
+const T_FAN_NO_Z: usize = 6;
 /// Bytes of a descriptor's run into the TA window, at most (whole words).
 const MOST: u32 = CHAIN_MOST & !3;
 /// A chain not done in this long is stopped (a frame's ~20,000 words
@@ -113,6 +116,8 @@ impl Chain {
         }
         words[T_STRIP] = STRIP;
         words[T_FAN] = FAN;
+        words[T_STRIP_NO_Z] = STRIP | NO_Z;
+        words[T_FAN_NO_Z] = FAN | NO_Z;
         words[T_ONE] = 1;
         words[T_END] = rp_drv_mbx3d::END;
         words[ZERO..DESC].fill(0);
@@ -233,18 +238,21 @@ impl Chain {
                     k += 1 + STATE_WORDS;
                 } else {
                     let n = (w & 0xFF) as usize;
-                    let head = if w & 0xFFFF_FF00 == FAN {
-                        T_FAN
-                    } else {
-                        T_STRIP
+                    let fan = w & !NO_Z & 0xFFFF_FF00 == FAN;
+                    let head = match (fan, w & NO_Z != 0) {
+                        (true, false) => T_FAN,
+                        (true, true) => T_FAN_NO_Z,
+                        (false, false) => T_STRIP,
+                        (false, true) => T_STRIP_NO_Z,
                     };
+                    let cw = corner_words(w);
                     let ok = self.to_window(self.addr(head), 4)
-                        && self.to_window(src + 4, (4 * n * CORNER_WORDS) as u32)
+                        && self.to_window(src + 4, (4 * n * cw) as u32)
                         && self.end();
                     if !ok {
                         return false;
                     }
-                    k += 1 + n * CORNER_WORDS;
+                    k += 1 + n * cw;
                 }
             }
         }
