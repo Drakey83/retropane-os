@@ -938,82 +938,25 @@ mod image {
             Some(v) => { say!("hw: FPU: FPSID {v:08x}"); }
             None => { say!("hw: FPU: none (FPSID read trapped)"); }
         }
-        for (n, v) in s.cp7.iter().enumerate() {
-            match v {
-                Some(v) => say!("hw: CP7 c{n} {v:08x}"),
-                None => say!("hw: CP7 c{n} traps"),
+        // CP7: every CRn x CRm that answers, a line a CRn (traps as '-')
+        for n in 0..16 {
+            let _ = write!(log, "hw: CP7 c{n}:");
+            for m in 0..16 {
+                match s.cp7[16 * n + m] {
+                    Some(v) => { let _ = write!(log, " {v:x}"); }
+                    None => { let _ = write!(log, " -"); }
+                }
             }
+            say!("");
         }
         const BASE: usize = 0x0FFE_0000;
         const WORDS: usize = 0x1_0000 / 4;
         let rd = |a: usize| -> u32 {
             rt::try_read(rp_hal_pxa27x::devmap::va(a)).unwrap_or(0xDEAD_DEAD)
         };
-        let Some(pool) = rp_hal_x51v::devices::take_ram_pool_bytes() else {
-            say!("hw: no RAM pool for the scan");
-            return;
-        };
-        let Some(buf) = pool.get_mut(..8 * WORDS) else {
-            say!("hw: the RAM pool is too small");
-            return;
-        };
-        // Pass A (no hangs): CS3 as fixed-timing SRAM, every word read
-        // twice into RAM; nothing logged (the console is in the 2700G's
-        // memory) until the bus is VLIO again.
-        say!("hw: pass A: CS3 as SRAM (no ready wait), 64 KiB read twice...");
-        let was = rt::irqs_enabled_now();
-        rt::irq_disable();
-        let msc1 = diag::set_cs3_sram();
-        for w in 0..WORDS {
-            let a = rd(BASE + 4 * w);
-            let b = rd(BASE + 4 * w);
-            buf[8 * w..8 * w + 4].copy_from_slice(&a.to_le_bytes());
-            buf[8 * w + 4..8 * w + 8].copy_from_slice(&b.to_le_bytes());
-        }
-        diag::put_msc1(msc1);
-        if was {
-            rt::irq_enable();
-        }
-        say!("hw: pass A done, MSC1 back to {msc1:08x}");
-        let at = |w: usize, k: usize| -> u32 {
-            u32::from_le_bytes([buf[8 * w + 4 * k], buf[8 * w + 4 * k + 1], buf[8 * w + 4 * k + 2], buf[8 * w + 4 * k + 3]])
-        };
-        // The MBX block's words read the VLIO way (it never hung) against
-        // pass A's, so pass A's reads are known good or not.
-        let mut same = 0;
-        for w in 0x4000 / 4..0x5000 / 4 {
-            if rd(BASE + 4 * w) == at(w, 0) {
-                same += 1;
-            }
-        }
-        say!("hw: the MBX block: {same} of 1024 words read the same as VLIO and as SRAM");
-        // Each 256-byte row: its most common word, the words that differ
-        // (up to 6 shown) and the words that changed between the reads.
-        for row in 0..WORDS / 64 {
-            let w0 = row * 64;
-            let mut common = (0u32, 0u32);
-            for w in w0..w0 + 64 {
-                let v = at(w, 0);
-                let c = (w0..w0 + 64).filter(|&x| at(x, 0) == v).count() as u32;
-                if c > common.1 {
-                    common = (v, c);
-                }
-            }
-            let changing = (w0..w0 + 64).filter(|&w| at(w, 0) != at(w, 1)).count();
-            let differ = 64 - common.1 as usize;
-            if differ == 0 && changing == 0 && w0 % 1024 != 0 {
-                continue;
-            }
-            let _ = write!(log, "hw: A +{:05x} mostly {:08x}, {differ} other, {changing} changing:", 4 * w0, common.0);
-            let mut shown = 0;
-            for w in w0..w0 + 64 {
-                if at(w, 0) != common.0 && shown < 6 {
-                    let _ = write!(log, " {:04x}={:08x}", (4 * w) & 0xFFFF, at(w, 0));
-                    shown += 1;
-                }
-            }
-            say!("");
-        }
+        // This run (the owner, 2026-11-18: crashes): CP7 and the PXA270's
+        // buses only; the 2700G passes (A hung the bus in SRAM mode, run
+        // probe-0077) wait.
         // Pass C: the PXA270's own buses (the owner, 2026-11-18: "are we
         // probing the CPU for additional processors"): the first word of
         // every 4 KiB page from 0x40000000 to 0x5FFFFFFF read through
@@ -1046,49 +989,7 @@ mod image {
             runs += 1;
         }
         say!("hw: pass C done, {runs} runs of pages answering");
-        // Pass B: write and read back in the MBX block, the words that
-        // read 0 outside the known register ranges (core control
-        // 0x000-0x1FF, the 3D block 0x600-0x6FF, the TA block 0x800-0x8FF,
-        // the ID words 0xF00-0xFFF), each put back to 0: a memory (a
-        // program or constant store) shows as words that keep what was
-        // written. A row is named before it is written.
-        say!("hw: pass B: write-readback in the MBX block (unknown words reading 0)");
-        let mut kept = 0;
-        for row in (0x200..0xF00usize).step_by(256) {
-            if (0x600..0x700).contains(&row) || (0x800..0x900).contains(&row) {
-                continue;
-            }
-            say!("hw: B +{:05x}", 0x4000 + row);
-            let mut rkept = 0;
-            let mut first = [(0u16, 0u32); 6];
-            for o in (row..row + 256).step_by(4) {
-                let a = BASE + 0x4000 + o;
-                if rd(a) != 0 {
-                    continue;
-                }
-                let _ = rt::try_write(rp_hal_pxa27x::devmap::va(a), 0xFFFF_FFFF);
-                let ones = rd(a);
-                let _ = rt::try_write(rp_hal_pxa27x::devmap::va(a), 0x5A5A_A5A5);
-                let pat = rd(a);
-                let _ = rt::try_write(rp_hal_pxa27x::devmap::va(a), 0);
-                if ones != 0 || pat != 0 {
-                    if rkept < 6 {
-                        first[rkept] = ((0x4000 + o) as u16, ones);
-                    }
-                    rkept += 1;
-                    let _ = pat;
-                }
-            }
-            if rkept > 0 {
-                kept += rkept;
-                let _ = write!(log, "hw: B +{:05x} {rkept} words kept bits:", 0x4000 + row);
-                for (o, v) in &first[..rkept.min(6)] {
-                    let _ = write!(log, " {o:04x}={v:08x}");
-                }
-                say!("");
-            }
-        }
-        say!("hw: survey done: {kept} writable words found in the MBX block's unknown ranges");
+
     }
 
     /// [`super::MINI_ONLY`]: the first MiB of the RAM pool as the window,

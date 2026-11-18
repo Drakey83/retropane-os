@@ -361,7 +361,7 @@ mod target {
     }
 
     /// What [`coprocessor_survey`] found.
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug)]
     pub struct CoSurvey {
         /// `CPAR` as found.
         pub cpar_was: u32,
@@ -374,9 +374,9 @@ mod target {
         /// The VFP's ID register (`MRC p10, 7, r0, c0, c0, 0`, FPSID), if
         /// it answered: an FPU.
         pub fpsid: Option<u32>,
-        /// CP7's registers c0-c15 (`MRC p7, 0, r0, cN, c0, 0`), each if it
-        /// answered (not in our documents: the first survey's open line).
-        pub cp7: [Option<u32>; 16],
+        /// CP7's registers at every CRn x CRm (`MRC p7, 0, r0, cN, cM, 0`,
+        /// index `16 * N + M`), each if it answered.
+        pub cp7: [Option<u32>; 256],
     }
 
     /// Asks the CPU itself which coprocessors exist (ADR-0040 step 7g7, the
@@ -385,7 +385,7 @@ mod target {
     /// `CPAR` put back as found. Interrupts masked by the caller.
     #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
     pub fn coprocessor_survey() -> CoSurvey {
-        let mut s = CoSurvey::default();
+        let mut s = CoSurvey { cpar_was: 0, cpar_settable: 0, answered: 0, c0: [0; 14], fpsid: None, cp7: [None; 256] };
         let cpwait = || {
             // SAFETY: CPWAIT (Intel's sequence: read CP15, use it, branch),
             // no side effects.
@@ -417,12 +417,18 @@ mod target {
         }
         cp!(0 1 2 3 4 5 6 7 8 9 10 11 12 13);
         s.fpsid = try_mrc!(0xEEF0_0A10u32);
+        // CP7 at every CRn x CRm (opc1 0, opc2 0): 256 reads, each one
+        // that answers kept (Windows Mobile's interrupt entry reads
+        // c4, c1 and tests bit 5: nk.exe 0x8C2466A0)
         macro_rules! cp7 {
-            ($($n:literal)*) => {$(
-                s.cp7[$n] = try_mrc!(0xEE10_0710u32 | ($n << 16));
+            ($n:literal; $($m:literal)*) => {$(
+                s.cp7[$n * 16 + $m] = try_mrc!(0xEE10_0710u32 | ($n << 16) | $m);
             )*};
         }
-        cp7!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
+        macro_rules! cp7_all {
+            ($($n:literal)*) => {$( cp7!($n; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15); )*};
+        }
+        cp7_all!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
         set(s.cpar_was);
         cpwait();
         s
