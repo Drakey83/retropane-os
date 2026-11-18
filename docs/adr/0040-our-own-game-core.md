@@ -1,7 +1,7 @@
 # ADR-0040: Our own game core, Xash as the starting point
 
-- **Status:** Proposed (2026-11-18). Four votes wait for the owner
-  (end of this page).
+- **Status:** Accepted (2026-11-18, by the project owner: "Accept all
+  four")
 - **Date:** 2026-11-18
 
 ## Context
@@ -181,7 +181,7 @@ changes. The clock was tried and is not the limit (run 88).
 - Later ports (Doom, Quake, porting-guide.md) inherit the pattern: keep
   the game, cook the data, own the core.
 
-## Votes (waiting for the owner)
+## Votes (the owner's, 2026-11-18: "Accept all four": the direction, cooking at the first load on the X51v (A), the order as tabled, single-player first)
 
 1. **The direction:** our own engine core under Half-Life's unchanged game
    code, Xash as the starting point and the reference.
