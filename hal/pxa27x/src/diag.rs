@@ -374,6 +374,9 @@ mod target {
         /// The VFP's ID register (`MRC p10, 7, r0, c0, c0, 0`, FPSID), if
         /// it answered: an FPU.
         pub fpsid: Option<u32>,
+        /// CP7's registers c0-c15 (`MRC p7, 0, r0, cN, c0, 0`), each if it
+        /// answered (not in our documents: the first survey's open line).
+        pub cp7: [Option<u32>; 16],
     }
 
     /// Asks the CPU itself which coprocessors exist (ADR-0040 step 7g7, the
@@ -414,6 +417,12 @@ mod target {
         }
         cp!(0 1 2 3 4 5 6 7 8 9 10 11 12 13);
         s.fpsid = try_mrc!(0xEEF0_0A10u32);
+        macro_rules! cp7 {
+            ($($n:literal)*) => {$(
+                s.cp7[$n] = try_mrc!(0xEE10_0710u32 | ($n << 16));
+            )*};
+        }
+        cp7!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
         set(s.cpar_was);
         cpwait();
         s
@@ -455,6 +464,33 @@ mod target {
         // controller's, mapped as device memory.
         unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
         Some(msc1())
+    }
+
+    /// CS3 as a 32-bit non-burst SRAM chip select at its longest timing
+    /// (RT3 `000`, RBW3 32 bits, RDF and RDN code 15 = 30 clocks, RRR 7)
+    /// instead of VLIO, for a survey of the 2700G's space (ADR-0040 step
+    /// 7g8): SRAM cycles do not wait for the chip's ready line, so a word
+    /// the chip does not decode reads back whatever the bus holds instead
+    /// of holding the bus forever. Reads only while it lasts (an SRAM
+    /// write strobes nWE, not VLIO's nPWE). Returns `MSC1` as it was, for
+    /// [`put_msc1`]; the caller keeps the 2700G idle meanwhile.
+    pub fn set_cs3_sram() -> u32 {
+        let was = msc1();
+        let new = was & 0x0000_FFFF | (15 << 4 | 15 << 8 | 7 << 12) << 16;
+        crate::cpu::drain_write_buffer();
+        // SAFETY: CS3's half of the memory controller's static-memory
+        // register; CS2's half kept. Only the type and timing change.
+        unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
+        let _ = msc1();
+        was
+    }
+
+    /// `MSC1` put back to `v` (as [`set_cs3_sram`] returned it).
+    pub fn put_msc1(v: u32) {
+        crate::cpu::drain_write_buffer();
+        // SAFETY: the value this register held before the survey.
+        unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(v) };
+        let _ = msc1();
     }
 
     /// CS2's half of `MSC1` replaced by `half` ([`super::cs2_half`]): the
@@ -973,7 +1009,7 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessor_survey, coprocessors, CoSurvey, hot_code_off_sram, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
+    coprocessor_survey, coprocessors, CoSurvey, hot_code_off_sram, put_msc1, set_cs3_sram, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
     msc2, set_cs2_half, set_cs3_timing,
     set_cs3_vlio, set_cs4_vlio, set_section_memory, snapshot, take_sram, take_sram_words,
     with_window,
