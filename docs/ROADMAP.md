@@ -360,6 +360,12 @@ is measured yet; no frame rate is promised before the evaluation.
   - [ ] 7b. The hottest code in the PXA270's 256 KiB SRAM (hot functions gathered by the linker, their pages mapped onto the SRAM)
   - [x] 7a/7b first parts: kit 92 (direct link) and kit 93 (hot code on the SRAM, 27.4 / 17.7 fps)
   - [ ] 7e (next, the owner 2026-11-18: "Debris first"). Models stage by stage, the rigid path for debris and gibs
+  - [ ] 7g. The system under the game (the owner, 2026-11-18: "work on all of these, that can produce more performance, with rule 0"), each exact and measured on `-rpcascade` and `-rpfight`:
+    - [ ] 7g1. Sound: the OS mixer's chain (speaker filter, limiter, dither: 188 of its 369 cycles an output frame, run 131) and the engine's channel mixing (`S_MixChannelToBuffer`, `S_PaintChannels`: 1.5-3 ms a fight frame) in integers on iWMMXt, the PXA270's SIMD unit (Dell's WM and Xash: one sample at a time in C); ~1.3 ms a frame in `rp_snd_write` today
+    - [ ] 7g2. The runner's per-frame string work in play (`tolower`, `strlcpy`, `strcpy`, `qsort`: ~0.6 ms a fight frame, run 131): find the callers, cut what repeats
+    - [ ] 7g3. The mini data cache (2 KiB, CPU C5, measured on the X51v: a hot set kept 19 us against 180) for what is read once a frame (uploads' sources, sound sources), after the event sampler shows which streams evict the game's data
+    - [x] 7g4. The 2700G fed by DMA: already built (step 4f, the chain, default since kit 60: 6.6%)
+    - [x] 7g5. The clock past 624 MHz: measured, buys nothing (runs 88, 120: the bus and SDRAM slow down past it); 728 MHz faults on this unit (run 44)
   - [ ] 7c. Maps cooked at their first load on the X51v and kept on the card; the world drawn from the cooked clusters (integer corners, iWMMXt, the walk only on a cluster change)
   - [ ] 7d. Collision and movement on the cooked integer hulls
   - [ ] 7f. Sound mixed in integers with iWMMXt into the OS mixer
