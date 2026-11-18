@@ -3575,7 +3575,9 @@ fn kit_shots(root: &Path) -> Result<Option<std::thread::JoinHandle<Vec<String>>>
         let mut said = Vec::new();
         let mut last: Option<u32> = None;
         let mut ticks: u64 = 0;
-        let mut stuck = std::time::Instant::now();
+        // Readings in a row the monitor did not answer: 240 (a minute of
+        // polls) means the emulator is gone, not slow.
+        let mut misses = 0u32;
         let mut guest_ms = || -> Option<u64> {
             let mut m = crate::screen::Monitor::connect(port).ok()?;
             let now = audio::GuestClock::start(&mut m, "kit shots").ok()?.last;
@@ -3590,18 +3592,18 @@ fn kit_shots(root: &Path) -> Result<Option<std::thread::JoinHandle<Vec<String>>>
             loop {
                 match guest_ms() {
                     Some(ms) if ms >= s * 1000 => break,
-                    Some(_) => stuck = std::time::Instant::now(),
-                    None if stuck.elapsed() > Duration::from_secs(60) => {
+                    Some(_) => misses = 0,
+                    None if misses >= 240 => {
                         ok = false;
                         break;
                     }
-                    None => {}
+                    None => misses += 1,
                 }
                 audio::poll_pause(Duration::from_millis(250));
             }
             if !ok {
                 said.push(format!(
-                    "no screen at {s} s: the guest's clock could not be read for a minute"
+                    "no screen at {s} s: the monitor did not answer 240 readings in a row"
                 ));
                 continue;
             }

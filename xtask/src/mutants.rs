@@ -3574,10 +3574,10 @@ pub const MUTANTS: &[Mutant] = &[
         name: "mixer: the end moved only after the whole mix (the race waits for a long mix) (ADR-0032 A6)",
         file: "services/audio/src/mixer.rs",
         from: "            if self.ended
-                && b.is_multiple_of(self.piece)
+                && rem(b, self.piece) == 0
 ",
         to: "            if false
-                && b.is_multiple_of(self.piece)
+                && rem(b, self.piece) == 0
 ",
         check: Check::Host(&[
             "-p",
