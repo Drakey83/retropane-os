@@ -114,6 +114,7 @@ static struct
 	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
 	uint32_t mask_texels, mask_keys; /* R321: see-through faces' texels uploaded, the key among them */
+	uint32_t beams_fixed, beams_culled, beams_off; /* kit 78: beams walked in 16.16, out of the visible set, off the screen */
 	uint32_t fx_fixed, fx_cut, fx_off; /* kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
@@ -234,6 +235,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: kit 77's effect corners in fixed point: %u triangles a frame, %u across the near plane (the software's way), %u off the screen\n",
 			rp_count.fx_fixed / f, rp_count.fx_cut / f, rp_count.fx_off / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: kit 78's beams: %u a frame walked in 16.16, %u a frame culled (out of the visible set), %u off the screen\n",
+			rp_count.beams_fixed / f, rp_count.beams_culled / f, rp_count.beams_off / f );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: R321: see-through faces' texels uploaded %u, %u of them the see-through key\n",
 			rp_count.mask_texels, rp_count.mask_keys );
@@ -5179,7 +5183,7 @@ corners within a sub-pixel of the old ones (visually identical).
 */
 typedef struct
 {
-	float    x, y, z;
+	int32_t  p[3]; /* 16.16 world units (kit 78: the beams hand these over) */
 	int      s, t;
 	uint32_t w[3];
 	int32_t  st[2]; /* the TA's x, y in 28.4: the off-screen cull */
@@ -5199,8 +5203,7 @@ void RP_TriBegin( int mode )
 /* TriTexCoord2f's texel, as its float code makes it (within a texel). */
 int RP_TriCoord( float u, int size )
 {
-	uint32_t bits, f;
-	int32_t  q;
+	uint32_t bits;
 
 	__builtin_memcpy( &bits, &u, sizeof( bits ));
 	if(( bits & 0x7FFFFFFFu ) >= 0x46000000u ) /* |u| >= 8192, or not finite: the float way */
@@ -5216,17 +5219,23 @@ int RP_TriCoord( float u, int size )
 			u1 = u1 - 1;
 		return size * bound( 0.01, u1, 0.99 );
 	}
-	q = RP_Fix16( u );
-	f = (uint32_t)q & 0xFFFFu;
+	/* a whole number: fmodf( u, 10 ) then the loops make 1 above 0 (0 for
+	   a multiple of 10), else 0; then bound( 0.01, u, 0.99 ) */
+	return RP_TriCoordFix( RP_Fix16( u ), size );
+}
+
+/* As RP_TriCoord, the coordinate already 16.16 (|q| below 8192). */
+int RP_TriCoordFix( int32_t q, int size )
+{
+	uint32_t f = (uint32_t)q & 0xFFFFu;
+
 	if( !f )
 	{
-		/* a whole number: fmodf( u, 10 ) then the loops make 1 above 0
-		   (0 for a multiple of 10), else 0 */
 		int32_t whole = q >> 16;
 
 		f = whole > 0 && whole % 10 ? 0x10000u : 0;
 	}
-	f = f < 655u ? 655u : f > 64880u ? 64880u : f; /* bound( 0.01, u, 0.99 ) */
+	f = f < 655u ? 655u : f > 64880u ? 64880u : f;
 	return (int)(( (uint32_t)size * f ) >> 16 );
 }
 
@@ -5241,7 +5250,8 @@ static void RP_TriEmit( const rp_tv_t *a, const rp_tv_t *b, const rp_tv_t *c3 )
 		finalvert_t fv[3];
 
 		for( int i = 0; i < 3; i++ )
-			R_SetupFinalVert( &fv[i], v[i]->x, v[i]->y, v[i]->z, 0, v[i]->s, v[i]->t );
+			R_SetupFinalVert( &fv[i], v[i]->p[0] * ( 1.0f / 65536.0f ), v[i]->p[1] * ( 1.0f / 65536.0f ),
+				v[i]->p[2] * ( 1.0f / 65536.0f ), 0, v[i]->s, v[i]->t );
 		R_RenderTriangle( &fv[0], &fv[1], &fv[2] );
 		rp_count.fx_cut++;
 		return;
@@ -5270,13 +5280,13 @@ static void RP_TriEmit( const rp_tv_t *a, const rp_tv_t *b, const rp_tv_t *c3 )
 	rp_count.verts += 3;
 }
 
-static void RP_TriCorner( rp_tv_t *v, float x, float y, float z, int s, int t )
+static void RP_TriCorner( rp_tv_t *v, const int32_t p[3], int s, int t )
 {
-	int32_t p[3] = { RP_Fix16( x ), RP_Fix16( y ), RP_Fix16( z ) }, q[3];
+	int32_t q[3];
 
-	v->x = x;
-	v->y = y;
-	v->z = z;
+	v->p[0] = p[0];
+	v->p[1] = p[1];
+	v->p[2] = p[2];
 	v->s = s;
 	v->t = t;
 	RP_ViewPoint( (const int32_t( * )[3] )rp_view.m, rp_view.o, p, q );
@@ -5288,9 +5298,34 @@ static void RP_TriCorner( rp_tv_t *v, float x, float y, float z, int s, int t )
 /* TriVertex3f on the 2700G path: the same triangles of the same modes. */
 void RP_TriVertex( float x, float y, float z, int s, int t )
 {
+	int32_t p[3] = { RP_Fix16( x ), RP_Fix16( y ), RP_Fix16( z ) };
+
+	RP_TriVertexFix( p, s, t );
+}
+
+/* Kit 78: a beam walked in 16.16 (0), out of the visible set (1) or off the screen (2), counted. */
+void RP_BeamNote( int culled )
+{
+	if( culled == 2 )
+		rp_count.beams_off++;
+	else if( culled )
+		rp_count.beams_culled++;
+	else
+		rp_count.beams_fixed++;
+}
+
+/* Kit 78: the colour word as RP_Emit2DColour makes it, from integers. */
+void RP_Set2DColour( uint32_t argb )
+{
+	rp_2d_colour = argb;
+}
+
+/* A corner already in 16.16 (kit 78: the beams' fixed-point walk). */
+void RP_TriVertexFix( const int32_t p[3], int s, int t )
+{
 	if( rp_tv_mode == TRI_TRIANGLES )
 	{
-		RP_TriCorner( &rp_tv[rp_tv_count], x, y, z, s, t );
+		RP_TriCorner( &rp_tv[rp_tv_count], p, s, t );
 		if( ++rp_tv_count == 3 )
 		{
 			RP_TriEmit( &rp_tv[0], &rp_tv[1], &rp_tv[2] );
@@ -5299,7 +5334,7 @@ void RP_TriVertex( float x, float y, float z, int s, int t )
 	}
 	else if( rp_tv_mode == TRI_TRIANGLE_FAN )
 	{
-		RP_TriCorner( &rp_tv[rp_tv_count], x, y, z, s, t );
+		RP_TriCorner( &rp_tv[rp_tv_count], p, s, t );
 		if( ++rp_tv_count >= 3 )
 		{
 			RP_TriEmit( &rp_tv[0], &rp_tv[1], &rp_tv[2] );
@@ -5309,7 +5344,7 @@ void RP_TriVertex( float x, float y, float z, int s, int t )
 	}
 	else if( rp_tv_mode == TRI_TRIANGLE_STRIP )
 	{
-		RP_TriCorner( &rp_tv[rp_tv_n], x, y, z, s, t );
+		RP_TriCorner( &rp_tv[rp_tv_n], p, s, t );
 		if( ++rp_tv_n == 3 )
 			rp_tv_n = 0;
 		if( ++rp_tv_count >= 3 )

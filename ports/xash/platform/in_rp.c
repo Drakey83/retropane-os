@@ -369,7 +369,15 @@ the walk's start: two kits compare window by window.
 #define RP_WALK_STEP   "0.0333333"
 #define RP_WALK_WINDOW 250
 
+static void RP_ScoreAs( const char *what );
+
 static void RP_WalkScore( void )
+{
+	RP_ScoreAs( "rp-walk" );
+}
+
+/* The walk's score under another yardstick's name (kit 78: the cascade). */
+static void RP_ScoreAs( const char *what )
 {
 	static uint32_t frames;
 	static uint64_t t0, from;
@@ -383,8 +391,8 @@ static void RP_WalkScore( void )
 		uint32_t ms = (uint32_t)(( now - from ) / 1000u ), all = (uint32_t)(( now - t0 ) / 1000u );
 
 		/* where the player is: the same in every run when the frames are */
-		fprintf( stderr, "rp-walk: frames %u-%u took %u ms (%u.%u fps); frames 1-%u %u ms (%u.%u fps); at %d %d %d\n",
-			frames - RP_WALK_WINDOW + 1, frames, ms, RP_WALK_WINDOW * 10000u / ( ms ? ms : 1 ) / 10u,
+		fprintf( stderr, "%s: frames %u-%u took %u ms (%u.%u fps); frames 1-%u %u ms (%u.%u fps); at %d %d %d\n",
+			what, frames - RP_WALK_WINDOW + 1, frames, ms, RP_WALK_WINDOW * 10000u / ( ms ? ms : 1 ) / 10u,
 			RP_WALK_WINDOW * 10000u / ( ms ? ms : 1 ) % 10u, frames, all,
 			(uint32_t)( (uint64_t)frames * 10000u / ( all ? all : 1 ) / 10u ),
 			(uint32_t)( (uint64_t)frames * 10000u / ( all ? all : 1 ) % 10u ),
@@ -534,7 +542,7 @@ static void RP_End( void )
 		/* the fixed step and the seed from the first frame, before the
 		   map loads: its scientists and doors move from its first
 		   frame, in game time */
-		if( Sys_CheckParm( "-rpwalk" ))
+		if( Sys_CheckParm( "-rpwalk" ) || Sys_CheckParm( "-rpcascade" ))
 		{
 			COM_SetRandomSeed( 0x5EED );
 			Cvar_Set( "host_framerate", RP_WALK_STEP );
@@ -570,6 +578,50 @@ static void RP_End( void )
 		RP_Walk( now - played_from );
 		RP_WalkScore();
 	}
+	/*
+	The cascade's yardstick (R324, the owner 2026-11-17: "I want the
+	cascade to still run at 30fps"; kit 76's play: 12 fps, 4.6 at its
+	worst). -rpcascade on c1a0e: the fixed step and seed of the walk, the
+	suit and god mode at 2 s of game time, then at 4 s the map's own
+	cascade fired (`fire probe_arm_mm`, the SDK's cheat: the probe arm's
+	multi_manager, which runs the explosions, beams, shakes and debris as
+	the map scripts them), the player standing where the map starts him.
+	Every run plays the same frames; scored from the firing, window by
+	window as the walk ("rp-cascade: frames ...").
+	*/
+	if( state == 1 && Sys_CheckParm( "-rpcascade" ))
+	{
+		static double game0 = -1.0;
+		static int    stage;
+		double        ms;
+
+		if( game0 < 0.0 && CL_Active( ))
+			game0 = cl.time;
+		ms = game0 < 0.0 ? 0.0 : ( cl.time - game0 ) * 1000.0;
+		if( stage == 0 && ms > 2000.0 )
+		{
+			stage = 1;
+			/* the player held in the chamber facing the zapper (noclip: no
+			   floor needed), so the cascade is in view */
+			Cbuf_AddText( "sv_cheats 1\ngod\ngive item_suit\nnoclip\nrp_setpos 1400 624 -260 -40 0\n" ); // the zapper at 1664 624 0: ahead, 40 degrees up
+		}
+		else if( stage == 1 && ms > 4000.0 )
+		{
+			stage = 2;
+			fprintf( stderr, "rp-cascade: fired (fire probe_arm_mm) at %u ms of game time\n", (unsigned)ms );
+			Cbuf_AddText( "fire probe_arm_mm\n" );
+		}
+		else if( stage == 2 )
+		{
+			static uint32_t frames;
+
+			RP_ScoreAs( "rp-cascade" );
+			/* the run ends at one game frame, so two kits' end pictures
+			   (the 2700G's and the software's) show the same moment */
+			if( ++frames >= 2u * RP_WALK_WINDOW )
+				why = "the cascade's|500 frames are done";
+		}
+	}
 	/* R321's check (-rpcam x,y,z,pitch,yaw): the player put at one spot
 	   facing one way, held there (noclip), so the end frame shows it */
 	{
@@ -598,7 +650,9 @@ static void RP_End( void )
 			Cbuf_AddText( cmd );
 		}
 	}
-	if( state == 1 && end && now - played_from >= (uint64_t)end * 1000000u )
+	if( why )
+		; /* the cascade's frames are done */
+	else if( state == 1 && end && now - played_from >= (uint64_t)end * 1000000u )
 		why = "its time of play|is over";
 	else if( limit && now >= (uint64_t)limit * 1000000u )
 		why = "the run's time|limit is reached";

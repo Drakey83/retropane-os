@@ -1123,6 +1123,23 @@ What would overturn it: an effect visibly off by a pixel against kit 76
 in the emulator's `-rpfx` frames, or a triangle crossing the screen's
 edge that the TA does not clip (then those go the software's way too).
 
+**Kit 78 (2026-11-17, R324: the beams and the cascade's yardstick; the
+owner: "I want the cascade to still run at 30fps").** The emulator on
+c1a0e's start: 562 beam triangles a frame made in full, every one off the
+screen (the chamber's beams behind the antechamber's walls), the float
+walk ~11% of the device's frame there (kit 75's samples).
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| Which beams are made | ref_gl culls a beam by the visible set and the frustum from its two ends (`R_BeamCull`); ref_soft culls none | the visible set (`Mod_BoxVisible`) with the box grown by the beam's width and its noise's whole reach (the fractal noise stays within 16 x its scale) | the beams behind walls cost nothing; unlike GL's ends-only box, a noisy beam's edge never pops; the noise is made before the test, so the game's random numbers are the same |
+| A beam's segments | ref_soft and ref_gl: per segment a float point, noise, two cross products and normalizations, corners, then `TriTexCoord2f` and `TriBrightness` a corner | the beam's constants once in floats, the segments in 16.16 integers (normals by an integer square root and one divide), the corners straight to kit 77's fixed-point corners, the colour word from integers; sine-noise beams keep the float walk | no float call a segment; the same corners within a sub-pixel (an A/B test word, `-rpbeamfloat`, draws the float walk in the same kit) |
+| Finding an entity by name | GoldSrc and Xash: a `strcmp` down the field table, then every edict in order, ~1 KiB apart, read cold | the last field's description kept (one `strcmp`), the edicts four ahead prefetched (`PLD`); the same scan, the same first match | exact by construction; the XScale has no prefetcher, so the scan stalled on every edict |
+| The yardstick | a hand play (the owner's runs: 12 fps, 4.6 at worst) | `-rpcascade`: the walk's fixed step and seed, god mode and the suit, then the map's own cascade fired (`fire probe_arm_mm`, the SDK's cheat) at 4 s of game time; scored window by window (`rp-cascade: frames ...`) | the same frames every run, so kits compare on the scene the owner named |
+
+What would overturn it: a beam that pops at a wall's edge (the visible
+set's leaves are coarse: then a larger margin), or a cascade frame that
+differs between `-rpbeamfloat` and the fixed walk by more than a pixel.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
