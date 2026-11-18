@@ -57,6 +57,7 @@ particles, the sky, water and 2D are step 4's later sub-steps.
 
 /* kit 89 (ref_light.c): the light pre-pass's misses, by reason */
 extern unsigned rp_pre_counts[2];
+extern unsigned rp_ln_counts[2]; /* kit 90: light nodes met, surfaces tried (ref_light.c) */
 
 /* The TA's words (drivers/mbx3d: `ta::STRIP`, `ta::END`; the state
    block's mask as P4's textured draw, `ta_quads::TEXTURED_MASK`). */
@@ -253,6 +254,8 @@ static void RP_EmitReport( void )
 
 		fprintf( stderr, "rp-emit: kit 80's counts a frame: %u model light setups (%u kept), %u light traces walking %u brush models; %u physics traces testing %u entities; %u tempents; %u entity-by-name searches scanning %u edicts; %u model lights from kit 89's pre-pass (%u not in it, %u changed since)\n",
 			rp_prof[0] / f, rp_prof[1] / f, rp_prof[2] / f, rp_prof[3] / f, rp_prof[4] / f, rp_prof[5] / f, rp_prof[6] / f, rp_prof[7] / f, rp_prof[8] / f, rp_prof[9] / f, rp_pre_counts[0] / f, rp_pre_counts[1] / f );
+		fprintf( stderr, "rp-emit: kit 90's light walk a frame: %u light nodes met, %u surfaces tried\n", rp_ln_counts[0] / f, rp_ln_counts[1] / f );
+		rp_ln_counts[0] = rp_ln_counts[1] = 0;
 		rp_pre_counts[0] = rp_pre_counts[1] = 0;
 		for( int i = 0; i < 10; i++ )
 			rp_prof[i] = 0;

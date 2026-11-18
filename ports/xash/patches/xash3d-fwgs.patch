@@ -1687,7 +1687,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..60d1578 100644
+index dd01c0f..08f9699 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1779,7 +1779,7 @@ index dd01c0f..60d1578 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -364,6 +399,252 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -364,6 +399,521 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
  }
  
@@ -1826,6 +1826,275 @@ index dd01c0f..60d1578 100644
 +}
 +
 +static int rp_light_float = -1; /* -1: not asked yet */
++
++/*
++Kit 90 (R324, run 100: RP_LPlane 3.0% and RP_LightPointFix 3.8% of the
++play; the hot windows are the float-bit reads RP_LFix makes at every visit,
++four for each turned plane met and eight for each surface tried).
++Iterate (rule 0): Quake, GoldSrc and Xash walk mnode_t (52 bytes) and its
++float plane (20 more, elsewhere) in floats; kit 79 read those floats' bits
++into 16.16 at every visit (no table, no memory). Ours reads them once a
++map: a packed 24-byte light node (the plane's 16.16 distance and 2^30
++normal, the children as node numbers, the surface range) and each
++texinfo's lightmap vectors in 16.16 (Xash makes every surface's from its
++texinfo alone; checked surface by surface as the table is made). The walk
++makes the same integer sums of the same numbers in the same order, so the
++same nodes, surfaces and luxels as kit 79, with one line of memory a node
++instead of two and no conversion. c1a0e: 2169 nodes and 1210 texinfos,
++about 90 KiB, freed at the next map.
++*/
++typedef struct
++{
++	int32_t  n[3];      /* RP_LFix( normal, 30 ); an axial plane: n[0] = RP_LN_AXIAL + its type */
++	int32_t  d;         /* RP_LFix( dist, 16 ) */
++	int16_t  child[2];  /* node numbers; -1 a leaf (or none) */
++	uint16_t firstsurf, numsurf;
++} rp_lnode_t;
++
++#define RP_LN_AXIAL ( (int32_t)0x80000000 )
++
++static struct
++{
++	const mnode_t *nodes;       /* the world's (its submodels share the arrays) */
++	int            numnodes, made;
++	rp_lnode_t    *ln;          /* NULL: not makeable (the float-bit walk) */
++	int32_t      ( *lm )[2][4]; /* each texinfo's lightmap vectors, 16.16; NULL: read per surface */
++} rp_ln;
++
++/* kit 90's counts (r_emit.c prints them a frame): nodes met, surfaces tried */
++unsigned rp_ln_counts[2];
++static int rp_ln_off = -1; /* -rpnolnode: kit 79's float-bit walk (-1: not asked yet) */
++
++void RP_LightNewMap( void )
++{
++	free( rp_ln.ln );
++	free( rp_ln.lm );
++	memset( &rp_ln, 0, sizeof( rp_ln ));
++}
++
++static void RP_LnMake( const model_t *m )
++{
++	RP_LightNewMap( );
++	rp_ln.nodes = m->nodes;
++	rp_ln.numnodes = m->numnodes;
++	rp_ln.made = 1;
++	if( FBitSet( m->flags, MODEL_QBSP2 ) || m->numnodes <= 0 || m->numnodes > 32767 || !m->nodes )
++		return;
++
++	rp_lnode_t *ln = malloc( sizeof( *ln ) * m->numnodes );
++
++	if( !ln )
++		return;
++	for( int i = 0; i < m->numnodes; i++ )
++	{
++		const mnode_t  *nd = &m->nodes[i];
++		const mplane_t *pl = nd->plane;
++
++		if( !pl )
++		{
++			free( ln );
++			return;
++		}
++		ln[i].d = RP_LFix( pl->dist, 16 );
++		if( pl->type < 3 )
++		{
++			ln[i].n[0] = RP_LN_AXIAL + pl->type;
++			ln[i].n[1] = ln[i].n[2] = 0;
++		}
++		else
++		{
++			for( int k = 0; k < 3; k++ )
++				ln[i].n[k] = RP_LFix( pl->normal[k], 30 ); /* within +-2^30: never RP_LN_AXIAL's range */
++		}
++		for( int side = 0; side < 2; side++ )
++		{
++			const mnode_t *c = node_child( nd, side, m );
++
++			if( !c || c->contents < 0 )
++				ln[i].child[side] = -1;
++			else if( c >= m->nodes && c < m->nodes + m->numnodes )
++				ln[i].child[side] = (int16_t)( c - m->nodes );
++			else
++			{
++				free( ln );
++				return;
++			}
++		}
++		ln[i].firstsurf = node_firstsurface( nd, m );
++		ln[i].numsurf = node_numsurfaces( nd, m );
++	}
++	rp_ln.ln = ln;
++
++	/* the lightmap vectors by texinfo, if every surface's are its texinfo's */
++	int32_t ( *lm )[2][4] = m->numtexinfo > 0 ? malloc( sizeof( *lm ) * m->numtexinfo ) : NULL;
++	uint8_t *seen = m->numtexinfo > 0 ? calloc( m->numtexinfo, 1 ) : NULL;
++	int      ok = lm && seen && m->texinfo && m->surfaces;
++
++	for( int s = 0; ok && s < m->numsurfaces; s++ )
++	{
++		const msurface_t *surf = &m->surfaces[s];
++		int32_t           v[2][4];
++		ptrdiff_t         ti = surf->texinfo - m->texinfo;
++
++		if( !surf->info || !surf->texinfo || ti < 0 || ti >= m->numtexinfo )
++		{
++			ok = 0;
++			break;
++		}
++		for( int a = 0; a < 2; a++ )
++			for( int k = 0; k < 4; k++ )
++				v[a][k] = RP_LFix( surf->info->lmvecs[a][k], 16 );
++		if( !seen[ti] )
++		{
++			memcpy( lm[ti], v, sizeof( v ));
++			seen[ti] = 1;
++		}
++		else if( memcmp( lm[ti], v, sizeof( v )))
++			ok = 0;
++	}
++	free( seen );
++	if( ok )
++		rp_ln.lm = lm;
++	else
++		free( lm );
++}
++
++/* the light nodes for this model's nodes, or NULL (the float-bit walk) */
++static const rp_lnode_t *RP_LnFor( const model_t *m )
++{
++	if( !rp_ln.made || m->nodes != rp_ln.nodes )
++	{
++		const model_t *w = gp_cl->models[1];
++
++		if( !w || w->nodes != m->nodes )
++			return NULL; /* not the world's arrays */
++		RP_LnMake( w );
++	}
++	return rp_ln.ln;
++}
++
++static inline int32_t RP_LnPlane( const rp_lnode_t *nd, const int32_t p[3] )
++{
++	/* RP_LPlane's sums on the same numbers */
++	if( nd->n[0] < -0x60000000 )
++		return p[(uint32_t)nd->n[0] & 3u] - nd->d;
++	return (int32_t)(( (int64_t)p[0] * nd->n[0] + (int64_t)p[1] * nd->n[1] + (int64_t)p[2] * nd->n[2] ) >> 30 ) - nd->d;
++}
++
++/* one surface tried at the crossing point: 1 hit, -1 a deluxemap, 0 not it */
++static inline int RP_LightSurfFix( const msurface_t *surf, const int32_t (*lv)[4], const int32_t mid[3], int32_t midf, colorVec *cv )
++{
++	const mextrasurf_t *info = surf->info;
++
++	if( FBitSet( surf->flags, SURF_DRAWTILED ))
++		return 0; // no lightmaps
++
++	int32_t st[2];
++
++	if( lv )
++	{
++		for( int a = 0; a < 2; a++ )
++			st[a] = (int32_t)(( (int64_t)mid[0] * lv[a][0] + (int64_t)mid[1] * lv[a][1]
++				+ (int64_t)mid[2] * lv[a][2] ) >> 16 ) + lv[a][3];
++	}
++	else
++	{
++		for( int a = 0; a < 2; a++ )
++			st[a] = (int32_t)(( (int64_t)mid[0] * RP_LFix( info->lmvecs[a][0], 16 ) + (int64_t)mid[1] * RP_LFix( info->lmvecs[a][1], 16 )
++				+ (int64_t)mid[2] * RP_LFix( info->lmvecs[a][2], 16 )) >> 16 ) + RP_LFix( info->lmvecs[a][3], 16 );
++	}
++
++	if( st[0] < ( info->lightmapmins[0] << 16 ) || st[1] < ( info->lightmapmins[1] << 16 ))
++		return 0;
++
++	int32_t ds = st[0] - ( info->lightmapmins[0] << 16 );
++	int32_t dt = st[1] - ( info->lightmapmins[1] << 16 );
++
++	if( ds > ( info->lightextents[0] << 16 ) || dt > ( info->lightextents[1] << 16 ))
++		return 0;
++
++	if( surf->info->deluxemap )
++		return -1;
++
++	cv->r = cv->g = cv->b = cv->a = 0;
++	for( int k = 0; k < 3; k++ )
++		g_trace_lightspot[k] = mid[k] * ( 1.0f / 65536.0f );
++
++	if( !surf->samples )
++		return 1;
++
++	int sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
++	int smax = ( info->lightextents[0] / sample_size ) + 1;
++	int tmax = ( info->lightextents[1] / sample_size ) + 1;
++	/* Q_rint( ds / sample_size ): to the nearest, halves away from 0 (ds >= 0 here) */
++	int is = ( ds / sample_size + 0x8000 ) >> 16;
++	int it = ( dt / sample_size + 0x8000 ) >> 16;
++
++	g_trace_fraction = midf * ( 1.0f / 65536.0f );
++
++	const color24 *lm = surf->samples + it * smax + is;
++	int            size = smax * tmax;
++
++	for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
++	{
++		uint scale = g_lightstylevalue[surf->styles[map]];
++
++		cv->r += lm->r * scale;
++		cv->g += lm->g * scale;
++		cv->b += lm->b * scale;
++		lm += size; // skip to next lightmap
++	}
++	return 1;
++}
++
++/* RP_LightPointFix on the light nodes: the same walk, node by number */
++static int RP_LightPointLn( const model_t *model, const rp_lnode_t *ln, int ni, int32_t p1f, int32_t p2f, colorVec *cv, const int32_t start[3], const int32_t end[3] )
++{
++start:
++	if( ni < 0 )
++	{
++		cv->r = cv->g = cv->b = cv->a = 0;
++		return 0;
++	}
++
++	const rp_lnode_t *nd = &ln[ni];
++	int32_t           front = RP_LnPlane( nd, start );
++	int32_t           back = RP_LnPlane( nd, end );
++	int               side = front < 0;
++
++	rp_ln_counts[0]++;
++	if(( back < 0 ) == side )
++	{
++		ni = nd->child[side];
++		goto start;
++	}
++
++	/* frac = front / ( front - back ), 16.16, in [0, 1] (the signs differ) */
++	int32_t frac = (int32_t)(( (int64_t)front << 16 ) / ( (int64_t)front - back ));
++	int32_t mid[3];
++
++	for( int k = 0; k < 3; k++ )
++		mid[k] = start[k] + (int32_t)(( (int64_t)( end[k] - start[k] ) * frac ) >> 16 );
++
++	int32_t midf = p1f + (int32_t)(( (int64_t)( p2f - p1f ) * frac ) >> 16 );
++	int     r = RP_LightPointLn( model, ln, nd->child[side], p1f, midf, cv, start, mid );
++
++	if( r )
++		return r;
++
++	const msurface_t *surf = &model->surfaces[nd->firstsurf];
++
++	for( int i = 0; i < nd->numsurf; i++, surf++ )
++	{
++		rp_ln_counts[1]++;
++		r = RP_LightSurfFix( surf, rp_ln.lm ? rp_ln.lm[surf->texinfo - model->texinfo] : NULL, mid, midf, cv );
++		if( r )
++			return r;
++	}
++
++	// go down back side
++	return RP_LightPointLn( model, ln, nd->child[!side], midf, p2f, cv, mid, end );
++}
 +
 +/* As R_RecursiveLightPoint: 1 hit, 0 nothing, -1 a deluxemap (the float walk's) */
 +static int RP_LightPointFix( model_t *model, mnode_t *node, int32_t p1f, int32_t p2f, colorVec *cv, const int32_t start[3], const int32_t end[3] )
@@ -2032,7 +2301,7 @@ index dd01c0f..60d1578 100644
  /*
  =================
  R_LightVecInternal
-@@ -373,6 +654,11 @@ check bspmodels to get light from
+@@ -373,6 +923,11 @@ check bspmodels to get light from
  */
  static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t lvec )
  {
@@ -2044,7 +2313,7 @@ index dd01c0f..60d1578 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -385,18 +671,122 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -385,18 +940,122 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  	float last_fraction = 1.0f;
  	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
  	colorVec light = { 0 };
@@ -2146,7 +2415,7 @@ index dd01c0f..60d1578 100644
 +		{
 +			const model_t *m = pe->model;
 +			int            miss = 0;
- 
++
 +			for( int k = 0; k < 3 && !miss; k++ )
 +			{
 +				float lo = start[k] < end[k] ? start[k] : end[k];
@@ -2160,14 +2429,14 @@ index dd01c0f..60d1578 100644
 +				continue;
 +		}
 +#endif
-+
+ 
 +#if defined( __retropane__ )
 +		rp_prof[3]++;
 +#endif
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
  
-@@ -419,8 +809,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,8 +1078,47 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -2185,7 +2454,16 @@ index dd01c0f..60d1578 100644
 +				s16[k] = RP_LFix( start_l[k], 16 );
 +				e16[k] = RP_LFix( end_l[k], 16 );
 +			}
-+			rp_hit = RP_LightPointFix( pe->model, pnodes, 0, 1 << 16, &cv, s16, e16 );
++			if( rp_ln_off < 0 )
++				rp_ln_off = !!gEngfuncs.Sys_CheckParm( "-rpnolnode" );
++
++			const rp_lnode_t *ln = rp_ln_off ? NULL : RP_LnFor( pe->model );
++			ptrdiff_t         ni = pnodes - pe->model->nodes;
++
++			if( ln && ni >= 0 && ni < rp_ln.numnodes && pnodes->contents >= 0 )
++				rp_hit = RP_LightPointLn( pe->model, ln, (int)ni, 0, 1 << 16, &cv, s16, e16 );
++			else
++				rp_hit = RP_LightPointFix( pe->model, pnodes, 0, 1 << 16, &cv, s16, e16 );
 +			if( rp_hit < 0 )
 +			{
 +				/* a deluxemap: the float walk from the start (its light
@@ -2206,7 +2484,7 @@ index dd01c0f..60d1578 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +909,236 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +1187,260 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2346,6 +2624,30 @@ index dd01c0f..60d1578 100644
 +	return NULL;
 +}
 +
++/*
++Kit 90 (run 100: memcmp 1.5% of the play, all from here: the whole dlight
++array, 1280 bytes, compared for each of ~110 models a frame). The light
++reads a dlight only when its die is not before the frame's time
++(R_EntityDynamicLight's loop below); one out in both the snapshot and now
++adds nothing either way, so only the others are compared, whole. The time
++itself is compared with the rest.
++*/
++static int RP_PreDlSame( double time )
++{
++	float time_f = RP_TimeCeil( time );
++
++	for( uint l = 0; l < MAX_DLIGHTS; l++ )
++	{
++		const dlight_t *a = &rp_pre_dl[l], *b = &gp_dlights[l];
++
++		if( RP_FloatLess( a->die, time_f ) && RP_FloatLess( b->die, time_f ))
++			continue;
++		if( memcmp( a, b, sizeof( *a )))
++			return 0;
++	}
++	return 1;
++}
++
 +static int RP_PreSame( const rp_pre_t *p, const cl_entity_t *ent, qboolean draw_world, double time )
 +{
 +	return p->model == ent->model
@@ -2357,7 +2659,7 @@ index dd01c0f..60d1578 100644
 +		&& !memcmp( &p->dynamic, &r_dynamic->value, sizeof( float ))
 +		&& !memcmp( &p->direct, &v_direct->value, sizeof( float ))
 +		&& p->key == RP_LightKey( )
-+		&& !memcmp( rp_pre_dl, gp_dlights, sizeof( rp_pre_dl ));
++		&& RP_PreDlSame( time );
 +}
 +
 +void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_world, double time, vec3_t lightspot, vec3_t lightvec );
@@ -2443,7 +2745,7 @@ index dd01c0f..60d1578 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -499,6 +1149,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -499,6 +1451,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  {
  	if( !plight || !ent )
  		return;
@@ -2481,7 +2783,7 @@ index dd01c0f..60d1578 100644
  
  	if( !draw_world || r_fullbright->value || FBitSet( ent->curstate.effects, EF_FULLBRIGHT ))
  	{
-@@ -520,11 +1201,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1503,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -2521,7 +2823,7 @@ index dd01c0f..60d1578 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1246,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1548,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -2565,7 +2867,7 @@ index dd01c0f..60d1578 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -562,6 +1301,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +1603,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -2573,7 +2875,7 @@ index dd01c0f..60d1578 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +1344,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +1646,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2594,7 +2896,7 @@ index dd01c0f..60d1578 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1375,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1677,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
@@ -3291,10 +3593,10 @@ index 8a82400..024ca73 100644
  		}
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..08ae21c 100644
+index 1a7efd6..49fb6f5 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,69 @@ typedef struct
+@@ -992,6 +992,70 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -3303,6 +3605,7 @@ index 1a7efd6..08ae21c 100644
 +void RP_EmitInit( void );
 +void RP_EmitFrame( void );
 +void RP_EmitNewMap( void );
++void RP_LightNewMap( void ); // ref/common/ref_light.c, kit 90
 +// ref_rp's 2D layer (the HUD, text, menus, the loading plaque)
 +struct image_s;
 +void RP_Emit2DColour( float r, float g, float b, float a );
@@ -3365,7 +3668,7 @@ index 1a7efd6..08ae21c 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..e79c01f 100644
+index 2c644f6..6ef542d 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
@@ -3507,15 +3810,16 @@ index 2c644f6..e79c01f 100644
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1317,7 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1317,8 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
 +	RP_EmitNewMap(); // ref_rp: its per-map tables (the world is always mod_known[0])
++	RP_LightNewMap(); // kit 90: the light nodes are the old map's
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1464,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1465,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  
