@@ -616,6 +616,11 @@ static void RP_End( void )
 			static uint32_t frames;
 
 			RP_ScoreAs( "rp-cascade" );
+			/* step 4 said again at the heavy half's start: the sampled
+			   run's "play" is then frames 251-500 alone (the runner marks
+			   the samples at each step line) */
+			if( frames + 1u == RP_WALK_WINDOW )
+				fprintf( stderr, "rp-step: 4/5 The cascade's|heavy half: frames|251 to 500.\n" );
 			/* the run ends at one game frame, so two kits' end pictures
 			   (the 2700G's and the software's) show the same moment */
 			if( ++frames >= 2u * RP_WALK_WINDOW )

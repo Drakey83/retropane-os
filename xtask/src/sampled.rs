@@ -260,7 +260,13 @@ pub fn run(file: &Path, modules: &Path, runner: &Path) -> Result<String, String>
         ("server", &server),
         ("runner", &runner),
     ])?;
-    Ok(report(&samples, &code, 25))
+    // RETROPANE_PROFILE_TOP: a longer list (a flat profile's tail, R324)
+    let top = std::env::var("RETROPANE_PROFILE_TOP")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| (1..=1000).contains(&n))
+        .unwrap_or(25);
+    Ok(report(&samples, &code, top))
 }
 
 #[cfg(test)]

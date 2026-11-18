@@ -1572,7 +1572,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..9221e8d 100644
+index dd01c0f..73222d2 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1664,7 +1664,226 @@ index dd01c0f..9221e8d 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -489,6 +524,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -364,6 +399,148 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+ 	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
+ }
+ 
++#if defined( __retropane__ )
++/*
++Kit 79 (R324, the emulator's cascade: the light probes ~10% of a frame,
++each moving model five floor traces a frame, every node a float plane
++test, a float divide and lerp, every surface two float dot products).
++Iterate (rule 0): GoldSrc, Quake and Xash trace the light ray down the BSP
++in floats; ours walks the same nodes in the same order in 16.16 integers,
++each plane's numbers read from their float bits as they are met (no table,
++no memory), the crossing point by one integer divide, the luxel picked
++from the same lightmap vectors in 16.16. The same nodes and surfaces; the
++luxel within one at a boundary (the float rounding). Deluxemaps (none in
++Half-Life's maps) keep the float walk; -rplightfloat keeps it for all.
++*/
++static inline int32_t RP_LFix( float f, int q )
++{
++	/* f x 2^q from the float's bits (no software float call) */
++	uint32_t u, m;
++	int      e, v;
++
++	__builtin_memcpy( &u, &f, sizeof( u ));
++	__asm__( "" : "+r"( u ));
++	e = (int)( u >> 23 & 0xFF ) - 127 + q; /* the exponent of f x 2^q */
++	if( e < 0 )
++		return 0;
++	if( e > 30 )
++		return u >> 31 ? -0x7FFFFFFF : 0x7FFFFFFF;
++	m = ( u & 0x007FFFFFu ) | 0x00800000u;
++	v = (int)( e >= 23 ? m << ( e - 23 ) : m >> ( 23 - e ));
++	return u >> 31 ? -v : v;
++}
++
++/* the point's distance from the plane, 16.16 */
++static inline int32_t RP_LPlane( const mplane_t *pl, const int32_t p[3] )
++{
++	int32_t d = RP_LFix( pl->dist, 16 );
++
++	if( pl->type < 3 )
++		return p[pl->type] - d;
++	return (int32_t)(( (int64_t)p[0] * RP_LFix( pl->normal[0], 30 ) + (int64_t)p[1] * RP_LFix( pl->normal[1], 30 )
++		+ (int64_t)p[2] * RP_LFix( pl->normal[2], 30 )) >> 30 ) - d;
++}
++
++static int rp_light_float = -1; /* -1: not asked yet */
++
++/* As R_RecursiveLightPoint: 1 hit, 0 nothing, -1 a deluxemap (the float walk's) */
++static int RP_LightPointFix( model_t *model, mnode_t *node, int32_t p1f, int32_t p2f, colorVec *cv, const int32_t start[3], const int32_t end[3] )
++{
++start:
++	if( !node || node->contents < 0 )
++	{
++		cv->r = cv->g = cv->b = cv->a = 0;
++		return 0;
++	}
++
++	int32_t front = RP_LPlane( node->plane, start );
++	int32_t back = RP_LPlane( node->plane, end );
++	int     side = front < 0;
++
++	if(( back < 0 ) == side )
++	{
++		node = node_child( node, side, model );
++		goto start;
++	}
++
++	/* frac = front / ( front - back ), 16.16, in [0, 1] (the signs differ) */
++	int32_t frac = (int32_t)(( (int64_t)front << 16 ) / ( (int64_t)front - back ));
++	int32_t mid[3];
++
++	for( int k = 0; k < 3; k++ )
++		mid[k] = start[k] + (int32_t)(( (int64_t)( end[k] - start[k] ) * frac ) >> 16 );
++
++	int32_t midf = p1f + (int32_t)(( (int64_t)( p2f - p1f ) * frac ) >> 16 );
++	int     r = RP_LightPointFix( model, node_child( node, side, model ), p1f, midf, cv, start, mid );
++
++	if( r )
++		return r;
++
++	int firstsurface = node_firstsurface( node, model );
++	int numsurfaces = node_numsurfaces( node, model );
++
++	for( int i = 0; i < numsurfaces; i++ )
++	{
++		const msurface_t   *surf = &model->surfaces[firstsurface + i];
++		const mextrasurf_t *info = surf->info;
++
++		if( FBitSet( surf->flags, SURF_DRAWTILED ))
++			continue; // no lightmaps
++
++		int32_t st[2];
++
++		for( int a = 0; a < 2; a++ )
++			st[a] = (int32_t)(( (int64_t)mid[0] * RP_LFix( info->lmvecs[a][0], 16 ) + (int64_t)mid[1] * RP_LFix( info->lmvecs[a][1], 16 )
++				+ (int64_t)mid[2] * RP_LFix( info->lmvecs[a][2], 16 )) >> 16 ) + RP_LFix( info->lmvecs[a][3], 16 );
++
++		if( st[0] < ( info->lightmapmins[0] << 16 ) || st[1] < ( info->lightmapmins[1] << 16 ))
++			continue;
++
++		int32_t ds = st[0] - ( info->lightmapmins[0] << 16 );
++		int32_t dt = st[1] - ( info->lightmapmins[1] << 16 );
++
++		if( ds > ( info->lightextents[0] << 16 ) || dt > ( info->lightextents[1] << 16 ))
++			continue;
++
++		if( surf->info->deluxemap )
++			return -1;
++
++		cv->r = cv->g = cv->b = cv->a = 0;
++		for( int k = 0; k < 3; k++ )
++			g_trace_lightspot[k] = mid[k] * ( 1.0f / 65536.0f );
++
++		if( !surf->samples )
++			return 1;
++
++		int sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
++		int smax = ( info->lightextents[0] / sample_size ) + 1;
++		int tmax = ( info->lightextents[1] / sample_size ) + 1;
++		/* Q_rint( ds / sample_size ): to the nearest, halves away from 0 (ds >= 0 here) */
++		int is = ( ds / sample_size + 0x8000 ) >> 16;
++		int it = ( dt / sample_size + 0x8000 ) >> 16;
++
++		g_trace_fraction = midf * ( 1.0f / 65536.0f );
++
++		const color24 *lm = surf->samples + it * smax + is;
++		int            size = smax * tmax;
++
++		for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
++		{
++			uint scale = g_lightstylevalue[surf->styles[map]];
++
++			cv->r += lm->r * scale;
++			cv->g += lm->g * scale;
++			cv->b += lm->b * scale;
++			lm += size; // skip to next lightmap
++		}
++		return 1;
++	}
++
++	// go down back side
++	return RP_LightPointFix( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
++}
++#endif
++
+ /*
+ =================
+ R_LightVecInternal
+@@ -396,6 +573,30 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+ 
+ 		if( !pe->model || pe->model->type != mod_brush )
+ 			continue; // skip non-bsp models
++#if defined( __retropane__ )
++		/* kit 79 (R324: every light trace walked every brush entity near
++		   the player, ~100 moving models a frame in the cascade, five
++		   traces each): a brush model whose bounds the ray's box misses
++		   cannot be hit (its surfaces lie inside them), so it is passed
++		   by, exactly; the bounds grown by a unit, the radius if turned */
++		if( i > 0 )
++		{
++			const model_t *m = pe->model;
++			int            miss = 0;
++
++			for( int k = 0; k < 3 && !miss; k++ )
++			{
++				float lo = start[k] < end[k] ? start[k] : end[k];
++				float hi = start[k] < end[k] ? end[k] : start[k];
++				float bl = VectorIsNull( pe->angles ) ? m->mins[k] : -m->radius;
++				float bh = VectorIsNull( pe->angles ) ? m->maxs[k] : m->radius;
++
++				miss = hi < pe->origin[k] + bl - 1.0f || lo > pe->origin[k] + bh + 1.0f;
++			}
++			if( miss )
++				continue;
++		}
++#endif
+ 
+ 		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
+ 		vec3_t offset, start_l, end_l;
+@@ -419,8 +620,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+ 		g_trace_fraction = 1.0f;
+ 
+ 		colorVec cv;
++#if defined( __retropane__ )
++		if( rp_light_float < 0 )
++			rp_light_float = !!gEngfuncs.Sys_CheckParm( "-rplightfloat" );
++		int rp_hit = -1;
++
++		if( !rp_light_float )
++		{
++			int32_t s16[3], e16[3];
++
++			for( int k = 0; k < 3; k++ )
++			{
++				s16[k] = RP_LFix( start_l[k], 16 );
++				e16[k] = RP_LFix( end_l[k], 16 );
++			}
++			rp_hit = RP_LightPointFix( pe->model, pnodes, 0, 1 << 16, &cv, s16, e16 );
++			if( rp_hit < 0 )
++			{
++				/* a deluxemap: the float walk from the start (its light
++				   vector too) */
++				VectorClear( g_trace_lightspot );
++				VectorClear( g_trace_lightvec );
++				g_trace_fraction = 1.0f;
++			}
++		}
++		if( rp_hit < 0 )
++			rp_hit = R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l );
++		if( !rp_hit )
++			continue;
++#else
+ 		if( !R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l ))
+ 			continue;	// didn't hit anything
++#endif
+ 
+ 		if( g_trace_fraction < last_fraction )
+ 		{
+@@ -489,6 +720,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -1740,7 +1959,7 @@ index dd01c0f..9221e8d 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +624,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +820,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -1770,7 +1989,7 @@ index dd01c0f..9221e8d 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -562,6 +683,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +879,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -1778,7 +1997,7 @@ index dd01c0f..9221e8d 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +726,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +922,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -1799,7 +2018,7 @@ index dd01c0f..9221e8d 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +757,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +953,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  

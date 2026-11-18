@@ -1140,6 +1140,21 @@ What would overturn it: a beam that pops at a wall's edge (the visible
 set's leaves are coarse: then a larger margin), or a cascade frame that
 differs between `-rpbeamfloat` and the fixed walk by more than a pixel.
 
+**Kit 79 (2026-11-17, R324: the light probes).** Kit 78 on the X51v,
+`-rpcascade`: frames 1-250 21.1 fps, 251-500 6.9 fps (the debris: ~200
+model meshes a frame, 123 model parts); the light probes ~15% of the run
+(`R_RecursiveLightPoint`, `R_LightVecInternal`, their float calls): each
+moving model five floor traces a frame (one for the light, four for its
+direction), each through every brush entity near the player too.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| The trace down the BSP | GoldSrc, Quake and Xash: floats, a plane test, a divide and a lerp a node, two dot products a surface | the same nodes in the same order in 16.16 integers, each plane's numbers read from their float bits as met (no table, no memory), one integer divide a crossing, the luxel from the same lightmap vectors; deluxemaps (none in Half-Life) keep the float walk; `-rplightfloat` the A/B | no float call a node; the emulator's cascade frame pixel-identical to the float walk's |
+| Which brush models a trace visits | Xash's extended lighting (on by default): every brush physent, each set up and walked | a brush model whose bounds (a unit wider; its radius if turned) the ray's box misses is passed by: it cannot be hit | exact by construction; most brush entities are nowhere near a given floor trace |
+
+Measured (kit 79 on the X51v): frames 1-250 22.4 fps, 251-500 7.8 fps
+(kit 78: 21.1 and 6.9).
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
