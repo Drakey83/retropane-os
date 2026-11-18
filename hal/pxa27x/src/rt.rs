@@ -1494,6 +1494,17 @@ static mut SAMPLE_BUF: *mut u8 = core::ptr::null_mut();
 static mut SAMPLE_CAP: u32 = 0;
 static mut SAMPLE_N: u32 = 0;
 static mut SAMPLE_FULL: u32 = 0;
+/// The event sampler's period ([`start_event_sampling`]): a sample every
+/// this many events counted by `PMN0`; 0 while the tick samples (or
+/// nothing does).
+static mut SAMPLE_EVERY: u32 = 0;
+/// The event sampler's running totals ([`event_totals`]): core cycles, the
+/// sampled event, then `PMN1`-`PMN3`'s events; and the cycle counter at the
+/// last sample.
+#[cfg(feature = "event-sampling")]
+static mut EVENT_TOTALS: [u64; 5] = [0; 5];
+#[cfg(feature = "event-sampling")]
+static mut EVENT_CCNT: u32 = 0;
 /// Bytes a sample takes: the interrupted instruction, then the return
 /// address, each a little-endian word.
 pub const SAMPLE_BYTES: usize = 8;
@@ -1518,6 +1529,143 @@ pub fn start_sampling(buf: &'static mut [u8], hz: u32) {
     start_tick(hz);
 }
 
+/// Samples where the program is every `every` events `event` (an XScale
+/// event number, `pmu::Event`) into `buf`, as [`start_sampling`] does on
+/// the tick: `PMN0` counts the event from `-every` up and its overflow
+/// interrupt (the interrupt controller's source 12) takes the sample and
+/// starts it again. With `event` 0x02 (cycles stalled on a load in flight)
+/// the samples fall where the program waits on memory, not merely where it
+/// runs; with 0x0B, where its data-cache misses are. Iterate, don't imitate
+/// (rule 0, R324 run 88: the frames are bus-bound): a timer profile ranks
+/// functions by time, which hides which of them wait on the bus; Linux's
+/// `perf record -e` samples on a counter's overflow the same way, here
+/// with no kernel or driver under it. The tick's own work (its hook) goes
+/// on if started; it no longer samples. The monitor's other counters are
+/// left to count (`PMN1`: data-cache misses, `PMN2`: instructions), and
+/// the cycle counter is not reset.
+#[cfg(feature = "event-sampling")]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn start_event_sampling(buf: &'static mut [u8], event: u8, every: u32) {
+    irq_disable();
+    let every = every.max(1_000);
+    // SAFETY: IRQs are masked, so no handler runs; `buf` is held until
+    // `stop_sampling` gives it back.
+    unsafe {
+        core::ptr::addr_of_mut!(SAMPLE_CAP).write((buf.len() / SAMPLE_BYTES) as u32);
+        core::ptr::addr_of_mut!(SAMPLE_N).write_volatile(0);
+        core::ptr::addr_of_mut!(SAMPLE_FULL).write(0);
+        core::ptr::addr_of_mut!(SAMPLE_BUF).write(buf.as_mut_ptr());
+        core::ptr::addr_of_mut!(SAMPLE_EVERY).write(every);
+        core::ptr::addr_of_mut!(EVENT_TOTALS).write([0; 5]);
+        core::ptr::addr_of_mut!(EVENT_CCNT).write(cycles());
+    }
+    // PMN1-PMN3 count the other bus waits for [`event_totals`]: cycles with
+    // the write and fill buffers full, cycles the I-cache could not
+    // deliver, and data-cache misses.
+    let sel = u32::from(event) | 0x08 << 8 | 0x01 << 16 | 0x0B << 24;
+    // SAFETY: the performance monitor's registers (CP14; XScale core:
+    // EVTSEL c8, c1; PMNC c0, c1 with E on and nothing reset, the cycle
+    // counter running as `cycle_counter_start` left it; PMN0 c0, c2; the
+    // overflow flags c5, c1, written 1 to clear; INTEN c4, c1, bit 1
+    // PMN0's). Only the sampler uses the event counters in a runner.
+    unsafe {
+        core::arch::asm!(
+            "mcr p14, 0, {sel}, c8, c1, 0",
+            "mcr p14, 0, {on}, c0, c1, 0",
+            "mcr p14, 0, {start}, c0, c2, 0",
+            "mcr p14, 0, {z}, c1, c2, 0",
+            "mcr p14, 0, {z}, c2, c2, 0",
+            "mcr p14, 0, {z}, c3, c2, 0",
+            "mcr p14, 0, {all}, c5, c1, 0",
+            "mcr p14, 0, {en}, c4, c1, 0",
+            sel = in(reg) sel,
+            on = in(reg) 1u32,
+            start = in(reg) every.wrapping_neg(),
+            all = in(reg) 0x1Fu32,
+            z = in(reg) 0u32,
+            en = in(reg) 0b10u32,
+            options(nostack),
+        );
+    }
+    ensure_intc();
+    intc().enable(crate::soc::irq::PMU);
+    irq_enable();
+}
+
+/// The event sampler's overflow: the flags cleared, `PMN0` started again
+/// from `-every`, and a sample; IRQs masked (the IRQ handler).
+#[cfg(feature = "event-sampling")]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+fn event_sample(frame: *const u32) {
+    // SAFETY: only the IRQ handler and (IRQs masked) the start and stop
+    // touch it.
+    let every = unsafe { core::ptr::addr_of!(SAMPLE_EVERY).read() };
+    let flags: u32;
+    // SAFETY: the overflow flags read and cleared (CP14 c5, c1).
+    unsafe {
+        core::arch::asm!(
+            "mrc p14, 0, {f}, c5, c1, 0",
+            "mcr p14, 0, {f}, c5, c1, 0",
+            f = out(reg) flags,
+            options(nostack),
+        );
+    }
+    if every != 0 && flags & 0b10 != 0 {
+        // SAFETY: PMN0 written (CP14 c0, c2).
+        unsafe {
+            core::arch::asm!(
+                "mcr p14, 0, {v}, c0, c2, 0",
+                v = in(reg) every.wrapping_neg(),
+                options(nostack)
+            );
+        }
+        let (a, b, c): (u32, u32, u32);
+        // SAFETY: PMN1-PMN3 read and zeroed (CP14 c1-c3, c2; PMN3 at c3, c2
+        // as the XScale manual has it).
+        unsafe {
+            core::arch::asm!(
+                "mrc p14, 0, {a}, c1, c2, 0",
+                "mrc p14, 0, {b}, c2, c2, 0",
+                "mrc p14, 0, {c}, c3, c2, 0",
+                "mcr p14, 0, {z}, c1, c2, 0",
+                "mcr p14, 0, {z}, c2, c2, 0",
+                "mcr p14, 0, {z}, c3, c2, 0",
+                a = out(reg) a,
+                b = out(reg) b,
+                c = out(reg) c,
+                z = in(reg) 0u32,
+                options(nostack),
+            );
+        }
+        let now = cycles();
+        // SAFETY: the IRQ handler is the only writer while sampling.
+        unsafe {
+            let t = &mut *core::ptr::addr_of_mut!(EVENT_TOTALS);
+            let last = core::ptr::addr_of_mut!(EVENT_CCNT).replace(now);
+            t[0] += u64::from(now.wrapping_sub(last));
+            t[1] += u64::from(every);
+            t[2] += u64::from(a);
+            t[3] += u64::from(b);
+            t[4] += u64::from(c);
+        }
+        sample(frame);
+    }
+}
+
+/// The event sampler's totals so far, as of its last sample: core cycles,
+/// the sampled event, cycles with the data cache's buffers full, cycles
+/// the I-cache could not deliver, and data-cache misses. Zero when the
+/// event sampler isn't running.
+#[must_use]
+#[cfg(feature = "event-sampling")]
+pub fn event_totals() -> [u64; 5] {
+    let was = irq_save();
+    // SAFETY: IRQs masked: the handler can't write it meanwhile.
+    let t = unsafe { core::ptr::addr_of!(EVENT_TOTALS).read() };
+    irq_restore(was);
+    t
+}
+
 /// Samples taken so far.
 #[must_use]
 pub fn samples_taken() -> u32 {
@@ -1528,9 +1676,19 @@ pub fn samples_taken() -> u32 {
 /// Stops the sampler, its tick, and IRQs (as before it started): the
 /// buffer back, the samples in it, and the ticks that found it full.
 /// `None` when it was not running.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn stop_sampling() -> Option<(&'static mut [u8], u32, u32)> {
     irq_disable();
     stop_tick();
+    // SAFETY: IRQs masked: the event sampler's overflow interrupt off at
+    // the counter (INTEN 0) and at the controller, its period cleared.
+    #[cfg(feature = "event-sampling")]
+    unsafe {
+        if core::ptr::addr_of_mut!(SAMPLE_EVERY).replace(0) != 0 {
+            core::arch::asm!("mcr p14, 0, {z}, c4, c1, 0", z = in(reg) 0u32, options(nostack));
+            intc().disable(crate::soc::irq::PMU);
+        }
+    }
     // SAFETY: IRQs are masked and the tick stopped: nothing else touches
     // the sampler; the pointer and length are the `&'static mut [u8]`
     // `start_sampling` was given and kept.
@@ -1769,7 +1927,10 @@ fn rp_irq(frame: *const u32) {
             let t = core::ptr::addr_of_mut!(TICKS);
             t.write_volatile(t.read_volatile().wrapping_add(1));
         }
-        sample(frame);
+        // SAFETY: a word only written with IRQs masked.
+        if unsafe { core::ptr::addr_of!(SAMPLE_EVERY).read() } == 0 {
+            sample(frame);
+        }
         // SAFETY: written only with IRQs masked (`set_tick_hook`).
         if let Some(h) = unsafe { core::ptr::addr_of!(TICK_HOOK).read() } {
             h();
@@ -1780,7 +1941,11 @@ fn rp_irq(frame: *const u32) {
     // shared OS timer line when it isn't the run limit (channels 5-11 as an
     // IRQ, `rp-noise`): left out, it was never masked and fired forever
     // (2026-10-15, found in the emulator).
-    let other = pending & !(1 << crate::soc::irq::OST1);
+    #[cfg(feature = "event-sampling")]
+    if pending & (1 << crate::soc::irq::PMU) != 0 {
+        event_sample(frame);
+    }
+    let other = pending & !(1 << crate::soc::irq::OST1 | 1 << crate::soc::irq::PMU);
     if other != 0 {
         // SAFETY: we're in the IRQ handler with IRQs masked, and main code
         // only touches DISPATCH with IRQs masked, so this access is exclusive.
@@ -1982,7 +2147,7 @@ pub fn wait_any_signal() {
 }
 
 /// Whether IRQs are enabled at the CPU (for code that must restore it).
-pub(crate) fn irqs_enabled_now() -> bool {
+pub fn irqs_enabled_now() -> bool {
     irqs_enabled()
 }
 

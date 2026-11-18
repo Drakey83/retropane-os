@@ -118,6 +118,9 @@ pub struct Library<'a> {
     /// was just written (the CPU's caches hold the bytes that were there
     /// before; `rp_hal_pxa27x::cpu::clean_invalidate_range`).
     pub fit: fn(u32, u32),
+    /// The program's code hint (`rp_code_hint`): `true` while its frames
+    /// run much code (the runner's I-cache lock, R324).
+    pub hint: fn(bool),
 }
 
 /// The longest path of a module file (its folder, a slash, its name).
@@ -549,6 +552,12 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
 
     fn gfx_close(&mut self) -> Result<(), Errno> {
         self.screen.as_mut().ok_or(Errno::NoSys)?.close()
+    }
+
+    fn code_hint(&mut self, hot: bool) {
+        if let Some(l) = self.library.as_ref() {
+            (l.hint)(hot);
+        }
     }
 
     fn snd_open(&mut self, rate: u32, channels: u8) -> Result<(), Errno> {
@@ -1166,6 +1175,7 @@ mod tests {
                 modules: Modules::new(pool, BASE, RUNNER),
                 folder: b"rp-game",
                 fit: |at, len| FITTED.lock().unwrap().push((at, len)),
+                hint: |_| {},
             });
             assert!(s.modules().is_some());
             let m = s.module_load(b"server.rpm").expect("loaded");

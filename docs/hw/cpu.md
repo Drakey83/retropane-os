@@ -141,3 +141,30 @@ missed the cache). Each locked entry leaves one fewer of the 32 for
 everything else: locking pays for pages that are hot but would be evicted
 (the vectors, the kernel's stacks, KData), a choice for the memory ADR.
 
+
+## The performance monitor's interrupt and I-cache locking (2026-11-18, R324)
+
+**Verified on the X51v (Half-Life runs 89-95, port-runner):**
+
+- **An event counter's overflow interrupts at the interrupt controller's
+  source 12** (Linux's `IRQ_PMU`). `INTEN` is CP14 c4, c1 (bit 1: `PMN0`);
+  the overflow flags are c5, c1 (written 1 to clear); `PMN0`-`PMN3` are c0-c3,
+  c2 (`PMN3` at c3, c2, as Intel's manual has it). `rt::start_event_sampling`
+  preloads `PMN0` with `-every`, takes a sample on each overflow and preloads
+  it again. Run 89: 40,903 samples, one every 200,000 stall cycles (event 0x02).
+- **Fetch-and-lock of I-cache lines** (`mcr p15, 0, va, c9, c1, 0`; unlock
+  all `c9, c1, 1`; `cpu::lock_icache_line` and `cpu::unlock_icache`).
+  Runs 93-95: 512 and 741 lines locked (16 and 23 KiB, at most 24 a set).
+  The locked code's I-cache stalls fell (run 93: the heavy half's stall
+  cycles 7.2 to 6.0 billion), and every run drew the same last picture.
+
+**What the events say about Half-Life (run 90, the cascade's heavy half at
+624 MHz):** of 16.0 billion cycles, the I-cache could not deliver for 44.5%,
+loads in flight stalled 19.1% (event 0x02), and the write and fill buffers
+were full 3.7% (event 0x08). There were 6 data-cache misses per thousand
+cycles. The calm half: 22%, 33% and 8%. Event 0x01 counts cycles, not
+misses, so a stall that overlaps another counts in both.
+
+**Not modellable in the emulator:** its event counters read 0, so no event
+sample is ever taken there. Its I-cache has no lock: the lock instructions
+are accepted and do nothing.

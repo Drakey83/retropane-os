@@ -178,6 +178,46 @@ pub fn lock_dtlb(mva: u32) {
     cpwait();
 }
 
+/// Fetches the I-cache line holding `mva` and locks it there (CP15 c9, c1,
+/// 0; Intel's XScale core manual, "locking instructions in the
+/// instruction cache": a set holds at most 28 locked lines of its 32, and
+/// a lock past that is not taken). The line must hold code that won't
+/// change while locked: [`unlock_icache`] before any code is loaded.
+/// R324 run 92 (2026-11-18): the cascade's heavy frames lose 44.5% of
+/// their cycles to the I-cache. A claim until the X51v's counters show
+/// the locked code's stalls gone.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn lock_icache_line(mva: u32) {
+    // SAFETY: cache maintenance only: the line is fetched from memory as
+    // an ordinary miss would, and kept.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {a}, c9, c1, 0",
+            a = in(reg) mva & !(LINE - 1),
+            options(nostack)
+        );
+    }
+    cpwait();
+}
+
+/// Unlocks every locked I-cache line ([`lock_icache_line`]) and discards
+/// the I-cache and the branch target buffer, so nothing locked outlives
+/// the code it held.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn unlock_icache() {
+    // SAFETY: cache maintenance only; the discarded lines are fetched
+    // again from memory.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {z}, c9, c1, 1", // unlock the I-cache
+            "mcr p15, 0, {z}, c7, c5, 0", // invalidate the I-cache and BTB
+            z = in(reg) 0u32,
+            options(nostack)
+        );
+    }
+    cpwait();
+}
+
 /// Unlocks every locked D-TLB entry ([`lock_dtlb`]; the same caveat).
 #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn unlock_dtlb() {

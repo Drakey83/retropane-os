@@ -653,6 +653,10 @@ fn answer(name: &str) -> Answer {
     }
 }
 
+/// An experiment's optimisation flag for the game's parts in place of
+/// `-O2` (R324: the heavy frames are I-cache bound).
+pub const OPT_ENV: &str = "RETROPANE_XASH_OPT";
+
 /// What one part came to.
 struct Built {
     name: &'static str,
@@ -682,6 +686,21 @@ fn compile(
     // emulator does not trap misaligned loads, R280). Small copies that
     // matter are `__builtin_memcpy` from aligned locals instead.
     let mut common = cc::flag_strings(cc::TARGET_FLAGS);
+    // R324 run 90 (2026-11-18): the cascade's heavy frames lose 44.5% of
+    // their cycles to the I-cache (the code each debris piece runs through
+    // is far past its 32 KiB), so the game's optimisation level is an
+    // experiment's (`RETROPANE_XASH_OPT`, e.g. `-Os`: smaller code, more of
+    // the hot path cached), measured against `-O2` on the X51v.
+    if let Ok(opt) = std::env::var(OPT_ENV) {
+        let opt = opt.trim().to_string();
+        if !opt.is_empty() {
+            for f in &mut common {
+                if f == "-O2" {
+                    f.clone_from(&opt);
+                }
+            }
+        }
+    }
     // The engine's own code is not ours to make warning-free.
     common.push("-w".into());
     // A literal like `0.5` is a float, not a double (ref-rp.md "Lever 2"):

@@ -22,7 +22,7 @@ code read but not run), **guess** (an inference worth testing),
 
 | Part | What | Interface | Page |
 |---|---|---|---|
-| Intel **PXA270** (XScale, ARMv5TE, CPU ID `0x69054117`) | the processor: 91-624 MHz, 256 KiB internal SRAM, iWMMXt | — | [clocks.md](clocks.md) |
+| Intel **PXA270** (XScale, ARMv5TE, CPU ID `0x69054117`) | the processor: 91-624 MHz, 256 KiB internal SRAM, iWMMXt; its performance monitor's overflow interrupt (source 12) and I-cache line locking verified 2026-11-18 ([cpu.md](cpu.md)) | — | [clocks.md](clocks.md) |
 | 64 MiB **SDRAM** | main memory at `0xA8000000` (SDCS2) | memory controller | [memory-map.md](memory-map.md) |
 | **DiskOnChip G3** | built-in flash (Windows Mobile's ROM and file store) | CS0 | [memory-map.md](memory-map.md) |
 | Intel **2700G** ("Marathon"): MBX Lite 3D core, 2D engine, MVED1 video decoder, display controller, 16 MiB local memory | graphics; drives the panel | CS3 (VLIO, 32-bit), interrupt GPIO85 | [2700g.md](2700g.md) |

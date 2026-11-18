@@ -21,7 +21,7 @@ required-features = ["c"]
 [target.'cfg(target_os = "none")'.dependencies]
 rp-image = { path = "../../boot/image" }
 # past-rating: C2's turbo multiplier past 624 MHz, a test run's `-rpcpu` only
-rp-hal-pxa27x = { path = "../../hal/pxa27x", features = ["past-rating"] }
+rp-hal-pxa27x = { path = "../../hal/pxa27x", features = ["past-rating", "event-sampling"] }
 rp-hal-cabi = { path = "../../hal/cabi" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }

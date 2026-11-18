@@ -198,6 +198,100 @@ fn with_extra(base: String, extra: Option<&str>) -> String {
     }
 }
 
+/// An experiment's I-cache lock (R324 run 92: the cascade's heavy frames
+/// lose 44.5% of their cycles to the I-cache): the KiB of the modules'
+/// code to lock, taken from [`LOCK_LIST`] in its order, into the card's
+/// `lock.bin` (the runner's `lock_icache`).
+pub const LOCK_KIB: &str = "RETROPANE_XASH_LOCK_KIB";
+
+/// The lock's size when [`LOCK_KIB`] is not set: 24 KiB (R324 runs 94
+/// and 95 on the X51v, held only while the engine's frames are
+/// model-heavy: the cascade's heavy half 10.4 fps at 16 KiB, 10.5 at 24,
+/// 9.6 with none; its calm half unchanged at 23.3). `0` turns it off.
+pub const LOCK_KIB_DEFAULT: u32 = 24;
+
+/// The functions to lock, most I-cache stalls a byte first: `module
+/// symbol` a line (the symbol as the ELF names it), `#` a comment.
+pub const LOCK_LIST: &str = "ports/xash/icache-lock.txt";
+
+/// `lock.bin` for [`LOCK_LIST`]'s `list`, up to `kib` KiB of code (each
+/// function whole, in 32-byte lines): each function's address and length
+/// as two little-endian words, from the kit's ELFs in `elf` (linked at the
+/// addresses they load at). A name no ELF has is an error: the list is
+/// stale. Also what it came to, in words.
+///
+/// # Errors
+/// `llvm-nm` failed, or a listed function is not in its module.
+pub fn lock_ranges(list: &str, elf: &Path, kib: u32) -> Result<(Vec<u8>, String), String> {
+    use std::collections::HashMap;
+    let mut table: HashMap<(String, String), (u32, u32)> = HashMap::new();
+    for m in ["engine", "client", "server"] {
+        let out = std::process::Command::new(crate::symbols::llvm_tool("llvm-nm"))
+            .args(["-S", "--defined-only"])
+            .arg(elf.join(format!("{m}.elf")))
+            .output()
+            .map_err(|e| format!("llvm-nm: {e}"))?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut w = line.split_whitespace();
+            if let (Some(a), Some(n), Some(t), Some(name)) =
+                (w.next(), w.next(), w.next(), w.next())
+                && (t == "t" || t == "T")
+                && let (Ok(a), Ok(n)) = (u32::from_str_radix(a, 16), u32::from_str_radix(n, 16))
+                && n > 0
+            {
+                table.insert((m.to_string(), name.to_string()), (a, n));
+            }
+        }
+    }
+    pick_ranges(list, &table, kib)
+}
+
+/// [`lock_ranges`]' choice, from `table` (each module's functions: name to
+/// address and length): `list`'s functions in order, each whole in 32-byte
+/// lines, while they fit in `kib` KiB (one that doesn't is passed over for
+/// a smaller one after it).
+///
+/// # Errors
+/// A line is not `module symbol`, or names a function `table` lacks.
+fn pick_ranges(
+    list: &str,
+    table: &std::collections::HashMap<(String, String), (u32, u32)>,
+    kib: u32,
+) -> Result<(Vec<u8>, String), String> {
+    let budget = kib * 1024;
+    let (mut bytes, mut used, mut count) = (Vec::new(), 0u32, 0);
+    for line in list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        let mut w = line.split_whitespace();
+        let (Some(m), Some(name)) = (w.next(), w.next()) else {
+            return Err(format!("{LOCK_LIST}: not `module symbol`: {line}"));
+        };
+        let &(at, len) = table
+            .get(&(m.to_string(), name.to_string()))
+            .ok_or_else(|| {
+                format!("{LOCK_LIST}: {m} has no function {name} (the list is stale)")
+            })?;
+        let lines = (at + len).div_ceil(32) - at / 32;
+        if used + lines * 32 > budget {
+            continue;
+        }
+        used += lines * 32;
+        count += 1;
+        bytes.extend_from_slice(&at.to_le_bytes());
+        bytes.extend_from_slice(&len.to_le_bytes());
+    }
+    Ok((
+        bytes,
+        format!(
+            "I-cache lock: {count} functions, {} KiB of {kib} KiB, into lock.bin",
+            used / 1024
+        ),
+    ))
+}
+
 /// The kit, laid out.
 pub struct Kit {
     /// Its folder (`target/xash-kit`).
@@ -333,7 +427,21 @@ pub fn lay_out(
     if background.is_none() {
         eprintln!("    the game has no menu background in pieces: none in the kit");
     }
-    let card = card_files(modules, background);
+    let mut card = card_files(modules, background);
+    let kib = match std::env::var(LOCK_KIB) {
+        Ok(v) => v
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{LOCK_KIB}: not a number of KiB: {v}"))?,
+        Err(_) => LOCK_KIB_DEFAULT,
+    };
+    if kib > 0 {
+        let list = std::fs::read_to_string(root.join(LOCK_LIST))
+            .map_err(|e| format!("{LOCK_LIST}: {e}"))?;
+        let (bytes, said) = lock_ranges(&list, &elf, kib)?;
+        eprintln!("    {said}");
+        card.push((format!("{FOLDER}/lock.bin"), bytes));
+    }
     for (name, bytes) in &card {
         let path = dir.join("card").join(name);
         if let Some(parent) = path.parent() {
@@ -352,6 +460,48 @@ pub fn lay_out(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_lock_list_takes_whole_functions_in_order_within_the_budget() {
+        let mut t = std::collections::HashMap::new();
+        let mut put = |m: &str, n: &str, at: u32, len: u32| {
+            t.insert((m.to_string(), n.to_string()), (at, len));
+        };
+        put("engine", "a", 0xA8E0_0010, 600); // lines 0x..00-0x..260: 20 lines
+        put("client", "b", 0xA8D1_0000, 1024); // 32 lines
+        put("engine", "c", 0xA8E1_0000, 64); // 2 lines
+        let list = "# hot first
+engine a
+
+client b
+engine c
+";
+        let (bytes, said) = super::pick_ranges(list, &t, 1).unwrap();
+        // a (640 bytes of lines) fits 1 KiB, b (1 KiB) doesn't after it, c does.
+        let words: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .collect();
+        assert_eq!(words, [0xA8E0_0010, 600, 0xA8E1_0000, 64]);
+        assert!(said.contains("2 functions"), "{said}");
+        // A stale list is an error, not a silent skip.
+        assert!(
+            super::pick_ranges(
+                "server gone
+",
+                &t,
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            super::pick_ranges(
+                "engine
+", &t, 1
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn extra_words_go_last_or_not_at_all() {
         assert_eq!(super::with_extra("a b".into(), None), "a b");

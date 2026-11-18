@@ -339,6 +339,49 @@ static int rp_fixed_on, rp_fan_on;
 
 /* A new frame: the last one's words are let go (sent at its end by
    RP_EmitSubmit, or nowhere in step 1). */
+/*
+Kit 88 (R324, runs 90-93 on the X51v, 2026-11-18): the cascade's heavy
+frames lose 44.5% of their cycles to the I-cache (each of ~110 debris
+pieces runs the whole model path, far past 32 KiB), and the runner locking
+the path's hottest 16 KiB (ports/xash/icache-lock.txt) made them 10%
+faster but the calm frames, whose code then has half the cache, 2.6%
+slower. Iterate (rule 0): the engine leaves the cache to the hardware;
+ours tells the runner when a frame is model-heavy, so the lock is held
+only while it pays: on from 40 models drawn, off below 24 (a margin, so a
+count near one line doesn't lock and unlock every frame). One loop over
+the entities a frame; the hint only when it changes.
+*/
+#define RP_HOT_ON  40
+#define RP_HOT_OFF 24
+static int rp_code_hot;
+
+static void RP_CodeHint( void )
+{
+	int n = 0;
+
+	if( !tr.draw_list )
+		return;
+	for( uint i = 0; i < tr.draw_list->num_solid_entities; i++ )
+	{
+		const cl_entity_t *e = tr.draw_list->solid_entities[i];
+
+		n += e && e->model && e->model->type == mod_studio;
+	}
+	for( uint i = 0; i < tr.draw_list->num_trans_entities; i++ )
+	{
+		const cl_entity_t *e = tr.draw_list->trans_entities[i];
+
+		n += e && e->model && e->model->type == mod_studio;
+	}
+	int hot = rp_code_hot ? n >= RP_HOT_OFF : n >= RP_HOT_ON;
+
+	if( hot != rp_code_hot )
+	{
+		rp_code_hot = hot;
+		rp_code_hint( hot );
+	}
+}
+
 void RP_EmitFrame( void )
 {
 	int want = rp_emit ? (int)rp_emit->value : 0;
@@ -368,6 +411,7 @@ void RP_EmitFrame( void )
 	rp_mip_force = (int)rp_mip->value;
 	rp_cull_on = (int)rp_cull->value;
 	RP_LmFrame();
+	RP_CodeHint();
 	rp_time_ms = (int64_t)( gp_cl->time * 1000.0 );
 	if(( rp_emit_on == 2 ) != ( rp_gpu->value == 1.0f ))
 		gEngfuncs.Cvar_SetValue( "rp_gpu", rp_emit_on == 2 ? 1.0f : 0.0f );

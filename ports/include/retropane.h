@@ -216,6 +216,10 @@ size_t rp_big_size(const void *p);
 int rp_gfx_wait(void);
 /* Gives the screen back: 0, or -1 with errno. */
 int rp_gfx_close(void);
+/* R324: the program's hint that its next frames run much code a frame (1:
+ * a game's many models) or not (0): the runner may keep its hottest code
+ * locked in the I-cache meanwhile. Call it on a change, not every frame. */
+void rp_code_hint(int hot);
 
 #ifdef __cplusplus
 }

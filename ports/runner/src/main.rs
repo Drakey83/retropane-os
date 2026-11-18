@@ -124,6 +124,14 @@ mod image {
     /// runner's folder (R285: where the X51v's time goes, which no
     /// emulator can say).
     const SAMPLE_WORD: &[u8] = b"-rpsample";
+
+    /// A test run's word for sampling on a performance event instead of the
+    /// clock (`rt::start_event_sampling`): `-rpsampleon <event>`, e.g.
+    /// `-rpsampleon 2`, a sample every 200,000 cycles stalled on memory
+    /// (R324: the frames are bus-bound); an event that counts occurrences,
+    /// not cycles (a miss), every 2,000 of them (one number: the command
+    /// line holds 31 words). Implies [`SAMPLE_WORD`].
+    const SAMPLE_ON_WORD: &[u8] = b"-rpsampleon";
     /// The samples' file: `RPSAMP1\0`, then little-endian words: samples
     /// a second, samples, ticks that found the room full, the sample at
     /// each of the run's steps 1 to 5 (`u32::MAX`: not reached), then each
@@ -520,10 +528,31 @@ mod image {
     /// run's timings are read from the log, never asked of who watches).
     /// The sample at each step ([`SAMPLE_FILE`]).
     static SAMPLE_AT: rt::Global<[u32; 5]> = rt::Global::new([u32::MAX; 5]);
+    /// The event sampler's totals at the last step (`-rpsampleon`).
+    static EVENTS_AT: rt::Global<[u64; 5]> = rt::Global::new([0; 5]);
 
     fn step(n: u32, of: u32, text: &[u8]) {
         if let Some(i) = (n as usize).checked_sub(1).filter(|&i| i < 5) {
             SAMPLE_AT.with(|a| a[i] = rt::samples_taken());
+        }
+
+        // -rpsampleon: the bus waits since the last step, per mille of its
+        // cycles (R324: what the frames wait on).
+        let t = rt::event_totals();
+        if t[0] != 0 {
+            let was = EVENTS_AT.with(|a| core::mem::replace(a, t));
+            let d: [u64; 5] = core::array::from_fn(|k| t[k] - was[k]);
+            let pm = |v: u64| v * 1000 / d[0].max(1);
+            let _ = writeln!(
+                Out,
+                "runner: before step {n}: {} cycles; the sampled event {} per mille, buffers full {}, I-cache {} per mille; {} data-cache misses ({} a thousand cycles)",
+                d[0],
+                pm(d[1]),
+                pm(d[2]),
+                pm(d[3]),
+                d[4],
+                pm(d[4])
+            );
         }
         panel::step(n, of, text);
         let at = panel::beat(rt::ticks());
@@ -1250,7 +1279,127 @@ mod image {
     /// dropped (a module loaded a second time lies where its first load
     /// was run from).
     fn fit(at: u32, len: u32) {
+        // Code locked in the I-cache ([`lock_icache`]) could hold the old
+        // bytes of what is loaded now: every lock goes first.
+        if LOCKED.with(|l| core::mem::replace(l, 0)) != 0 {
+            rp_hal_pxa27x::cpu::unlock_icache();
+            let _ = writeln!(
+                Out,
+                "runner: the I-cache's locked code unlocked: a module is loaded"
+            );
+        }
         rp_hal_pxa27x::cpu::clean_invalidate_range(at, len);
+    }
+
+    /// The I-cache lock list's file in the program's folder: the address
+    /// and length (little-endian words) of each piece of the modules' code
+    /// to lock, most stalls a byte first (`cargo xtask xash-kit` with
+    /// `RETROPANE_XASH_LOCK_KIB`; R324).
+    const LOCK_FILE: &str = "lock.bin";
+    /// Ranges the lock list holds at most.
+    const LOCK_RANGES: usize = 512;
+    /// Code locked at most, and lines locked at most in one set of the
+    /// I-cache's 32 (Intel's limit is 28 of 32 ways; 8 stay free for the
+    /// rest of the code in every set).
+    const LOCK_MAX: u32 = 24 * 1024;
+    const LOCK_PER_SET: u8 = 24;
+    /// The list read from the card before the program starts, and how many
+    /// ranges it holds.
+    static LOCK_LIST: rt::Global<([u32; 2 * LOCK_RANGES], usize)> =
+        rt::Global::new(([0; 2 * LOCK_RANGES], 0));
+    /// Lines locked now (0: none).
+    static LOCKED: rt::Global<u32> = rt::Global::new(0);
+    /// Times the code was locked, and unlocked again (`rp_code_hint`).
+    static LOCK_TIMES: rt::Global<(u32, u32)> = rt::Global::new((0, 0));
+
+    /// The program's code hint (`rp_code_hint`): its hottest code locked
+    /// while its frames run much code, unlocked when that passes (the lock
+    /// gives the rest of its code a smaller cache: R324 run 93, a 16 KiB
+    /// lock held throughout made the cascade's heavy frames 10% faster and
+    /// its calm ones 2.6% slower).
+    fn code_hint(hot: bool) {
+        if hot {
+            lock_icache();
+        } else if LOCKED.with(|l| core::mem::replace(l, 0)) != 0 {
+            rp_hal_pxa27x::cpu::unlock_icache();
+            LOCK_TIMES.with(|t| t.1 += 1);
+        }
+    }
+
+    /// Locks the list's code into the I-cache (R324 run 92, 2026-11-18:
+    /// the cascade's heavy frames lose 44.5% of their cycles to the
+    /// I-cache, a third of it in ~16 KiB of the model drawing's code).
+    /// Iterate, don't imitate (rule 0): GoldSrc and Xash leave the cache to
+    /// hardware replacement, which on this core is round robin over a
+    /// 32 KiB cache that each debris piece's code overruns, so every piece
+    /// fetches its whole path again from SDRAM; consoles of the time kept
+    /// hot code in scratchpads by hand; ours locks the lines the X51v's
+    /// own stall profile ranks highest per byte, measured, leaving every set
+    /// 8 free ways. Once, when the program says it plays (step 4): every
+    /// module is loaded by then; a later load unlocks it all ([`fit`]).
+    fn lock_icache() {
+        if LOCKED.with(|l| *l) != 0 {
+            return;
+        }
+        let (list, n) = LOCK_LIST.with(|l| *l);
+        if n == 0 {
+            return;
+        }
+        let code = module::POOL..module::POOL + module::POOL_LEN;
+        let mut per_set = [0u8; 32];
+        let (mut lines, mut skipped, mut bytes) = (0u32, 0u32, 0u32);
+        let was = rt::irqs_enabled_now();
+        rt::irq_disable();
+        for k in 0..n {
+            let (at, len) = (list[2 * k], list[2 * k + 1]);
+            let end = at.saturating_add(len);
+            if len == 0 || !code.contains(&at) || !code.contains(&(end - 1)) {
+                skipped += 1;
+                continue;
+            }
+            let mut line = at & !31;
+            while line < end && bytes < LOCK_MAX {
+                let set = (line >> 5 & 31) as usize;
+                if per_set[set] < LOCK_PER_SET {
+                    rp_hal_pxa27x::cpu::lock_icache_line(line);
+                    per_set[set] += 1;
+                    lines += 1;
+                    bytes += 32;
+                }
+                line += 32;
+            }
+        }
+        if was {
+            rt::irq_enable();
+        }
+        LOCKED.with(|l| *l = lines);
+        let first = LOCK_TIMES.with(|t| {
+            t.0 += 1;
+            t.0 == 1
+        });
+        if !first {
+            return;
+        }
+        let _ = writeln!(
+            Out,
+            "runner: {lines} lines ({} KiB) of the modules' code locked into the I-cache from {n} ranges ({skipped} outside the modules' code skipped); the fullest set {} of 32",
+            lines * 32 / 1024,
+            per_set.iter().max().copied().unwrap_or(0)
+        );
+    }
+
+    /// Unlocks what [`lock_icache`] locked, if anything.
+    fn unlock_icache_after() {
+        if LOCKED.with(|l| core::mem::replace(l, 0)) != 0 {
+            rp_hal_pxa27x::cpu::unlock_icache();
+        }
+        let (locks, unlocks) = LOCK_TIMES.with(|t| *t);
+        if locks != 0 {
+            let _ = writeln!(
+                Out,
+                "runner: the I-cache's code locked {locks} times on the program's hint, unlocked {unlocks} times on it"
+            );
+        }
     }
 
     fn main() -> ! {
@@ -1377,6 +1526,28 @@ mod image {
         apath[..FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
         apath[FOLDER.len()] = b'/';
         apath[FOLDER.len() + 1..alen].copy_from_slice(ARGS_FILE.as_bytes());
+        // The I-cache lock list (`lock_icache`), if the kit has one.
+        let llen = FOLDER.len() + 1 + LOCK_FILE.len();
+        let mut lpath = [0u8; 64];
+        lpath[..FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
+        lpath[FOLDER.len()] = b'/';
+        lpath[FOLDER.len() + 1..llen].copy_from_slice(LOCK_FILE.as_bytes());
+        if let Ok(lfd) = files.open(&lpath[..llen]) {
+            let mut raw = [0u8; 8 * LOCK_RANGES];
+            let got = files.read(lfd, &mut raw).unwrap_or(0);
+            let _ = files.close(lfd);
+            let n = got / 8;
+            LOCK_LIST.with(|(list, count)| {
+                for (k, w) in raw[..n * 8].chunks_exact(4).enumerate() {
+                    list[k] = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                }
+                *count = n;
+            });
+            let _ = writeln!(
+                uart,
+                "runner: {LOCK_FILE}: {n} ranges of code to lock into the I-cache when the program plays"
+            );
+        }
         if let Ok(afd) = files.open(&apath[..alen])
             && let Some(text) = ARGS_TEXT.put_with(|| [0; ARGS_ROOM])
         {
@@ -1483,6 +1654,7 @@ mod image {
             modules: Modules::new(modules, module::POOL, identity),
             folder: FOLDER.as_bytes(),
             fit,
+            hint: code_hint,
         });
         if let Some(v) = voice {
             s.set_sound(v);
@@ -1597,9 +1769,30 @@ mod image {
                 "runner: -rpwalloc: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
             );
         }
-        let sampling = args[..arg_count]
+        let sample_on = args[..arg_count]
             .iter()
-            .any(|a| a.to_bytes() == SAMPLE_WORD);
+            .position(|a| a.to_bytes() == SAMPLE_ON_WORD)
+            .and_then(
+                |at| match number(args[..arg_count].get(at + 1)?.to_bytes())? {
+                    (v, []) => u8::try_from(v).ok(),
+                    _ => None,
+                },
+            )
+            .map(|event| {
+                // cycles (I-cache, data and buffer stalls) or occurrences
+                (
+                    event,
+                    if matches!(event, 0x01 | 0x02 | 0x08) {
+                        200_000
+                    } else {
+                        2_000
+                    },
+                )
+            });
+        let sampling = sample_on.is_some()
+            || args[..arg_count]
+                .iter()
+                .any(|a| a.to_bytes() == SAMPLE_WORD);
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
         if sampling {
@@ -1611,17 +1804,27 @@ mod image {
             // the callers of helpers that use lr as data named from the
             // stack (R314): all of SDRAM, the code and the stacks
             rt::set_sample_window(0xA800_8000, module::POOL + module::POOL_LEN);
-            rt::start_sampling(samples, SAMPLE_HZ);
+            match sample_on {
+                Some((event, every)) => {
+                    let _ = writeln!(
+                        uart,
+                        "runner: -rpsampleon: a sample every {every} of event 0x{event:02x}, not the clock"
+                    );
+                    rt::start_event_sampling(samples, event, every);
+                }
+                None => rt::start_sampling(samples, SAMPLE_HZ),
+            }
         }
         // Kit 69 (Half-Life run 66: the CPU waited 0.6-2.9 ms a frame for
         // the last frame's render, which the pump started only at the
         // program's next clock read): the tick runs the screen's pump every
         // millisecond (the sampler's tick when sampling, else its own).
         rt::set_tick_hook(Some(rp_hal_cabi::pump_screen));
-        if !sampling {
+        if !sampling || sample_on.is_some() {
             rt::start_tick(PUMP_HZ);
         }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
+        unlock_icache_after();
         rt::set_tick_hook(None);
         if !sampling {
             rt::stop_tick();

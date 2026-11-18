@@ -20,6 +20,9 @@ rp-hal-simd = { path = "../simd" }
 # `clocks::change_past_rating`: the core past Intel's 624 MHz, for the
 # overclock test image only (rp-clocks' C2b; ADR-0031: nothing ships there).
 past-rating = []
+# `rt::start_event_sampling`: samples on a performance counter's overflow
+# (the port runner's `-rpsampleon`, R324); kept out of every other image.
+event-sampling = []
 
 [dev-dependencies]
 rp-hal-mock = { path = "../mock" }

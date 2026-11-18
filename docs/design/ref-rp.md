@@ -1187,6 +1187,31 @@ every miss still traces. Kits 87's other tries (a single-frame shortcut in
 StudioEstimateFrame, an axis test before each dynamic light's square
 root): no gain, taken out.
 
+**The clock, then the cache (the owner, 2026-11-18: "Yes, try the clock",
+then "Cut memory traffic").** Run 88: 682.5 MHz with the bus and memory at
+195 ran clean but the cascade stayed at 9.6 / 23.3 (C2 sheet section 10),
+so the frames wait on the bus. To find on what, the runner gained an
+**event sampler** (`-rpsampleon <event>`: a sample on each overflow of a
+performance counter, the PMU's interrupt, source 12, proven on the X51v
+in run 89) and per-step totals of the bus waits. Runs 89-92 (cycles of
+the heavy half): **the I-cache failing to deliver 44.5%**, loads in
+flight 19.1%, the write buffer full 3.7%; the calm half 22% / 33% / 8%.
+The debris is code-heavy, not data-heavy: each of ~110 pieces runs the
+whole model path (light, bones, emit, physics), far past the 32 KiB
+I-cache, so every piece fetches it again from SDRAM, at the bus's speed.
+`-Os` (run 91: the same picture, I-cache 41.1%) gained 0.7%: the path is
+too far past the cache for smaller code to fit it.
+
+| Kit | The original way | Ours | Cascade fps (calm / heavy) |
+|---|---|---|---|
+| 88 | GoldSrc and Xash leave the I-cache to hardware replacement (round robin over 32 KiB on this core) | the runner locks the model path's hottest code (`ports/xash/icache-lock.txt`: functions ranked by the X51v's I-cache-stall samples per byte, run 92) into the I-cache, 8 ways of every set left free, **only while the engine says its frames are model-heavy** (`rp_code_hint`: from 40 models drawn, off below 24) | 23.3 / 10.5 (24 KiB; 16 KiB: 10.4; held throughout, 16 KiB: 22.7 / 10.6; none, the same profiling: 23.3 / 9.6) |
+
+The picture of every run above byte for byte kit 86's. What is left in
+the I-cache share (41% of the heavy half with the lock) is the path's
+breadth: the next lever is running the debris stage by stage (all pieces
+through one stage's code, then the next), not more locking (16 to 24 KiB
+gave 1%).
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

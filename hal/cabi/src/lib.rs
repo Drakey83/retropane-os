@@ -501,6 +501,11 @@ pub trait Sys {
     fn gfx_close(&mut self) -> Result<(), Errno> {
         Err(Errno::NoSys)
     }
+    /// The program's hint that its next frames run much code a frame
+    /// (`rp_code_hint`: a game's many models, R324), so the runner may keep
+    /// its hottest code in the I-cache; `false` when that passes. The
+    /// default: nothing.
+    fn code_hint(&mut self, _hot: bool) {}
     /// Loads the module file `name` from the program's own folder
     /// (`rp_module_load`): read to its address, checked, its zeroed RAM
     /// zeroed, fit to run. Its constructors are the caller's to run.
@@ -1542,6 +1547,15 @@ mod face {
             Ok(()) => 0,
             Err(e) => fail(e) as c_int,
         }
+    }
+
+    /// `rp_code_hint`: [`Sys::code_hint`].
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_code_hint(hot: c_int) {
+        let _ = with(|s| {
+            s.code_hint(hot != 0);
+            Ok(())
+        });
     }
 
     /// `rp_gfx_close`: 0, or -1 with `errno`.

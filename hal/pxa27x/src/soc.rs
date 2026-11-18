@@ -17,6 +17,9 @@ pub mod irq {
     pub const GPIO_X: u32 = 10;
     /// USB client (the device controller, UDC).
     pub const USB_CLIENT: u32 = 11;
+    /// The core's performance monitor (an event counter's overflow; Linux's
+    /// `IRQ_PMU`, a claim until the X51v's event sampler fires).
+    pub const PMU: u32 = 12;
     /// MMC/SD controller.
     pub const MMC: u32 = 23;
     /// SSP1.
