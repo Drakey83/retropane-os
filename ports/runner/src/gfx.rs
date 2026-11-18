@@ -49,6 +49,17 @@ use chain::Settled;
 pub use chain::{CHAIN_BYTES, Chain};
 pub use probe4f::{Probe, WALK_BYTES};
 
+/// ADR-0040 step 7g6's probe of the strip header's bits: 0 off, 1 bit 17
+/// (16.16 vertex words), 2 bit 21 (no z word), 3 both (`-rpta17`,
+/// `-rpta21`, `-rpta1721`; the CPU feed only: with `-rpnochain`).
+pub static TA_PROBE: rt::Global<u32> = rt::Global::new(0);
+
+/// A float word as 16.16 fixed point, rounded, saturated.
+fn fix16(w: u32) -> u32 {
+    let s = f32::from_bits(w) * 65536.0;
+    (if s >= 0.0 { (s + 0.5) as i32 } else { (s - 0.5) as i32 }) as u32
+}
+
 const W: u32 = 480;
 const H: u32 = 640;
 /// The screen's bytes a line.
@@ -1800,13 +1811,63 @@ impl Screen for Chip {
         let left_out = if part == Part::All {
             // The frame as runs of words, each in one tight loop.
             drop(put);
-            for words in parts {
-                send_runs(
-                    words,
-                    &mut feed,
-                    |f, ws| f.put_words(ws),
-                    |f| f.put(ta::Item::End),
-                );
+            let probe = TA_PROBE.with(|m| *m);
+            if probe == 0 {
+                for words in parts {
+                    send_runs(
+                        words,
+                        &mut feed,
+                        |f, ws| f.put_words(ws),
+                        |f| f.put(ta::Item::End),
+                    );
+                }
+            } else {
+                // ADR-0040 step 7g6's probe (`-rpta17`, `-rpta21`,
+                // `-rpta1721`): Dell's drivers read (2700g.md "Dell's
+                // drivers read for unused features") suggest the strip
+                // header's bit 17 takes 16.16 vertex words and bit 21 no z
+                // word. Each strip goes with the bit set and its corners
+                // rewritten to match: the picture tells whether the chip
+                // reads them so.
+                let mut corners_next = false;
+                for words in parts {
+                    send_runs(
+                        words,
+                        &mut feed,
+                        |f, ws| {
+                            if ws.len() == 1 && matches!(ws[0] >> 28, 4 | 5) {
+                                corners_next = true;
+                                let mut h = ws[0];
+                                if probe & 1 != 0 {
+                                    h |= 1 << 17;
+                                }
+                                if probe & 2 != 0 {
+                                    h |= 1 << 21;
+                                }
+                                return f.put_words(&[h]);
+                            }
+                            if !core::mem::replace(&mut corners_next, false) {
+                                return f.put_words(ws);
+                            }
+                            let mut buf = [0u32; 7];
+                            for c in ws.chunks_exact(7) {
+                                let mut n = 0;
+                                for (k, &w) in c.iter().enumerate() {
+                                    if k == 2 && probe & 2 != 0 {
+                                        continue;
+                                    }
+                                    buf[n] = if k == 4 || probe & 1 == 0 { w } else { fix16(w) };
+                                    n += 1;
+                                }
+                                if !f.put_words(&buf[..n]) {
+                                    return false;
+                                }
+                            }
+                            true
+                        },
+                        |f| f.put(ta::Item::End),
+                    );
+                }
             }
             0
         } else {

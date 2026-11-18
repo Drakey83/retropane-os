@@ -1839,6 +1839,13 @@ mod image {
             }
             None => (samples, None),
         };
+        // ADR-0040 step 7g6's probe of the strip header's bits.
+        for (word, mode) in [(&b"-rpta17"[..], 1u32), (&b"-rpta21"[..], 2), (&b"-rpta1721"[..], 3)] {
+            if args[..arg_count].iter().any(|a| a.to_bytes() == word) {
+                super::gfx::TA_PROBE.with(|m| *m = mode);
+                let _ = writeln!(uart, "runner: the TA probe: strip header bits {}", ["", "17", "21", "17 and 21"][mode as usize]);
+            }
+        }
         // Step 4f: the DMA chain, if asked for.
         let chain = if args[..arg_count]
             .iter()
