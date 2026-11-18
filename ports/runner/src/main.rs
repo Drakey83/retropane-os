@@ -1279,6 +1279,9 @@ mod image {
     /// dropped (a module loaded a second time lies where its first load
     /// was run from).
     fn fit(at: u32, len: u32) {
+        // The SRAM's hot pages (ADR-0040 step 7b) back on the SDRAM first:
+        // what was loaded over them went to the SRAM.
+        sram_unmap();
         // Code locked in the I-cache ([`lock_icache`]) could hold the old
         // bytes of what is loaded now: every lock goes first.
         if LOCKED.with(|l| core::mem::replace(l, 0)) != 0 {
@@ -1318,6 +1321,7 @@ mod image {
     /// lock held throughout made the cascade's heavy frames 10% faster and
     /// its calm ones 2.6% slower).
     fn code_hint(hot: bool) {
+        sram_map();
         if hot {
             lock_icache();
         } else if LOCKED.with(|l| core::mem::replace(l, 0)) != 0 {
@@ -1400,6 +1404,98 @@ mod image {
                 "runner: the I-cache's code locked {locks} times on the program's hint, unlocked {unlocks} times on it"
             );
         }
+    }
+
+    /// ADR-0040 step 7b: the modules' hottest code on the on-chip SRAM.
+    /// Iterate, don't imitate (rule 0): GoldSrc and Xash run every
+    /// function from SDRAM and leave the 32 KiB I-cache to round-robin
+    /// replacement; the consoles of the time hand-placed overlays in a
+    /// scratchpad; today's tools lay code out by profile (hot and cold
+    /// splitting). Ours takes the X51v's own profile (`sram-hot.txt`), lets
+    /// the linker gather those functions into whole 64 KiB pages a module
+    /// (`.rp_hot`), and points the same addresses at the PXA270's 256 KiB
+    /// SRAM through the page table (large pages): no address changes, no
+    /// veneers, and an I-cache miss there costs a fraction of SDRAM's
+    /// (docs/hw/cpu.md: a table read ~94 ns there against ~544).
+    /// `sram.bin` in the program's folder: each range's address and length
+    /// (little-endian words, 64 KiB multiples); no file, no mapping.
+    const SRAM_FILE: &str = "sram.bin";
+    /// Ranges at most.
+    const SRAM_RANGES: usize = 4;
+    /// The ranges read from the card.
+    static SRAM_LIST: rt::Global<([u32; 2 * SRAM_RANGES], usize)> =
+        rt::Global::new(([0; 2 * SRAM_RANGES], 0));
+    /// Whether the code is on the SRAM now, refused for good, and the times
+    /// it was put on and taken off.
+    static SRAM: rt::Global<(bool, bool, u32, u32)> = rt::Global::new((false, false, 0, 0));
+
+    /// Puts the hot pages on the SRAM, if the kit has them and they are not
+    /// there now (`hot_code_on_sram`). Called on the program's hint each
+    /// frame (a check once mapped), so it happens once the program plays,
+    /// and again after a module load took them off.
+    fn sram_map() {
+        let (list, n) = SRAM_LIST.with(|l| *l);
+        if n == 0 || SRAM.with(|s| s.0 || s.1) {
+            return;
+        }
+        let code = module::POOL..module::POOL + module::POOL_LEN;
+        let mut ranges = [(0u32, 0u32); SRAM_RANGES];
+        for (k, r) in ranges[..n].iter_mut().enumerate() {
+            *r = (list[2 * k], list[2 * k + 1]);
+            if r.1 == 0 || !code.contains(&r.0) || !code.contains(&(r.0 + r.1 - 1)) {
+                SRAM.with(|s| s.1 = true);
+                let _ = writeln!(
+                    Out,
+                    "runner: {SRAM_FILE}: a range outside the modules' code: no SRAM"
+                );
+                return;
+            }
+        }
+        let was = rt::irqs_enabled_now();
+        rt::irq_disable();
+        let done = rp_hal_pxa27x::diag::hot_code_on_sram(&ranges[..n]);
+        if was {
+            rt::irq_enable();
+        }
+        match done {
+            Ok((bytes, mibs)) => {
+                let first = SRAM.with(|s| {
+                    s.0 = true;
+                    s.2 += 1;
+                    s.2 == 1
+                });
+                if first {
+                    let _ = writeln!(
+                        Out,
+                        "runner: {} KiB of the modules' hottest code on the on-chip SRAM ({n} ranges, {mibs} MiBs as 64 KiB pages)",
+                        bytes / 1024
+                    );
+                }
+            }
+            Err(why) => {
+                SRAM.with(|s| s.1 = true);
+                let _ = writeln!(Out, "runner: no hot code on the SRAM: {why}");
+            }
+        }
+    }
+
+    /// Takes the hot pages off the SRAM, if they are on it
+    /// (`hot_code_off_sram`): before a module is made ready to run
+    /// ([`fit`]) and at the program's end.
+    fn sram_unmap() {
+        if !SRAM.with(|s| s.0) {
+            return;
+        }
+        let was = rt::irqs_enabled_now();
+        rt::irq_disable();
+        rp_hal_pxa27x::diag::hot_code_off_sram();
+        if was {
+            rt::irq_enable();
+        }
+        SRAM.with(|s| {
+            s.0 = false;
+            s.3 += 1;
+        });
     }
 
     fn main() -> ! {
@@ -1546,6 +1642,28 @@ mod image {
             let _ = writeln!(
                 uart,
                 "runner: {LOCK_FILE}: {n} ranges of code to lock into the I-cache when the program plays"
+            );
+        }
+        // The SRAM's ranges (`sram_map`), if the kit has them.
+        let slen = FOLDER.len() + 1 + SRAM_FILE.len();
+        let mut spath = [0u8; 64];
+        spath[..FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
+        spath[FOLDER.len()] = b'/';
+        spath[FOLDER.len() + 1..slen].copy_from_slice(SRAM_FILE.as_bytes());
+        if let Ok(sfd) = files.open(&spath[..slen]) {
+            let mut raw = [0u8; 8 * SRAM_RANGES];
+            let got = files.read(sfd, &mut raw).unwrap_or(0);
+            let _ = files.close(sfd);
+            let n = got / 8;
+            SRAM_LIST.with(|(list, count)| {
+                for (k, w) in raw[..n * 8].chunks_exact(4).enumerate() {
+                    list[k] = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                }
+                *count = n;
+            });
+            let _ = writeln!(
+                uart,
+                "runner: {SRAM_FILE}: {n} ranges of hot code for the on-chip SRAM when the program plays"
             );
         }
         if let Ok(afd) = files.open(&apath[..alen])
@@ -1825,6 +1943,14 @@ mod image {
         }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
         unlock_icache_after();
+        sram_unmap();
+        let (maps, unmaps) = SRAM.with(|s| (s.2, s.3));
+        if maps != 0 {
+            let _ = writeln!(
+                Out,
+                "runner: the hot code put on the SRAM {maps} times, taken off {unmaps} times"
+            );
+        }
         rt::set_tick_hook(None);
         if !sampling {
             rt::stop_tick();

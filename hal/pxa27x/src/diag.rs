@@ -483,6 +483,207 @@ mod target {
         }
     }
 
+    /// The MiBs whose first-level entries [`hot_code_on_sram`] may replace.
+    const HOT_MIBS: usize = 4;
+    /// Their second-level tables, 1 KiB each and 1 KiB aligned
+    /// (identity-mapped SDRAM, as the MMU walks them).
+    #[repr(C, align(1024))]
+    struct HotTables([u32; 256 * HOT_MIBS]);
+    static mut HOT_L2: HotTables = HotTables([0; 256 * HOT_MIBS]);
+    /// What is mapped now: the SRAM's address (0 none yet), the ranges,
+    /// and each replaced entry's index and the section it held.
+    struct Hot {
+        sram: u32,
+        ranges: [(u32, u32); HOT_MIBS],
+        n: usize,
+        saved: [(usize, u32); HOT_MIBS],
+        mibs: usize,
+        mapped: bool,
+    }
+    static mut HOT: Hot = Hot {
+        sram: 0,
+        ranges: [(0, 0); HOT_MIBS],
+        n: 0,
+        saved: [(0, 0); HOT_MIBS],
+        mibs: 0,
+        mapped: false,
+    };
+
+    /// Puts code onto the 256 KiB internal SRAM without moving it (ADR-0040
+    /// step 7b): each of `ranges` (identity-mapped SDRAM, address and
+    /// length whole 64 KiB pages, at most 256 KiB in all, at most four
+    /// MiBs touched) is copied to the SRAM, and every MiB holding one is
+    /// mapped as 64 KiB pages, those ranges' pages onto the SRAM and the
+    /// rest onto the same SDRAM as its section did. The same addresses then
+    /// run the same bytes from the SRAM. Takes the SRAM the first time
+    /// ([`take_sram`]). Call with interrupts masked, under the bring-up map,
+    /// with no code of the ranges running.
+    ///
+    /// # Errors
+    /// A range is not whole 64 KiB pages of SDRAM, the ranges come to more
+    /// than the SRAM or touch more than four MiBs, the kernel map is live,
+    /// the SRAM was taken by something else, or the code is mapped already.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn hot_code_on_sram(ranges: &[(u32, u32)]) -> Result<(u32, usize), &'static str> {
+        const MIB: u32 = 1 << 20;
+        const PAGE: u32 = 0x1_0000;
+        // SAFETY: single core, interrupts masked by the caller: nothing
+        // else touches HOT (only here and in `hot_code_off_sram`).
+        let hot = unsafe { &mut *core::ptr::addr_of_mut!(HOT) };
+        if hot.mapped {
+            return Err("mapped already");
+        }
+        if crate::devmap::kernel_map() {
+            return Err("the kernel map is live");
+        }
+        if ranges.is_empty() || ranges.len() > HOT_MIBS {
+            return Err("no ranges, or more than four");
+        }
+        let mut total = 0u32;
+        for &(at, len) in ranges {
+            if len == 0
+                || !at.is_multiple_of(PAGE)
+                || !len.is_multiple_of(PAGE)
+                || !crate::mmu::SDRAM.contains(&at)
+                || at.checked_add(len).is_none_or(|e| e > crate::mmu::SDRAM.end)
+            {
+                return Err("a range is not whole 64 KiB pages of SDRAM");
+            }
+            total += len;
+        }
+        if total as usize > SRAM_SIZE {
+            return Err("more than the SRAM holds");
+        }
+        let mut mibs = [0u32; HOT_MIBS];
+        let mut m = 0;
+        for &(at, len) in ranges {
+            let mut mib = at & !(MIB - 1);
+            while mib < at + len {
+                if !mibs[..m].contains(&mib) {
+                    if m == HOT_MIBS {
+                        return Err("more than four MiBs touched");
+                    }
+                    mibs[m] = mib;
+                    m += 1;
+                }
+                mib += MIB;
+            }
+        }
+        if hot.sram == 0 {
+            let Some(sram) = take_sram() else {
+                return Err("the SRAM is taken");
+            };
+            hot.sram = sram.as_mut_ptr() as u32;
+        }
+        let base = hot.sram;
+        let mut off = 0;
+        for &(at, len) in ranges {
+            // SAFETY: `at..at + len` is identity-mapped SDRAM (checked);
+            // `base + off..` is inside the SRAM this module took, and the
+            // ranges fit it (checked).
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    at as *const u32,
+                    (base + off) as *mut u32,
+                    (len / 4) as usize,
+                );
+            }
+            off += len;
+        }
+        crate::cpu::clean_range(base, total);
+        let on_sram = |va: u32| -> Option<u32> {
+            let mut off = 0;
+            for &(at, len) in ranges {
+                if (at..at + len).contains(&va) {
+                    return Some(base + off + (va - at));
+                }
+                off += len;
+            }
+            None
+        };
+        let ttb: u32;
+        // SAFETY: reading TTB has no side effects.
+        unsafe {
+            core::arch::asm!("mrc p15, 0, {}, c2, c0, 0", out(reg) ttb, options(nostack, nomem))
+        };
+        let l1 = (ttb & !0x3FFF) as *mut u32;
+        // SAFETY: as HOT above.
+        let tables = unsafe { &mut *core::ptr::addr_of_mut!(HOT_L2) };
+        for (i, &mib) in mibs[..m].iter().enumerate() {
+            let t = &mut tables.0[256 * i..256 * (i + 1)];
+            for page in 0..16u32 {
+                let va = mib + page * PAGE;
+                // read/write for kernel and user, as the bring-up sections
+                let d = crate::mmu::large_page(on_sram(va).unwrap_or(va), 0b11);
+                t[16 * page as usize..16 * (page as usize + 1)].fill(d);
+            }
+            let t_at = t.as_ptr() as u32;
+            crate::cpu::clean_range(t_at, 1024);
+            let index = (mib >> 20) as usize;
+            // SAFETY: the live first-level table, identity-mapped (bring-up
+            // map, checked); this MiB's entry, a section of SDRAM, replaced
+            // by a table mapping the same addresses to the same bytes.
+            unsafe {
+                hot.saved[i] = (index, l1.add(index).read_volatile());
+                l1.add(index).write_volatile(crate::mmu::coarse(t_at));
+            }
+            crate::cpu::clean_range(l1 as u32 + 4 * index as u32, 4);
+        }
+        crate::cpu::invalidate_tlb_all();
+        for &(at, len) in ranges {
+            crate::cpu::clean_invalidate_range(at, len);
+        }
+        hot.ranges[..ranges.len()].copy_from_slice(ranges);
+        hot.n = ranges.len();
+        hot.mibs = m;
+        hot.mapped = true;
+        Ok((total, m))
+    }
+
+    /// Takes the code [`hot_code_on_sram`] put on the SRAM off it again: what
+    /// was written to its addresses meanwhile (a module loaded over it) goes
+    /// to the SRAM first, the sections come back, and the SRAM's bytes are
+    /// copied back to the SDRAM, so the SDRAM holds the code as it is now.
+    /// False if nothing was mapped. Same conditions as mapping.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn hot_code_off_sram() -> bool {
+        // SAFETY: as in `hot_code_on_sram`.
+        let hot = unsafe { &mut *core::ptr::addr_of_mut!(HOT) };
+        if !hot.mapped {
+            return false;
+        }
+        for &(at, len) in &hot.ranges[..hot.n] {
+            crate::cpu::clean_invalidate_range(at, len);
+        }
+        let ttb: u32;
+        // SAFETY: reading TTB has no side effects.
+        unsafe {
+            core::arch::asm!("mrc p15, 0, {}, c2, c0, 0", out(reg) ttb, options(nostack, nomem))
+        };
+        let l1 = (ttb & !0x3FFF) as *mut u32;
+        for &(index, section) in &hot.saved[..hot.mibs] {
+            // SAFETY: the entries `hot_code_on_sram` replaced, given back.
+            unsafe { l1.add(index).write_volatile(section) };
+            crate::cpu::clean_range(l1 as u32 + 4 * index as u32, 4);
+        }
+        crate::cpu::invalidate_tlb_all();
+        let mut off = 0;
+        for &(at, len) in &hot.ranges[..hot.n] {
+            // SAFETY: as in `hot_code_on_sram`, the other way.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (hot.sram + off) as *const u32,
+                    at as *mut u32,
+                    (len / 4) as usize,
+                );
+            }
+            crate::cpu::clean_invalidate_range(at, len);
+            off += len;
+        }
+        hot.mapped = false;
+        true
+    }
+
     /// Maps `backing` (identity-mapped SDRAM, 1 MiB aligned, a whole number
     /// of MiB, at most 16) a second time at `virt` (1 MiB aligned, in the
     /// native slots `0xC0000000`-`0xFDFFFFFF`, mapping nothing yet) as
@@ -682,7 +883,8 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessors, move_l1_table, move_l1_table_at, msc1, msc2, set_cs2_half, set_cs3_timing,
+    coprocessors, hot_code_off_sram, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
+    msc2, set_cs2_half, set_cs3_timing,
     set_cs3_vlio, set_cs4_vlio, set_section_memory, snapshot, take_sram, take_sram_words,
     with_window,
 };

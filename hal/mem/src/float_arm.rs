@@ -38,7 +38,7 @@
 core::arch::global_asm!(
     r#"
     .arm
-    .text
+    .section .text.rp_float_asm,"ax",%progbits
 
     .global rp_fsub_asm
     .type rp_fsub_asm, %function

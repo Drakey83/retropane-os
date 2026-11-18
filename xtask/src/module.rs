@@ -60,6 +60,10 @@ pub struct Spec {
     pub entry: Option<&'static str>,
     /// The names it exports (functions looked up by name at run time).
     pub exports: Vec<String>,
+    /// Its hottest functions, gathered by the link into `.rp_hot`, whole
+    /// 64 KiB pages from `__rp_hot` to `__rp_hot_end` (ADR-0040 step 7b:
+    /// the runner maps those pages onto the on-chip SRAM). Empty: none.
+    pub hot: Vec<String>,
 }
 
 /// A symbol as `llvm-nm -P` prints it.
@@ -230,10 +234,28 @@ pub fn runner_table_asm(names: &[String]) -> String {
 
 /// The linker script of a module placed at `base`: the header first, then
 /// what is loaded, then its zeroed RAM.
-pub fn link_script(base: u32) -> String {
+pub fn link_script(base: u32, hot: &[String]) -> String {
     format!(
-        "SECTIONS\n{{\n    . = 0x{base:08X};\n    .rp_header : {{ KEEP(*(.rp_header)) }}\n    .text : {{ *(.text .text.*) }}\n    .rodata : ALIGN(4) {{ *(.rodata .rodata.*) }}\n    .rp_tables : ALIGN(4) {{\n        __rp_exports = .;\n        KEEP(*(.rp_exports))\n        __rp_by_address = .;\n        KEEP(*(.rp_by_address))\n        __rp_names = .;\n        KEEP(*(.rp_names))\n        __rp_names_end = .;\n    }}\n    .init_array : ALIGN(4) {{\n        __rp_init = .;\n        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))\n        KEEP(*(.init_array))\n        __rp_init_end = .;\n    }}\n    .data : ALIGN(4) {{ *(.data .data.*) *(.got .got.*) }}\n    . = ALIGN(4);\n    __rp_file_end = .;\n    .bss (NOLOAD) : ALIGN(16) {{ *(.bss .bss.* COMMON) }}\n    . = ALIGN(16);\n    __rp_mem_end = .;\n    /DISCARD/ : {{ *(.ARM.exidx .ARM.exidx.* .ARM.extab.* .fini_array .fini_array.* .preinit_array) }}\n}}\n"
+        "SECTIONS\n{{\n    . = 0x{base:08X};\n    .rp_header : {{ KEEP(*(.rp_header)) }}\n{}    .text : {{ *(.text .text.*) }}\n    .rodata : ALIGN(4) {{ *(.rodata .rodata.*) }}\n    .rp_tables : ALIGN(4) {{\n        __rp_exports = .;\n        KEEP(*(.rp_exports))\n        __rp_by_address = .;\n        KEEP(*(.rp_by_address))\n        __rp_names = .;\n        KEEP(*(.rp_names))\n        __rp_names_end = .;\n    }}\n    .init_array : ALIGN(4) {{\n        __rp_init = .;\n        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))\n        KEEP(*(.init_array))\n        __rp_init_end = .;\n    }}\n    .data : ALIGN(4) {{ *(.data .data.*) *(.got .got.*) }}\n    . = ALIGN(4);\n    __rp_file_end = .;\n    .bss (NOLOAD) : ALIGN(16) {{ *(.bss .bss.* COMMON) }}\n    . = ALIGN(16);\n    __rp_mem_end = .;\n    /DISCARD/ : {{ *(.ARM.exidx .ARM.exidx.* .ARM.extab.* .fini_array .fini_array.* .preinit_array) }}\n}}\n",
+        hot_section(hot)
     )
+}
+
+/// The `.rp_hot` section of [`link_script`]: `hot`'s functions (each
+/// compiled into a section of its own, `.text.<name>`) from a 64 KiB
+/// boundary, the section padded to the next one, so the runner can map
+/// its pages whole onto the on-chip SRAM (ADR-0040 step 7b). Nothing for
+/// an empty list.
+fn hot_section(hot: &[String]) -> String {
+    if hot.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("    . = ALIGN(0x10000);\n    __rp_hot = .;\n    .rp_hot : {\n");
+    for name in hot {
+        s.push_str(&format!("        *(.text.{name})\n"));
+    }
+    s.push_str("    }\n    . = ALIGN(0x10000);\n    __rp_hot_end = .;\n");
+    s
 }
 
 /// The linker script giving each imported name its address in the runner.
@@ -303,7 +325,7 @@ fn linker(
         &tables_asm(&spec.exports),
     )?;
     let script = dir.join(format!("{}.ld", spec.name));
-    std::fs::write(&script, link_script(base)).map_err(|e| format!("{}: {e}", script.display()))?;
+    std::fs::write(&script, link_script(base, &spec.hot)).map_err(|e| format!("{}: {e}", script.display()))?;
     let mut cmd = Command::new(tc.tool("ld.lld"));
     cmd.arg("-o")
         .arg(elf)
@@ -641,7 +663,14 @@ mod tests {
 
     #[test]
     fn the_scripts_place_the_header_first_and_name_each_import() {
-        let s = link_script(0xA912_3000);
+        let s = link_script(0xA912_3000, &[]);
+        assert!(!s.contains(".rp_hot"));
+        let h = link_script(0xA912_3000, &["R_Foo".into(), "_Z3barv".into()]);
+        let hot = h.find(".rp_hot").expect("the hot code");
+        assert!(h.find(".rp_header").expect("header") < hot && hot < h.find(".text :").expect("code"));
+        assert!(h.contains("*(.text.R_Foo)
+        *(.text._Z3barv)"));
+        assert_eq!(h.matches("ALIGN(0x10000)").count(), 2);
         let header = s.find(".rp_header").expect("the header");
         assert!(s.contains(". = 0xA9123000;"));
         assert!(header < s.find(".text").expect("code"));

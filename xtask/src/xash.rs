@@ -653,6 +653,33 @@ fn answer(name: &str) -> Answer {
     }
 }
 
+/// ADR-0040 step 7b: the functions each module gathers into its
+/// `.rp_hot` pages for the on-chip SRAM, `module symbol` a line.
+pub const SRAM_LIST: &str = "ports/xash/sram-hot.txt";
+
+/// `module`'s functions from [`SRAM_LIST`], in order, each once (none if
+/// `RETROPANE_XASH_SRAM` is `0`: the kit as before).
+fn hot_list(root: &Path, module: &str) -> Result<Vec<String>, String> {
+    if std::env::var("RETROPANE_XASH_SRAM").is_ok_and(|v| v.trim() == "0") {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(root.join(SRAM_LIST))
+        .map_err(|e| format!("{SRAM_LIST}: {e}"))?;
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        match line.split_once(' ') {
+            Some((m, name)) if m == module => {
+                if !out.iter().any(|n| n == name) {
+                    out.push(name.to_string());
+                }
+            }
+            Some(_) => {}
+            None => return Err(format!("{SRAM_LIST}: not `module symbol`: {line}")),
+        }
+    }
+    Ok(out)
+}
+
 /// An experiment's optimisation flag for the game's parts in place of
 /// `-O2` (R324: the heavy frames are I-cache bound).
 pub const OPT_ENV: &str = "RETROPANE_XASH_OPT";
@@ -1061,6 +1088,7 @@ pub fn modules_as(
             archives: vec![libc.lib_dir.join("librpcxx.a")],
             entry: plan.entry,
             exports: Vec::new(),
+            hot: hot_list(root, plan.name)?,
         };
         spec.archives.extend(arithmetic.iter().cloned());
         if plan.entry.is_some() {

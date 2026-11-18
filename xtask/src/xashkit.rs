@@ -393,6 +393,61 @@ fn list(image: &[u8], card: &[(String, Vec<u8>)]) -> String {
     text
 }
 
+/// `sram.bin` (ADR-0040 step 7b): each module's `.rp_hot` pages, from
+/// `__rp_hot` to `__rp_hot_end` in its ELF in `elf`, as the address and
+/// length (little-endian words, both multiples of 64 KiB) the runner maps
+/// onto the on-chip SRAM; `None` when no module has any. Also what it came
+/// to, in words.
+///
+/// # Errors
+/// `llvm-nm` failed, a module's hot pages are not whole 64 KiB pages, or
+/// they come to more than the SRAM's 256 KiB.
+pub fn sram_ranges(elf: &Path) -> Result<Option<(Vec<u8>, String)>, String> {
+    let mut bytes = Vec::new();
+    let mut said = Vec::new();
+    let mut total = 0u32;
+    for m in ["engine", "client", "server"] {
+        let out = std::process::Command::new(crate::symbols::llvm_tool("llvm-nm"))
+            .arg("--defined-only")
+            .arg(elf.join(format!("{m}.elf")))
+            .output()
+            .map_err(|e| format!("llvm-nm: {e}"))?;
+        let (mut from, mut to) = (None, None);
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut w = line.split_whitespace();
+            if let (Some(a), Some(_), Some(name)) = (w.next(), w.next(), w.next())
+                && let Ok(a) = u32::from_str_radix(a, 16)
+            {
+                match name {
+                    "__rp_hot" => from = Some(a),
+                    "__rp_hot_end" => to = Some(a),
+                    _ => {}
+                }
+            }
+        }
+        let (Some(from), Some(to)) = (from, to) else {
+            continue;
+        };
+        if to <= from {
+            continue;
+        }
+        if from % 0x1_0000 != 0 || to % 0x1_0000 != 0 {
+            return Err(format!("{m}: its hot code {from:08x}-{to:08x} is not whole 64 KiB pages"));
+        }
+        total += to - from;
+        bytes.extend_from_slice(&from.to_le_bytes());
+        bytes.extend_from_slice(&(to - from).to_le_bytes());
+        said.push(format!("{m} {} KiB at {from:08x}", (to - from) / 1024));
+    }
+    if total > 256 * 1024 {
+        return Err(format!("the hot code comes to {} KiB, past the SRAM's 256", total / 1024));
+    }
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((bytes, format!("on-chip SRAM: {} into sram.bin", said.join(", ")))))
+}
+
 /// Lays the kit out in `target/xash-kit`: `runner` (the linked image) as
 /// a raw binary, the card's files under `card/`, and `kit.txt`.
 /// `game` is the folder that holds the owner's `valve` (read only: the
@@ -443,6 +498,10 @@ pub fn lay_out(
         let (bytes, said) = lock_ranges(&list, &elf, kib)?;
         eprintln!("    {said}");
         card.push((format!("{FOLDER}/lock.bin"), bytes));
+    }
+    if let Some((bytes, said)) = sram_ranges(&elf)? {
+        eprintln!("    {said}");
+        card.push((format!("{FOLDER}/sram.bin"), bytes));
     }
     for (name, bytes) in &card {
         let path = dir.join("card").join(name);

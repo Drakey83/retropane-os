@@ -26,7 +26,7 @@
 core::arch::global_asm!(
     r#"
     .arm
-    .text
+    .section .text.rp_div_asm,"ax",%progbits
 
     @ The unsigned body: r0 the dividend (becomes the remainder), r1 the
     @ divisor (non-zero, not above r0), r2 the quotient, r3 scratch.
@@ -118,7 +118,7 @@ rp_idiv_asm:
 core::arch::global_asm!(
     r#"
     .arm
-    .text
+    .section .text.rp_div_asm,"ax",%progbits
     .global __aeabi_uidiv
     .type __aeabi_uidiv, %function
     .global __aeabi_uidivmod

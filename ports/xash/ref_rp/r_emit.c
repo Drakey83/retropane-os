@@ -356,7 +356,7 @@ slower. Iterate (rule 0): the engine leaves the cache to the hardware;
 ours tells the runner when a frame is model-heavy, so the lock is held
 only while it pays: on from 40 models drawn, off below 24 (a margin, so a
 count near one line doesn't lock and unlock every frame). One loop over
-the entities a frame; the hint only when it changes.
+the entities a frame; the hint every frame (the runner acts on a change).
 */
 #define RP_HOT_ON  40
 #define RP_HOT_OFF 24
@@ -382,11 +382,11 @@ static void RP_CodeHint( void )
 	}
 	int hot = rp_code_hot ? n >= RP_HOT_OFF : n >= RP_HOT_ON;
 
-	if( hot != rp_code_hot )
-	{
-		rp_code_hot = hot;
-		rp_code_hint( hot );
-	}
+	/* every frame (ADR-0040 step 7b): the runner also puts the hot code
+	   on the on-chip SRAM on the hint once the program plays, and again
+	   after a module load took it off; once there, the call is a check */
+	rp_code_hot = hot;
+	rp_code_hint( hot );
 }
 
 void RP_EmitFrame( void )
