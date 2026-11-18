@@ -43,5 +43,6 @@ Every decision record, generated from the records themselves by `cargo xtask adr
 | [0037](0037-pc-file-access-mtp-and-drives.md) | Files to the PC: MTP for Windows (and Linux), drives kept for every other computer | Accepted | 2026-10-25 |  |
 | [0038](0038-game-render-path.md) | The game path: three routes, chosen per frame | Accepted | 2026-10-29 |  |
 | [0039](0039-big-programs-and-their-libraries.md) | A big program (a game port): Game Mode's one program, its libraries placed at build time | Accepted | 2026-11-15 | 1 |
+| [0040](0040-our-own-game-core.md) | Our own game core, Xash as the starting point | Proposed | 2026-11-18 | 4 |
 
-39 records: 36 accepted, 3 proposed, 0 superseded, 0 rejected.
+40 records: 36 accepted, 4 proposed, 0 superseded, 0 rejected.
