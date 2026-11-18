@@ -5070,13 +5070,20 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 			}
 			RP_2DState( e->pg, fmt );
 			{
-				/* kit 76 (the owner on the X51v: "lines next to LOADING
-				   and some other HUD elements"): the filter read the atlas
-				   texels beside the tile at its edges; the texels sampled are
-				   kept half a texel inside the tile (Direct3D 9's half-texel
-				   rule), the positions as they were */
-				float ua = a0 - tx < 0.5f ? 0.5f : a0 - tx, ub = a1 - tx > tw - 0.5f ? tw - 0.5f : a1 - tx;
-				float va = b0 - ty < 0.5f ? 0.5f : b0 - ty, vb = b1 - ty > th - 0.5f ? th - 0.5f : b1 - ty;
+				/* R327 (the owner, 2026-11-18: the flashlight's line, the
+				   weapon HUD's digits with a sliver of the next glyph; run
+				   130's picture: the flashlight icon's last columns are the
+				   sprite's 142-144, so every picture showed texels S1+1 to
+				   S2): the 2700G's point sampling takes the texel NEAREST
+				   the coordinate (texel k from k - 0.5 to k + 0.5), where
+				   GoldSrc's software renderer copies texel floor(u). Each
+				   coordinate is moved back half a texel, so a pixel's
+				   centre lands on its own texel's centre: the picture's
+				   columns exactly, nothing of its neighbours. Kit 76's half
+				   texel inside the tile's edges was this same shift seen
+				   at a tile's edge, and goes. */
+				float ua = a0 - tx - 0.5f, ub = a1 - tx - 0.5f;
+				float va = b0 - ty - 0.5f, vb = b1 - ty - 0.5f;
 
 				RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y + ( b0 - T1 ) / ( T2 - T1 ) * h,
 					x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,

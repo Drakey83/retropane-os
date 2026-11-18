@@ -675,13 +675,16 @@ static void RP_End( void )
 			/* beside the soldiers at 402 339 -1805 and 368 305 -1806, above
 			   the floor, facing the ones to the south-east (416 -156, 982
 			   -574, 1024 -624) */
-			Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 10 -60\nweapon_9mmAR\n" );
+			Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 10 -60\n" );
 		}
 		else if( stage == 1 && ms > 4000.0 )
 		{
 			stage = 2;
 			fprintf( stderr, "rp-fight: firing from %u ms of game time\n", (unsigned)ms );
-			Cbuf_AddText( "+attack\n" );
+			/* the MP5 taken now: impulse 101 gave it two seconds ago (the
+			   weapons arrive after the impulse, so a selection in the same
+			   breath found none: run 130 held the hornet gun) */
+			Cbuf_AddText( "weapon_9mmAR\n+attack\n" );
 		}
 		else if( stage == 2 )
 		{
