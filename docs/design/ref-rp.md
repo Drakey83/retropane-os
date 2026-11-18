@@ -1225,6 +1225,60 @@ What would overturn it: a TA fan that does not draw as the strip does
 way, a few more words); skins that wrap (s, t past the skin: then that
 skin gets a power-of-two texture of its own with wrap).
 
+## Step 7c: the map cooked on the X51v (ADR-0040 parts 2 and 3, kit 103, 2026-11-18)
+
+**Where the world's time went (run 146, kit 102, the cascade's calm
+window):** 9.7 ms of the frame in the world and brush-entity bucket. Of
+it, the BSP walk 1.03 ms (`R_RecursiveWorldNode` 0.67, `RP_WalkPlane`
+0.36: a 52-byte float node a visit, its box's floats turned into 16.16
+again every frame), `R_BeginEdgeFrame` 0.72 ms (clearing the edge
+renderer's 480-line tables once for the world and once per brush entity,
+tables the 2700G path never reads), `R_TransformFrustum` 0.42 ms (software
+floats, made again after every brush entity from the same inputs), and
+the faces' own path (`RP_ChipFaceFixed` 1.74, `RP_ProjectS` 0.65,
+`RP_EmitFace` 0.36): about 300 faces a frame, the first touch of each
+face's corner run a cache miss. `R_DrawSegs` and `RP_FracNoiseFix` (~1.9
+ms) are the chamber's beams, not the world.
+
+**Rule 0, written before building.**
+
+| Part | GoldSrc / Xash / console ports (findings) | Ours | Why ours wins |
+|---|---|---|---|
+| The map's format | Xash loads the BSP as stored, floats everywhere, and recomputes integers a frame; the PS2 port and fixed-point Quakes converted maps on a PC; modern engines cook in a studio's build | cooked on the X51v at the map's first load into `maps/<map>.rpw` beside the game (the writable game folder): integer planes (only the 793-1,198 the world's nodes use, of 11,746-18,972), the world's nodes in preorder as 32-byte records (a cache line), leaves, 16-bit leaf face lists, a byte of fixed facts a face, face boxes, and the vertex and corner tables | any map or mod, nothing prepared on a PC (turnkey); the walk reads one line a node and no floats |
+| Staleness and trust | (Valve's own checksums are CRC32 for multiplayer consistency) | the BSP's MD5 from the buffer the engine already hands the renderer (no second read, 62-73 ms) plus its length and counts and the cook's version; the file is untrusted (ADR-0039 rule 10): every index bounds-checked, a child always after its parent (no cycle can be written), the walk's array capped at the map's records; anything wrong: cooked again | a stale or damaged file can only cost a re-cook, never a wrong index |
+| The walk | every frame from the root over every node in the PVS | the PVS's nodes and leaves copied into one compact array only when the view enters another cluster (`tr.visframecount`); each frame walks it with the engine walk's own integer tests in its own order (axial planes inline, both children's lines asked for ahead, the leaves holding static entities flagged in the array and made again when any leaf's efrags change: `rp_efrag_gen`) | the same faces in the same order (word for word), from a few hundred cache lines |
+| The edge tables | `R_BeginEdgeFrame` clears them for the world and every brush entity | not cleared while the 2700G draws alone (`rp_emit 2`, no frame drawn both ways), where nothing reads them | 0.72 ms of nothing |
+| The frustum | `R_TransformFrustum` in floats after every brush entity | two remembered slots (the world's view, the last entity's), keyed by the inputs' bits; the same rows give the same normals, a new eye only the four dot products | exact; the floats once a frame for the world |
+| A face's fixed facts | three structures read and a call into the engine (`Mod_SampleSizeForFace`) a face a frame to decide R297 B | one cooked byte | fewer misses a face |
+
+**Measured on the X51v (kit 103, against kit 102's cascade 28.7 / 18.7
+and fight 19.6 / 21.9 fps):**
+
+| Run | What | Cascade fps (calm / heavy) | Fight fps (first / second half) | Picture |
+|---|---|---|---|---|
+| 149 | the edge clear and frustum memo only (the cook failed: the world reaches 1,323 of c1a0e's 2,169 nodes, the rest are the brush entities') | 28.9 / 19.1 | | |
+| 150, 151 | the cooked walk (first load cooks 11.5 ms, writes 0.4-0.5 s) | 29.0 / 19.2, 29.1 / 19.2 | | byte for byte run 146's |
+| 152 | `-rpfacecull` (faces wholly off the screen not sent: 52-59 of ~197 a frame) | **29.6 / 19.6** | | **4,458 pixels differ**: the mip hold remembers when a face was last drawn, so skipping off-screen faces changes later texel choices |
+| 153, 154 | the fight, every cooked array kept in RAM (~750 KiB on c2a5f) | | 20.6 / -- | **out of memory** (the heap had ~50 KiB in holes) |
+| 155 | `-rpnocook` (the control) | | 19.5 / 21.8 | |
+| 156, 157 | the lean cook (only the world's planes and nodes, face boxes kept only for `-rpfacecull`, the file read a section at a time, the walk's array grown on demand): 168 KiB on c2a5f, 84 on c1a0e | | **19.8 / 22.2, 19.7 / 22.1** | fight pictures differ between runs of one kit (156 vs 157: 3,763 pixels; 148 vs 155, both kit 102's walk: 358), so not comparable |
+| 158 | the same kit, the cascade (cooked again for file version 3) | **29.1 / 19.2** | | **byte for byte run 146's** |
+
+The world's bucket of the calm window: 9.7 -> 8.6 ms (run 151: the walk
+0.44 ms against the walk plus the edge clear's 1.75; the frustum's floats
+gone). Reading the cooked file (104-185 ms) is slower than cooking it
+(9-19 ms): the cook itself is cheap because the engine has already parsed
+the BSP. What the file buys is a place for the cooked parts that are dear
+to make (7d's integer hulls, textures in the 2700G's layout: the map's
+start spends ~1.2 s in `GL_UploadTexture` and `RP_TexPlace`), so it stays.
+
+**Left in the world (the next levers, each with its own run):** the
+faces' corners (`RP_ChipFaceFixed` + `RP_ProjectS` ~2.3 ms: iWMMXt
+transforms, ADR-0040 part 3), the brush entities' float path
+(`R_RotateBmodel`, the float side test a face), and `-rpfacecull` (+0.5
+calm / +0.4 heavy fps) for the owner: either accepted with its changed
+texel choices, or the mip hold taught to age a face it did not draw.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

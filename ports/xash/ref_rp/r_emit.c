@@ -53,6 +53,7 @@ particles, the sky, water and 2D are step 4's later sub-steps.
 #include <malloc.h>
 #include <retropane.h>
 #include "r_local.h"
+#include "crclib.h"
 #include "rp_fixed.h"
 
 /* kit 89 (ref_light.c): the light pre-pass's misses, by reason */
@@ -71,6 +72,9 @@ extern unsigned rp_ln_counts[2]; /* kit 90: light nodes met, surfaces tried (ref
    corner here carries as the same word as z, the sky's own depth word
    apart). RP_GFX_NO_Z by default, 0 with -rpz7 (the control). */
 static uint32_t rp_noz = RP_GFX_NO_Z;
+/* kit 103 (ADR-0040 step 7c): the cooked map, live when rp_ck_live */
+static rp_cooked_t rp_ck;
+static int         rp_ck_live;
 
 /* A frame's words: 512 KiB (c1a0's opening view in the emulator: about
    83 Ki words, 4,200 triangles). Words past it are counted, not kept. */
@@ -161,6 +165,10 @@ void RP_EmitInit( void )
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
 	if( gEngfuncs.Sys_CheckParm( "-rpz7" ))
 		rp_noz = 0; /* the control: seven-word corners */
+	if( gEngfuncs.Sys_CheckParm( "-rpnocook" ))
+		rp_cook_on = 0; /* kit 103's control: kit 102's walk, no cooked map */
+	if( gEngfuncs.Sys_CheckParm( "-rpfacecull" ))
+		rp_facecull = 1;
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
@@ -233,6 +241,18 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: integers (steps 4b, 4d, rp_fixed %d): %u world faces a frame by the tables (%u of them brush entities'), %u by floats; model vertices %u worked and %u used again a frame\n",
 			(int)rp_fixed->value, rp_count.fixed / f, rp_count.bfixed / f, ( rp_count.faces - rp_count.fixed ) / f,
 			rp_count.mverts / f, rp_count.mreuse / f );
+	if( rp_emit_on == 2 )
+	{
+		/* kit 103: the cooked walk's PVS arrays made (a cluster change each) */
+		extern unsigned rp_vn_counts[4];
+
+		fprintf( stderr, "rp-emit: kit 103's cooked map: %s; %u PVS arrays made since the last report (%u records each)\n",
+			!rp_cook_on ? "off (-rpnocook)" : rp_ck_live ? "the walk on it" : "none (the engine's walk)",
+			rp_vn_counts[0], rp_vn_counts[0] ? rp_vn_counts[1] / rp_vn_counts[0] : 0 );
+		fprintf( stderr, "rp-emit: kit 103's screen test (rp_facecull %d): %u world faces a frame wholly off the screen not sent, %u sent\n",
+			rp_facecull, rp_vn_counts[2] / f, rp_vn_counts[3] / f );
+		rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
+	}
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large or no room), %u faces a frame waiting for the upload budget; %u faces a frame relit for a dynamic light (%u KiB, never waiting: R305)\n",
 			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f, rp_count.deferred / f,
@@ -1776,8 +1796,18 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 	int32_t    ks, kt;
 	int64_t    iw, ih;
 
-	if( rp_face_blend || rp_face_masked || fa->pdecals
-		|| ( fa->texinfo->flags & TEX_WORLD_LUXELS ) || gEngfuncs.Mod_SampleSizeForFace( fa ) != 16
+	uintptr_t  fi = (uintptr_t)( fa - WORLDMODEL->surfaces );
+
+	if( rp_face_blend || rp_face_masked || fa->pdecals )
+		return 0;
+	/* kit 103: the face's fixed facts from the cooked map (one byte), not
+	   three structures and a call into the engine */
+	if( rp_ck_live && fi < (uintptr_t)rp_ck.nfaces )
+	{
+		if( !( rp_ck.faces[fi] & RP_CK_LMOK ))
+			return 0;
+	}
+	else if(( fa->texinfo->flags & TEX_WORLD_LUXELS ) || gEngfuncs.Mod_SampleSizeForFace( fa ) != 16
 		|| fa->info->lightmapmins[0] != fa->texturemins[0] || fa->info->lightmapmins[1] != fa->texturemins[1] )
 		return 0;
 	if( rp_lm_n + RP_STATE_WORDS + 1 + (uint32_t)n * RP_VERTEX_WORDS > RP_LM_WORDS )
@@ -1924,15 +1954,22 @@ static rp_wcorner_t *rp_wc;
 static rp_wvert_t   *rp_wv;
 static void         *rp_wv_block; /* rp_wv's allocation (rp_wv on a cache line in it) */
 
+/* once a map, out of line: RP_WorldTables is on the SRAM (ports/xash/sram-hot.txt) */
+static int  RP_CookRead( const model_t *mod ) __attribute__(( noinline ));
+static void RP_CookMake( const model_t *mod ) __attribute__(( noinline ));
+static void RP_CookFree( void );
+
 static int RP_WorldTables( void )
 {
 	const model_t *mod = WORLDMODEL;
+	uint64_t       t0;
 
 	if( mod == rp_wmodel )
 		return rp_wc != NULL;
 	rp_wmodel = mod;
 	rp_map_frames = 0;
 	RP_TexReset(); /* a new map's textures (image slots are used again) */
+	RP_CookFree();
 	free( rp_wc );
 	free( rp_wv_block );
 	rp_wc = NULL;
@@ -1952,6 +1989,12 @@ static int RP_WorldTables( void )
 		return 0;
 	}
 	rp_wv = (rp_wvert_t *)(((uintptr_t)rp_wv_block + 31 ) & ~(uintptr_t)31 );
+	t0 = rp_time_us( );
+	if( rp_cook_on && RP_CookRead( mod ))
+	{
+		fprintf( stderr, "rp-emit: the cooked map read and checked in %u us (kit 103)\n", (uint32_t)( rp_time_us( ) - t0 ));
+		return 1;
+	}
 	for( int i = 0; i < mod->numvertexes; i++ )
 	{
 		rp_wv[i].frame = -1;
@@ -1987,6 +2030,545 @@ static int RP_WorldTables( void )
 	fprintf( stderr, "rp-emit: the world's tables: %d vertices, %d face corners (%u KiB)\n",
 		mod->numvertexes, mod->numsurfedges,
 		(uint32_t)( sizeof( *rp_wv ) * mod->numvertexes + sizeof( *rp_wc ) * mod->numsurfedges ) >> 10 );
+	if( rp_cook_on )
+		RP_CookMake( mod );
+	return 1;
+}
+
+/*
+==============================================================================
+ADR-0040 step 7c (kit 103): the map cooked once on the X51v
+==============================================================================
+
+Iterate, don't imitate (rule 0). GoldSrc and Xash load the BSP as the file
+stores it and, every frame, walk its float nodes (Xash's 52-byte mnode_t,
+floats turned into integers again a node a frame here since kit 52's
+RP_WalkPlane), then read three structures a face (msurface_t, its texinfo,
+its extra data) to decide what the face needs. The PS2's Half-Life and the
+fixed-point Quake ports converted maps on a PC into the console's own
+format; modern engines cook in a studio's build. Ours cooks on the X51v at
+the map's first load, from the user's own copy (any map, any mod, nothing
+to prepare on a PC), and keeps it on the card beside the game:
+
+- the planes as integers (the walk's own rp_fixq values, once), the nodes
+  in preorder as one 32-byte record each (a PXA270 cache line: the box as
+  whole units, the plane, the faces, the children), the leaves and their
+  faces as indexes, and the world's vertex and corner tables;
+- each face's fixed facts as one byte (its side, whether its texture and
+  lightmap line up for R297 B), so the frame does not ask the engine;
+- checked against the BSP's MD5 (taken from the buffer the engine already
+  hands the renderer: no second read) and its counts, and remade when
+  either differs. The card is untrusted (ADR-0039 rule 10): every index is
+  bounds-checked, a child must come after its parent (no cycle can be
+  written), and a walk that would visit more records than the map has
+  stops and goes back to the engine's walk.
+
+At each frame the walk (r_bsp.c, RP_CookWalk) runs over a compact copy of
+only the nodes and leaves in the current PVS, made again only when the
+view enters another cluster (tr.visframecount): the same tests in the same
+order with the same integers, so the same faces go out in the same order,
+word for word. `-rpnocook` is the control (kit 102's way, nothing read or
+written).
+*/
+#define RP_COOK_MAGIC   0x31575052u /* "RPW1" */
+#define RP_COOK_VERSION 3           /* a change in what is cooked: a new number */
+
+typedef struct
+{
+	uint32_t magic, version, head_bytes, bsp_len;
+	uint8_t  md5[16];
+	uint32_t nverts, ncorners, nfaces, nplanes, nnodes, nleafs, nmarks, total;
+	uint32_t reserved[4];
+} rp_cook_head_t;
+
+int                rp_cook_on = 1;
+int                rp_facecull; /* -rpfacecull (kit 103: to be shown the same picture first) */
+static uint8_t     rp_bsp_md5[16];
+static uint32_t    rp_bsp_len;
+static char        rp_bsp_name[64]; /* whose buffer was hashed */
+static void       *rp_ck_block;
+static uint32_t    rp_ck_serial;
+
+void RP_EmitWorldBuffer( const model_t *mod, const byte *buf, size_t len )
+{
+	MD5Context_t c;
+	uint64_t     t0 = rp_time_us( );
+
+	MD5Init( &c );
+	MD5Update( &c, buf, (uint)len );
+	MD5Final( rp_bsp_md5, &c );
+	rp_bsp_len = (uint32_t)len;
+	Q_strncpy( rp_bsp_name, mod->name, sizeof( rp_bsp_name ));
+	fprintf( stderr, "rp-emit: %s's MD5 for its cooked file in %u us (%u KiB)\n", mod->name,
+		(uint32_t)( rp_time_us( ) - t0 ), (uint32_t)( len >> 10 ));
+}
+
+static void RP_CookFree( void )
+{
+	free( rp_ck_block );
+	rp_ck_block = NULL;
+	rp_ck_live = 0;
+	memset( &rp_ck, 0, sizeof( rp_ck ));
+}
+
+const rp_cooked_t *RP_Cooked( void )
+{
+	if( !rp_cook_on || rp_emit_on != 2 || !rp_fixed_on || !RP_WorldTables( ) || !rp_ck_live )
+		return NULL;
+	return &rp_ck;
+}
+
+/* "maps/c1a0e.bsp" to "maps/c1a0e.rpw": 0 if the hash is not this map's */
+static int RP_CookPath( const model_t *mod, char *path, size_t size )
+{
+	size_t n = Q_strlen( mod->name );
+
+	if( !rp_bsp_len || Q_strcmp( rp_bsp_name, mod->name ) || n < 5 || n + 1 > size )
+		return 0;
+	Q_strncpy( path, mod->name, size );
+	Q_strncpy( path + n - 4, ".rpw", size - ( n - 4 ));
+	return 1;
+}
+
+/* the cooked arrays' sizes, in the file's order */
+typedef struct
+{
+	uint32_t verts, corners, planes, nodes, leafs, marks, faces, fbox, total;
+} rp_cook_sizes_t;
+
+static int RP_CookSizes( const rp_cook_head_t *h, rp_cook_sizes_t *s )
+{
+	uint64_t t;
+
+	/* each count below 2^24 (a BSP's own limits are far under it), so no
+	   product or sum here can overflow 64 bits; faces below 2^16 (a leaf's
+	   faces are 16-bit numbers) */
+	if( h->nverts >= 1u << 24 || h->ncorners >= 1u << 24 || h->nfaces > 0xFFFFu || h->nplanes >= 1u << 24
+		|| h->nnodes >= 1u << 24 || h->nleafs >= 1u << 24 || h->nmarks >= 1u << 24 )
+		return 0;
+	s->verts = h->nverts * 12u;
+	s->corners = h->ncorners * (uint32_t)sizeof( rp_wcorner_t );
+	s->planes = h->nplanes * (uint32_t)sizeof( rp_cplane_t );
+	s->nodes = h->nnodes * (uint32_t)sizeof( rp_cnode_t );
+	s->leafs = h->nleafs * (uint32_t)sizeof( rp_cleaf_t );
+	s->marks = ( h->nmarks * 2u + 3u ) & ~3u;
+	s->faces = ( h->nfaces + 3u ) & ~3u;
+	s->fbox = h->nfaces * 12u;
+	t = (uint64_t)sizeof( rp_cook_head_t ) + s->verts + s->corners + s->planes + s->nodes + s->leafs + s->marks + s->faces + s->fbox;
+	if( t >= 1u << 30 )
+		return 0;
+	s->total = (uint32_t)t;
+	return 1;
+}
+
+/* the cooked arrays in one block, the face boxes only for -rpfacecull
+   (run 153: the fight's map ran out of memory with every array kept) */
+static int RP_CookAlloc( const rp_cook_sizes_t *s, const rp_cook_head_t *h )
+{
+	uint8_t *p;
+	uint32_t fbox = rp_facecull ? s->fbox : 0;
+
+	rp_ck_block = malloc( s->planes + s->nodes + s->leafs + s->marks + s->faces + fbox + 4 );
+	if( !rp_ck_block )
+		return 0;
+	p = rp_ck_block;
+	rp_ck.planes = (const rp_cplane_t *)p;
+	p += s->planes;
+	rp_ck.nodes = (const rp_cnode_t *)p;
+	p += s->nodes;
+	rp_ck.leafs = (const rp_cleaf_t *)p;
+	p += s->leafs;
+	rp_ck.marks = (const uint16_t *)p;
+	p += s->marks;
+	rp_ck.faces = p;
+	p += s->faces;
+	rp_ck.fbox = fbox ? (const int16_t ( * )[6] )p : NULL;
+	rp_ck.nplanes = (int)h->nplanes;
+	rp_ck.nnodes = (int)h->nnodes;
+	rp_ck.nleafs = (int)h->nleafs;
+	rp_ck.nmarks = (int)h->nmarks;
+	rp_ck.nfaces = (int)h->nfaces;
+	return 1;
+}
+
+static void RP_CookHead( const model_t *mod, rp_cook_head_t *h )
+{
+	memset( h, 0, sizeof( *h ));
+	h->magic = RP_COOK_MAGIC;
+	h->version = RP_COOK_VERSION;
+	h->head_bytes = sizeof( *h );
+	h->bsp_len = rp_bsp_len;
+	memcpy( h->md5, rp_bsp_md5, sizeof( h->md5 ));
+	h->nverts = (uint32_t)mod->numvertexes;
+	h->ncorners = (uint32_t)mod->numsurfedges;
+	h->nfaces = (uint32_t)mod->numsurfaces;
+	h->nleafs = (uint32_t)mod->numleafs + 1; /* leaf 0 (solid) and the visible ones */
+	h->nmarks = (uint32_t)mod->nummarksurfaces;
+	/* nplanes and nnodes: the ones the world's own tree uses (RP_CookMake) */
+}
+
+/* a box (minmaxs) as whole units: exactly rp_fixq's 16.16 >> 16, or 0 */
+static int RP_CookBox( const float *mm, int16_t box[6] )
+{
+	for( int i = 0; i < 6; i++ )
+	{
+		int32_t v = rp_fixq( mm[i], 16 );
+
+		if( v & 0xFFFF )
+			return 0; /* not a whole unit (never in a compiled map): the engine's walk */
+		box[i] = (int16_t)( v >> 16 );
+		if( ((int32_t)box[i] << 16 ) != v )
+			return 0;
+	}
+	return 1;
+}
+
+/* RP_CookNode's work: the nodes in preorder, the planes they use by their
+   new numbers (the engine's plane number to ours, -1 not yet) */
+static struct
+{
+	rp_cnode_t  *nodes;
+	rp_cplane_t *planes;
+	int32_t     *remap;
+	int          nn, np;
+} rp_cw;
+
+/* the node and everything under it, in preorder: its place, or -1 */
+static int32_t RP_CookNode( const model_t *mod, const mnode_t *node, int depth )
+{
+	rp_cnode_t *out;
+	int32_t     k, c, pi;
+
+	if( depth > 1024 || rp_cw.nn >= mod->numnodes )
+		return -1;
+	if( node < mod->nodes || node >= mod->nodes + mod->numnodes || !node->plane
+		|| node->plane < mod->planes || node->plane >= mod->planes + mod->numplanes )
+		return -1;
+	if( node_numsurfaces( node, mod ) > 0xFFFF
+		|| node_firstsurface( node, mod ) + node_numsurfaces( node, mod ) > mod->numsurfaces )
+		return -1;
+	k = rp_cw.nn++;
+	out = &rp_cw.nodes[k];
+	if( !RP_CookBox( node->minmaxs, out->box ))
+		return -1;
+	pi = (int32_t)( node->plane - mod->planes );
+	if( rp_cw.remap[pi] < 0 )
+	{
+		/* the walk's own integers for the plane (rp_fixq), once */
+		rp_cplane_t *p = &rp_cw.planes[rp_cw.np];
+
+		for( int j = 0; j < 3; j++ )
+			p->n[j] = rp_fixq( node->plane->normal[j], 30 );
+		p->d = rp_fixq( node->plane->dist, 16 );
+		p->type = node->plane->type;
+		rp_cw.remap[pi] = rp_cw.np++;
+	}
+	if( rp_cw.remap[pi] > 0xFFFF )
+		return -1;
+	out->plane = (uint16_t)rp_cw.remap[pi];
+	out->nfaces = (uint16_t)node_numsurfaces( node, mod );
+	out->firstface = (uint32_t)node_firstsurface( node, mod );
+	out->orig = (uint32_t)( node - mod->nodes );
+	for( int side = 0; side < 2; side++ )
+	{
+		const mnode_t *ch = node_child( node, side, mod );
+
+		if( !ch )
+			return -1;
+		if( ch->contents < 0 )
+		{
+			const mleaf_t *l = (const mleaf_t *)ch;
+
+			if( l < mod->leafs || l > mod->leafs + mod->numleafs )
+				return -1;
+			c = -1 - (int32_t)( l - mod->leafs );
+		}
+		else if(( c = RP_CookNode( mod, ch, depth + 1 )) < 0 )
+			return -1;
+		out->child[side] = c;
+	}
+	return k;
+}
+
+/* a face's box in whole units, around its corners (floor and ceiling of
+   their 16.16): what the walk's screen test (-rpfacecull) reads */
+static void RP_CookFaceBox( const model_t *mod, const msurface_t *fa, int16_t fb[6] )
+{
+	fb[0] = fb[1] = fb[2] = 32767;
+	fb[3] = fb[4] = fb[5] = -32768;
+	for( int e = 0; e < fa->numedges && fa->firstedge >= 0 && fa->firstedge + e < mod->numsurfedges; e++ )
+	{
+		int              lindex = mod->surfedges[fa->firstedge + e];
+		const medge16_t *ed = &mod->edges16[lindex > 0 ? lindex : -lindex];
+		int              vi = lindex > 0 ? ed->v[0] : ed->v[1];
+
+		if( vi < 0 || vi >= mod->numvertexes )
+			continue;
+		for( int j = 0; j < 3; j++ )
+		{
+			int32_t lo = rp_wv[vi].pos[j] >> 16, hi = (int32_t)(((int64_t)rp_wv[vi].pos[j] + 0xFFFF ) >> 16 );
+
+			if( lo < fb[j] ) fb[j] = (int16_t)( lo < -32768 ? -32768 : lo );
+			if( hi > fb[3 + j] ) fb[3 + j] = (int16_t)( hi > 32767 ? 32767 : hi );
+		}
+	}
+	if( fb[0] > fb[3] )
+	{
+		/* no corner: never culled by its box */
+		fb[0] = fb[1] = fb[2] = -32768;
+		fb[3] = fb[4] = fb[5] = 32767;
+	}
+}
+
+static void RP_CookWorkFree( void )
+{
+	free( rp_cw.nodes );
+	free( rp_cw.planes );
+	free( rp_cw.remap );
+	memset( &rp_cw, 0, sizeof( rp_cw ));
+}
+
+/* the cooked arrays from the live model (the world's tables made just
+   before), then the file written: rp_ck_live, or the engine's walk */
+static void RP_CookMake( const model_t *mod )
+{
+	rp_cook_head_t  h;
+	rp_cook_sizes_t s;
+	char            path[80];
+	uint64_t        t0 = rp_time_us( );
+	file_t         *f;
+	int             ok = 1;
+
+	RP_CookHead( mod, &h );
+	if( mod->numnodes < 1 || mod->numplanes < 1 || mod->numsurfaces > 0xFFFF )
+		return;
+	/* the world's tree first, into work arrays (the brush entities' nodes
+	   share the engine's array and are left out: run 149, c1a0e's world
+	   reaches 1,323 of its 2,169 nodes; and only the planes it uses: 2,000
+	   or so of c2a5f's 18,972) */
+	rp_cw.nodes = malloc( sizeof( *rp_cw.nodes ) * mod->numnodes );
+	rp_cw.planes = malloc( sizeof( *rp_cw.planes ) * mod->numnodes );
+	rp_cw.remap = malloc( sizeof( *rp_cw.remap ) * mod->numplanes );
+	if( !rp_cw.nodes || !rp_cw.planes || !rp_cw.remap )
+	{
+		RP_CookWorkFree( );
+		return;
+	}
+	for( int i = 0; i < mod->numplanes; i++ )
+		rp_cw.remap[i] = -1;
+	if( RP_CookNode( mod, mod->nodes, 0 ) != 0 )
+	{
+		fprintf( stderr, "rp-emit: the map could not be cooked (a node's box not in whole units, or a node out of range): the engine's walk\n" );
+		RP_CookWorkFree( );
+		return;
+	}
+	h.nnodes = (uint32_t)rp_cw.nn;
+	h.nplanes = (uint32_t)rp_cw.np;
+	if( !RP_CookSizes( &h, &s ) || !RP_CookAlloc( &s, &h ))
+	{
+		RP_CookWorkFree( );
+		return;
+	}
+	memcpy( (void *)rp_ck.planes, rp_cw.planes, s.planes );
+	memcpy( (void *)rp_ck.nodes, rp_cw.nodes, s.nodes );
+	RP_CookWorkFree( );
+	for( int i = 0; ok && i < (int)h.nleafs; i++ )
+	{
+		const mleaf_t *l = &mod->leafs[i];
+		rp_cleaf_t    *o = (rp_cleaf_t *)&rp_ck.leafs[i];
+
+		ok = RP_CookBox( l->minmaxs, o->box );
+		o->contents = l->contents;
+		o->firstmark = 0;
+		o->nmarks = 0;
+		if( l->nummarksurfaces > 0 )
+		{
+			if( l->firstmarksurface < mod->marksurfaces
+				|| l->firstmarksurface + l->nummarksurfaces > mod->marksurfaces + mod->nummarksurfaces )
+				ok = 0;
+			else
+			{
+				o->firstmark = (uint32_t)( l->firstmarksurface - mod->marksurfaces );
+				o->nmarks = (uint32_t)l->nummarksurfaces;
+			}
+		}
+	}
+	for( int i = 0; ok && i < mod->nummarksurfaces; i++ )
+	{
+		const msurface_t *m = mod->marksurfaces[i];
+
+		ok = m >= mod->surfaces && m < mod->surfaces + mod->numsurfaces;
+		if( ok )
+			((uint16_t *)rp_ck.marks)[i] = (uint16_t)( m - mod->surfaces );
+	}
+	for( int i = 0; ok && i < mod->numsurfaces; i++ )
+	{
+		msurface_t *fa = &mod->surfaces[i];
+		uint8_t     b = ( fa->flags & SURF_PLANEBACK ) ? RP_CK_PLANEBACK : 0;
+
+		if( fa->texinfo && fa->info && !( fa->texinfo->flags & TEX_WORLD_LUXELS )
+			&& gEngfuncs.Mod_SampleSizeForFace( fa ) == 16
+			&& fa->info->lightmapmins[0] == fa->texturemins[0] && fa->info->lightmapmins[1] == fa->texturemins[1] )
+			b |= RP_CK_LMOK;
+		((uint8_t *)rp_ck.faces)[i] = b;
+		if( rp_ck.fbox )
+			RP_CookFaceBox( mod, fa, ((int16_t ( * )[6] )rp_ck.fbox)[i] );
+	}
+	if( !ok )
+	{
+		fprintf( stderr, "rp-emit: the map could not be cooked (a leaf's box or faces out of range): the engine's walk\n" );
+		RP_CookFree( );
+		return;
+	}
+	h.total = s.total;
+	rp_ck.serial = ++rp_ck_serial;
+	rp_ck_live = 1;
+	fprintf( stderr, "rp-emit: the map cooked in %u us (%u of %d nodes, %u of %d planes; %u KiB kept in RAM)\n",
+		(uint32_t)( rp_time_us( ) - t0 ), h.nnodes, mod->numnodes, h.nplanes, mod->numplanes,
+		( s.planes + s.nodes + s.leafs + s.marks + s.faces + ( rp_ck.fbox ? s.fbox : 0 )) >> 10 );
+
+	/* kept on the card for the next load */
+	if( !RP_CookPath( mod, path, sizeof( path )))
+	{
+		fprintf( stderr, "rp-emit: no hash of %s's file: the cooked map not kept\n", mod->name );
+		return;
+	}
+	t0 = rp_time_us( );
+	f = gEngfuncs.fsapi->Open( path, "wb", true );
+	if( !f )
+	{
+		fprintf( stderr, "rp-emit: %s could not be written\n", path );
+		return;
+	}
+	ok = gEngfuncs.fsapi->Write( f, &h, sizeof( h )) == sizeof( h );
+	for( int i = 0; ok && i < mod->numvertexes; i++ )
+		ok = gEngfuncs.fsapi->Write( f, rp_wv[i].pos, 12 ) == 12;
+	if( ok ) ok = gEngfuncs.fsapi->Write( f, rp_wc, s.corners ) == s.corners;
+	if( ok ) ok = gEngfuncs.fsapi->Write( f, rp_ck.planes, s.planes + s.nodes + s.leafs + s.marks + s.faces )
+		== s.planes + s.nodes + s.leafs + s.marks + s.faces;
+	/* the face boxes: made here a face at a time when not kept in RAM */
+	for( int i = 0; ok && i < mod->numsurfaces; i++ )
+	{
+		int16_t fb[6];
+
+		if( rp_ck.fbox )
+			memcpy( fb, rp_ck.fbox[i], sizeof( fb ));
+		else
+			RP_CookFaceBox( mod, &mod->surfaces[i], fb );
+		ok = gEngfuncs.fsapi->Write( f, fb, sizeof( fb )) == sizeof( fb );
+	}
+	gEngfuncs.fsapi->Close( f );
+	if( !ok )
+	{
+		gEngfuncs.fsapi->Delete( path );
+		fprintf( stderr, "rp-emit: %s not written whole: removed\n", path );
+		return;
+	}
+	fprintf( stderr, "rp-emit: the cooked map kept as %s in %u us (%u KiB)\n", path, (uint32_t)( rp_time_us( ) - t0 ), s.total >> 10 );
+}
+
+/* `n` bytes of the open file into `to`: 1 if all came */
+static int RP_CookGet( file_t *f, void *to, uint32_t n )
+{
+	return gEngfuncs.fsapi->Read( f, to, n ) == (fs_offset_t)n;
+}
+
+/* the cooked file, read and checked: 1 with the world's tables and the
+   cooked arrays made from it, 0 (nothing kept) to cook again. Read a
+   section at a time straight into its place (run 153: a 1.2 MiB file read
+   whole into the engine's pool was a hole the fight's map then lacked). */
+static int RP_CookRead( const model_t *mod )
+{
+	rp_cook_head_t  h, want;
+	rp_cook_sizes_t s;
+	char            path[80];
+	file_t         *f;
+	const char     *why = NULL;
+
+	if( !RP_CookPath( mod, path, sizeof( path )))
+		return 0;
+	f = gEngfuncs.fsapi->Open( path, "rb", true );
+	if( !f )
+	{
+		fprintf( stderr, "rp-emit: %s not on the card yet: cooked at this load\n", path );
+		return 0;
+	}
+	RP_CookHead( mod, &want );
+	if( !RP_CookGet( f, &h, sizeof( h )))
+		why = "too short";
+	else if( h.magic != RP_COOK_MAGIC || h.version != RP_COOK_VERSION || h.head_bytes != sizeof( h ))
+		why = "another version";
+	else if( h.bsp_len != want.bsp_len || memcmp( h.md5, want.md5, sizeof( h.md5 )))
+		why = "the map's file changed";
+	else if( h.nverts != want.nverts || h.ncorners != want.ncorners || h.nfaces != want.nfaces || h.nleafs != want.nleafs
+		|| h.nmarks != want.nmarks || h.nnodes < 1 || h.nnodes > (uint32_t)mod->numnodes
+		|| h.nplanes < 1 || h.nplanes > h.nnodes )
+		why = "its counts are not the map's";
+	else if( !RP_CookSizes( &h, &s ) || h.total != s.total || gEngfuncs.fsapi->FileLength( f ) != (fs_offset_t)s.total )
+		why = "its size is wrong";
+	else if( !RP_CookAlloc( &s, &h ))
+		why = "no room";
+	else
+	{
+		uint8_t buf[64 * 12];
+
+		for( uint32_t i = 0; !why && i < h.nverts; i += 64 )
+		{
+			uint32_t n = h.nverts - i < 64 ? h.nverts - i : 64;
+
+			if( !RP_CookGet( f, buf, n * 12u ))
+				why = "short";
+			for( uint32_t j = 0; !why && j < n; j++ )
+			{
+				rp_wv[i + j].frame = -1;
+				memcpy( rp_wv[i + j].pos, buf + j * 12u, 12 );
+			}
+		}
+		if( !why && !( RP_CookGet( f, rp_wc, s.corners )
+			&& RP_CookGet( f, (void *)rp_ck.planes, s.planes + s.nodes + s.leafs + s.marks + s.faces )
+			&& ( rp_ck.fbox ? RP_CookGet( f, (void *)rp_ck.fbox, s.fbox ) : 1 )))
+			why = "short";
+	}
+	gEngfuncs.fsapi->Close( f );
+	if( !why )
+	{
+		/* the checks on the file's own numbers, before anything is used */
+		for( uint32_t i = 0; !why && i < h.ncorners; i++ )
+			if( rp_wc[i].vi < 0 || (uint32_t)rp_wc[i].vi >= h.nverts )
+				why = "a corner's vertex out of range";
+		for( uint32_t i = 0; !why && i < h.nnodes; i++ )
+		{
+			const rp_cnode_t *nd = &rp_ck.nodes[i];
+
+			if( nd->plane >= h.nplanes || nd->orig >= (uint32_t)mod->numnodes
+				|| (uint64_t)nd->firstface + nd->nfaces > h.nfaces )
+				why = "a node out of range";
+			for( int side = 0; !why && side < 2; side++ )
+			{
+				int32_t c = nd->child[side];
+
+				if( c >= 0 ? ( (uint32_t)c <= i || (uint32_t)c >= h.nnodes ) : ( (uint32_t)( -1 - c ) >= h.nleafs ))
+					why = "a node's child out of range or before it";
+			}
+		}
+		for( uint32_t i = 0; !why && i < h.nleafs; i++ )
+			if( (uint64_t)rp_ck.leafs[i].firstmark + rp_ck.leafs[i].nmarks > h.nmarks )
+				why = "a leaf's faces out of range";
+		for( uint32_t i = 0; !why && i < h.nmarks; i++ )
+			if( rp_ck.marks[i] >= h.nfaces )
+				why = "a leaf's face out of range";
+	}
+	if( why )
+	{
+		fprintf( stderr, "rp-emit: %s not used (%s): cooked again\n", path, why );
+		RP_CookFree( );
+		/* the vertices and corners are made again by the caller; nothing
+		   of the file's corners left for the faces it skips */
+		memset( rp_wc, 0, sizeof( *rp_wc ) * (size_t)mod->numsurfedges );
+		return 0;
+	}
+	rp_ck.serial = ++rp_ck_serial;
+	rp_ck_live = 1;
 	return 1;
 }
 

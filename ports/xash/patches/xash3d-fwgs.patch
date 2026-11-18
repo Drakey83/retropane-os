@@ -56,6 +56,29 @@ index 9b98264..4b4f840 100644
  }
  
  #endif // XASH_TYPES_H
+diff --git a/engine/client/cl_efrag.c b/engine/client/cl_efrag.c
+index ec7fdeb..f1bf3ce 100644
+--- a/engine/client/cl_efrag.c
++++ b/engine/client/cl_efrag.c
+@@ -36,6 +36,10 @@ static vec3_t	r_emins, r_emaxs;
+ static cl_entity_t	*r_addent;
+ static int cl_efrags_num;
+ static efrag_t *cl_efrags;
++// RetroPane kit 103 (ADR-0040 7c): a new number whenever a leaf's efrags
++// change, so ref_rp's cooked walk knows which leaves hold any without
++// reading every leaf every frame
++int rp_efrag_gen;
+ 
+ static efrag_t *CL_AllocEfrags( int num )
+ {
+@@ -113,6 +117,7 @@ static void R_SplitEntityOnNode( mnode_t *node )
+ 		ef->leaf = leaf;
+ 		ef->leafnext = leaf->efrags;
+ 		leaf->efrags = ef;
++		rp_efrag_gen++; // RetroPane kit 103: the cooked walk's leaves with efrags
+ 		return;
+ 	}
+ 
 diff --git a/engine/client/cl_main.c b/engine/client/cl_main.c
 index 39e4f9c..bbb2eaf 100644
 --- a/engine/client/cl_main.c
@@ -87,7 +110,7 @@ index 39e4f9c..bbb2eaf 100644
  	Cmd_AddCommand ("fullupdate", NULL, "re-init HUD on start demo recording" );
  	Cmd_AddCommand ("give", NULL, "give specified item or weapon" );
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
-index 95c85f7..d98f549 100644
+index 95c85f7..d0dc455 100644
 --- a/engine/client/cl_tent.c
 +++ b/engine/client/cl_tent.c
 @@ -37,7 +37,20 @@ TEMPENTS MANAGEMENT
@@ -241,6 +264,17 @@ index 95c85f7..d98f549 100644
  	{
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
+@@ -3054,6 +3110,10 @@ void CL_ClearStaticEntities( void )
+ 	// clear out efrags in case the level hasn't been reloaded
+ 	for( int i = 0; i < cl.worldmodel->numleafs; i++ )
+ 		cl.worldmodel->leafs[i+1].efrags = NULL;
++	{
++		extern int rp_efrag_gen; // RetroPane kit 103 (cl_efrag.c)
++		rp_efrag_gen++;
++	}
+ 
+ 	clgame.numStatics = 0;
+ 
 diff --git a/engine/client/dll_int/cl_pmove.c b/engine/client/dll_int/cl_pmove.c
 index 9ca1f79..5c86812 100644
 --- a/engine/client/dll_int/cl_pmove.c
@@ -3841,7 +3875,7 @@ index d962d45..bcd577a 100644
  
  	// update end points
 diff --git a/ref/soft/r_bsp.c b/ref/soft/r_bsp.c
-index 8b213a2..026bdee 100644
+index 8b213a2..531e218 100644
 --- a/ref/soft/r_bsp.c
 +++ b/ref/soft/r_bsp.c
 @@ -369,6 +369,13 @@ void R_DrawSolidClippedSubmodelPolygons( model_t *pmodel, mnode_t *topnode )
@@ -4010,13 +4044,336 @@ index 8b213a2..026bdee 100644
  						R_RenderFace( surf, clipflags );
  					}
  
-@@ -637,5 +673,6 @@ void R_RenderWorld( void )
+@@ -619,6 +655,291 @@ static void R_RecursiveWorldNode( mnode_t *node, int clipflags )
+ 	}
+ }
+ 
++/*
++RetroPane kit 103 (ADR-0040 step 7c, docs/design/ref-rp.md "Step 7c"): the
++world walked over the cooked map (r_emit.c). When the view enters another
++cluster (R_MarkLeaves gives tr.visframecount a new number), the nodes and
++leaves of the PVS are copied, in preorder, into one compact array, 32
++bytes (a cache line) a record: the box in whole units, the plane, the
++faces, the children's places in the array. Each frame walks that array
++with R_RecursiveWorldNode's own tests, its integers made once at the cook
++(the planes' rp_fixq values, the boxes' 16.16 as whole units), in its
++order: the same faces, the same order, the same words. The faces' "seen
++this frame" marks are a table of their own (nothing else reads
++msurface_t's visframe), the leaves' keys kept for a frame drawn both ways.
++*/
++typedef struct
++{
++	int16_t  box[6];
++	uint16_t plane;     // RP_VN_LEAF a leaf; RP_VN_AXIAL | type an axial plane (its distance in `d`); else the plane's index
++	uint16_t n;         // the node's faces, or the leaf's
++	uint32_t first;     // the first face, or the leaf's first mark
++	int32_t  child[2];  // places in the array, -1 none
++	int32_t  d;         // an axial plane's distance (16.16); a leaf's index in the model, RP_VN_EFRAGS if it holds efrags
++} rp_vnode_t;
++
++#define RP_VN_LEAF   0xFFFF
++#define RP_VN_AXIAL  0x8000
++#define RP_VN_EFRAGS (int32_t)0x40000000
++extern int rp_efrag_gen; // engine/client/cl_efrag.c: a new number when a leaf's efrags change
++static int rp_vn_efrag_gen;
++
++static rp_vnode_t *rp_vn;
++static int         rp_vn_n, rp_vn_cap, rp_vn_max, rp_vn_vis = -1, rp_vn_ok;
++
++/* room for one more record: the array grows by doubling up to the map's
++   nodes and leaves (run 153: sized for all of them at once it was memory
++   the fight's map lacked; a cluster's PVS is a fraction, ~500 records) */
++static int RP_VisRoom( void )
++{
++	rp_vnode_t *grown;
++	int         cap;
++
++	if( rp_vn_n < rp_vn_cap )
++		return 1;
++	if( rp_vn_cap >= rp_vn_max )
++		return 0;
++	cap = rp_vn_cap * 2 > rp_vn_max ? rp_vn_max : rp_vn_cap * 2;
++	grown = realloc( rp_vn, sizeof( *rp_vn ) * cap );
++	if( !grown )
++		return 0;
++	rp_vn = grown;
++	rp_vn_cap = cap;
++	return 1;
++}
++static uint32_t    rp_vn_serial;    // the cooked map rp_vn was made from
++static int        *rp_fstamp;       // a face's frame (tr.framecount) when a leaf of the walk holds it
++static int         rp_fstamp_n;
++unsigned           rp_vn_counts[4]; // kit 103: the arrays made, records in them, faces off the screen not sent, faces sent (r_emit.c's report)
++
++/* the record and the PVS under it, in preorder: its place, -1 not in the
++   PVS, -2 the array full (a damaged cooked file: the engine's walk) */
++static int32_t RP_VisBuild( const rp_cooked_t *ck, const model_t *mod, int32_t c )
++{
++	rp_vnode_t *v;
++	int32_t     k;
++
++	if( c < 0 )
++	{
++		const rp_cleaf_t *cl = &ck->leafs[-1 - c];
++		const mleaf_t    *l = &mod->leafs[-1 - c];
++
++		if( l->contents == CONTENTS_SOLID || l->visframe != tr.visframecount )
++			return -1;
++		if( !RP_VisRoom( ) || cl->nmarks > 0xFFFF )
++			return -2;
++		k = rp_vn_n++;
++		v = &rp_vn[k];
++		memcpy( v->box, cl->box, sizeof( v->box ));
++		v->plane = RP_VN_LEAF;
++		v->n = (uint16_t)cl->nmarks;
++		v->first = cl->firstmark;
++		v->child[0] = v->child[1] = -1;
++		v->d = ( -1 - c ) | ( l->efrags ? RP_VN_EFRAGS : 0 );
++		return k;
++	}
++	else
++	{
++		const rp_cnode_t *cn = &ck->nodes[c];
++		const mnode_t    *node = &mod->nodes[cn->orig];
++		int32_t           a, b;
++
++		if( node->contents == CONTENTS_SOLID || node->visframe != tr.visframecount )
++			return -1;
++		if( !RP_VisRoom( ))
++			return -2;
++		k = rp_vn_n++;
++		v = &rp_vn[k];
++		memcpy( v->box, cn->box, sizeof( v->box ));
++		// an axial plane (most of a map's) inline: its record not read a frame
++		if( ck->planes[cn->plane].type < 3 )
++		{
++			v->plane = RP_VN_AXIAL | ck->planes[cn->plane].type;
++			v->d = ck->planes[cn->plane].d;
++		}
++		else if( cn->plane >= RP_VN_AXIAL )
++			return -2;
++		else
++		{
++			v->plane = cn->plane;
++			v->d = 0;
++		}
++		v->n = cn->nfaces;
++		v->first = cn->firstface;
++		// a child's place is always past its parent's in the cooked file
++		// (checked when read), so this recursion ends
++		if(( a = RP_VisBuild( ck, mod, cn->child[0] )) == -2 || ( b = RP_VisBuild( ck, mod, cn->child[1] )) == -2 )
++			return -2;
++		rp_vn[k].child[0] = a;
++		rp_vn[k].child[1] = b;
++		return k;
++	}
++}
++
++/* the PVS's array for this cluster (empty when the root is not in it, as
++   the engine's walk then draws nothing): 0 if it cannot be made (the
++   engine's walk) */
++static int RP_VisArray( const rp_cooked_t *ck, const model_t *mod )
++{
++	if( rp_vn && rp_vn_vis == tr.visframecount && rp_vn_serial == ck->serial && rp_vn_efrag_gen == rp_efrag_gen )
++		return rp_vn_ok;
++	if( rp_vn_serial != ck->serial || !rp_vn )
++	{
++		free( rp_vn );
++		free( rp_fstamp );
++		rp_vn_max = ck->nnodes + ck->nleafs;
++		rp_vn_cap = rp_vn_max < 512 ? rp_vn_max : 512;
++		rp_vn = malloc( sizeof( *rp_vn ) * rp_vn_cap );
++		rp_fstamp_n = ck->nfaces;
++		rp_fstamp = calloc( rp_fstamp_n ? rp_fstamp_n : 1, sizeof( *rp_fstamp ));
++		if( !rp_vn || !rp_fstamp )
++		{
++			free( rp_vn );
++			free( rp_fstamp );
++			rp_vn = NULL;
++			rp_fstamp = NULL;
++			return 0;
++		}
++		for( int i = 0; i < rp_fstamp_n; i++ )
++			rp_fstamp[i] = -1;
++		rp_vn_serial = ck->serial;
++	}
++	rp_vn_vis = tr.visframecount;
++	rp_vn_efrag_gen = rp_efrag_gen;
++	rp_vn_n = 0;
++	rp_vn_ok = RP_VisBuild( ck, mod, 0 ) != -2;
++	if( !rp_vn_ok )
++	{
++		rp_vn_n = 0;
++		return 0;
++	}
++	rp_vn_counts[0]++;
++	rp_vn_counts[1] += rp_vn_n;
++	return 1;
++}
++
++/* a box corner (whole units at the three indexes) against frustum plane i,
++   2^46: RP_WalkPlane's products, the same integers */
++static inline int64_t RP_CookPlane( const int16_t *box, const int *pindex, int i )
++{
++	return (int64_t)rp_wn.n[i][0] * ((int32_t)box[pindex[0]] * 65536 )
++		+ (int64_t)rp_wn.n[i][1] * ((int32_t)box[pindex[1]] * 65536 )
++		+ (int64_t)rp_wn.n[i][2] * ((int32_t)box[pindex[2]] * 65536 )
++		- rp_wn.d[i];
++}
++
++/* a face's box wholly outside one of the frustum's planes still in play
++   (the node tests' own integers and margin): nothing of it on the screen */
++static inline int RP_FaceOff( const int16_t *box, int clipflags )
++{
++	for( int i = 0; i < 4; i++ )
++		if(( clipflags & ( 1 << i )) && RP_CookPlane( box, qfrustum.pfrustum_indexes[i], i ) < -RP_WN_MARGIN )
++			return 1;
++	return 0;
++}
++
++static void RP_CookWalk( const rp_cooked_t *ck, model_t *mod, int32_t k, int clipflags )
++{
++	const rp_vnode_t *v = &rp_vn[k];
++	int64_t           dot;
++	int               side;
++
++	// both children's records asked for now (a hint): the walk reaches
++	// them after this node's tests, the misses overlapped
++	if( v->child[0] >= 0 )
++		__builtin_prefetch( &rp_vn[v->child[0]] );
++	if( v->child[1] >= 0 )
++		__builtin_prefetch( &rp_vn[v->child[1]] );
++
++	if( clipflags )
++	{
++		for( int i = 0; i < 4; i++ )
++		{
++			int *pindex;
++
++			if( !( clipflags & ( 1 << i )))
++				continue;
++			pindex = qfrustum.pfrustum_indexes[i];
++			if( RP_CookPlane( v->box, pindex, i ) < -RP_WN_MARGIN )
++				return;
++			if( RP_CookPlane( v->box, pindex + 3, i ) > RP_WN_MARGIN )
++				clipflags &= ~( 1 << i );
++		}
++	}
++
++	if( v->plane == RP_VN_LEAF )
++	{
++		mleaf_t        *pleaf = &mod->leafs[v->d & ~RP_VN_EFRAGS];
++		const uint16_t *mark = &ck->marks[v->first];
++
++		for( int c = v->n; c; c--, mark++ )
++			rp_fstamp[*mark] = tr.framecount;
++		// a leaf with efrags known from the array (made again when any
++		// leaf's efrags change: rp_efrag_gen), so no other leaf is read
++		if( v->d & RP_VN_EFRAGS )
++			gEngfuncs.R_StoreEfrags( &pleaf->efrags, tr.realframecount );
++		if( rp_both )
++			LEAF_KEY( pleaf ) = r_currentkey;
++		r_currentkey++;
++		return;
++	}
++	else
++	{
++		int c = v->n;
++
++		if( v->plane & RP_VN_AXIAL )
++			dot = ((int64_t)rp_wn.o[v->plane & 3] - v->d ) << 30;
++		else
++		{
++			const rp_cplane_t *plane = &ck->planes[v->plane];
++
++			dot = (int64_t)plane->n[0] * rp_wn.o[0] + (int64_t)plane->n[1] * rp_wn.o[1]
++				+ (int64_t)plane->n[2] * rp_wn.o[2] - ((int64_t)plane->d << 30 );
++		}
++		side = dot >= 0 ? 0 : 1;
++
++		if( v->child[side] >= 0 )
++			RP_CookWalk( ck, mod, v->child[side], clipflags );
++
++		if( c )
++		{
++			uint32_t    f = v->first;
++			msurface_t *surf = mod->surfaces + f;
++			// the faces on the eye's side (RP_CK_PLANEBACK as SURF_PLANEBACK)
++			int         want = dot < -RP_WN_BACK ? RP_CK_PLANEBACK : dot > RP_WN_BACK ? 0 : -1;
++
++			if( want >= 0 )
++			{
++				do
++				{
++					if(( ck->faces[f] & RP_CK_PLANEBACK ) == want && rp_fstamp[f] == tr.framecount )
++					{
++						// kit 103: a face in a leaf the view touches but
++						// itself wholly off the screen is not transformed
++						// or sent (the TA would clip all of it)
++						if( clipflags && rp_facecull && !rp_both && RP_FaceOff( ck->fbox[f], clipflags ))
++							rp_vn_counts[2]++;
++						else
++						{
++							if( c > 1 )
++								RP_FaceAhead( surf + 1 ); // kit 69's hint
++							R_RenderFace( surf, clipflags );
++							rp_vn_counts[3]++;
++						}
++					}
++					surf++;
++					f++;
++				}
++				while( --c );
++			}
++			r_currentkey++;
++		}
++
++		if( v->child[!side] >= 0 )
++			RP_CookWalk( ck, mod, v->child[!side], clipflags );
++	}
++}
++
+ /*
+ ================
+ R_RenderWorld
+@@ -626,6 +947,8 @@ R_RenderWorld
+ */
+ void R_RenderWorld( void )
+ {
++	const rp_cooked_t *ck;
++
+ 	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
+ 		return;
+ 
+@@ -637,5 +960,13 @@ void R_RenderWorld( void )
  	RI.currentmodel = WORLDMODEL;
  	r_pcurrentvertbase = RI.currentmodel->vertexes;
  
 +	RP_WalkView();
++	// RetroPane kit 103: the cooked map's walk where there is one
++	if(( ck = RP_Cooked( )) != NULL && RP_VisArray( ck, RI.currentmodel ))
++	{
++		if( rp_vn_n > 0 )
++			RP_CookWalk( ck, RI.currentmodel, 0, 15 );
++		return;
++	}
  	R_RecursiveWorldNode( RI.currentmodel->nodes, 15 );
  }
+diff --git a/ref/soft/r_context.c b/ref/soft/r_context.c
+index 5d6dec1..3ec0ca5 100644
+--- a/ref/soft/r_context.c
++++ b/ref/soft/r_context.c
+@@ -120,6 +120,10 @@ static qboolean GAME_EXPORT Mod_ProcessRenderData( model_t *mod, qboolean create
+ 	if( gEngfuncs.drawFuncs->Mod_ProcessUserData )
+ 		gEngfuncs.drawFuncs->Mod_ProcessUserData( mod, true, buf );
+ 
++	// RetroPane kit 103 (ADR-0040 step 7c): the map's hash for its cooked file
++	if( loaded && mod->type == mod_brush && FBitSet( mod->flags, MODEL_WORLD ))
++		RP_EmitWorldBuffer( mod, buf, buffersize );
++
+ 	return loaded;
+ }
+ 
 diff --git a/ref/soft/r_draw.c b/ref/soft/r_draw.c
 index 5e64fcd..53bcfc0 100644
 --- a/ref/soft/r_draw.c
@@ -4051,6 +4408,26 @@ index 5e64fcd..53bcfc0 100644
 +	RP_Emit2DColour( 1.0f, 1.0f, 1.0f, 1.0f );
  
  	if( enable )
+ 	{
+diff --git a/ref/soft/r_edge.c b/ref/soft/r_edge.c
+index 235fbe2..2108c9c 100644
+--- a/ref/soft/r_edge.c
++++ b/ref/soft/r_edge.c
+@@ -102,6 +102,15 @@ void R_BeginEdgeFrame( void )
+ 		r_currentkey = 0;
+ 	}
+ 
++	// RetroPane kit 103 (run 146: 0.72 ms of a calm frame, this loop once
++	// for the world and once for each brush entity): with the 2700G
++	// drawing alone (rp_emit 2, no frame drawn both ways) no edge is ever
++	// added (R_RenderFace returns at RP_EmitFace) and R_ScanEdges never
++	// runs, so the tables are never read; a frame drawn both ways clears
++	// them as before. -rpnocook keeps the clear (the control).
++	if( rp_cook_on && rp_emit_on == 2 && !rp_both )
++		return;
++
+ // FIXME: set with memset
+ 	for( int v = RI.vrect.y; v < RI.vrectbottom; v++ )
  	{
 diff --git a/ref/soft/r_glblit.c b/ref/soft/r_glblit.c
 index 863d5b4..322f249 100644
@@ -4101,10 +4478,10 @@ index 8a82400..024ca73 100644
  		}
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..49fb6f5 100644
+index 1a7efd6..cd34013 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,70 @@ typedef struct
+@@ -992,6 +992,99 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -4121,6 +4498,35 @@ index 1a7efd6..49fb6f5 100644
 +void RP_EmitFill( int x, int y, int w, int h );
 +void RP_EmitFace( msurface_t *fa );
 +void RP_FaceAhead( const msurface_t *fa ); // kit 69
++// ADR-0040 step 7c (kit 103): the map cooked for the X51v (r_emit.c makes
++// and keeps it, r_bsp.c walks it); rp_cook_on 0 is the control (-rpnocook)
++extern int rp_cook_on;
++extern int rp_facecull; // -rpfacecull: faces wholly off the screen not sent (kit 103)
++typedef struct { int32_t n[3], d, type; } rp_cplane_t;           // 2.30, 16.16 (rp_fixq's)
++typedef struct
++{
++	int16_t  box[6];     // the node's minmaxs, whole units (rp_fixq's 16.16 >> 16)
++	uint16_t plane, nfaces;
++	uint32_t firstface;
++	int32_t  child[2];   // >= 0 a cooked node (always past this one), < 0 leaf -1 - c
++	uint32_t orig;       // the engine's node
++} rp_cnode_t;
++typedef struct { int16_t box[6]; int32_t contents; uint32_t firstmark, nmarks; } rp_cleaf_t;
++#define RP_CK_PLANEBACK 1 // the face's SURF_PLANEBACK
++#define RP_CK_LMOK      2 // the face may go R297 B's way (its texture and lightmap line up)
++typedef struct
++{
++	uint32_t           serial; // a new one each map cooked or read
++	int                nplanes, nnodes, nleafs, nmarks, nfaces;
++	const rp_cplane_t *planes;
++	const rp_cnode_t  *nodes;  // preorder, the root first
++	const rp_cleaf_t  *leafs;
++	const uint16_t    *marks;  // a leaf's faces
++	const uint8_t     *faces;  // RP_CK_* a face
++	const int16_t    ( *fbox )[6]; // a face's box in whole units (kit 103's screen test)
++} rp_cooked_t;
++const rp_cooked_t *RP_Cooked( void ); // the world's, or NULL (the engine's walk)
++void RP_EmitWorldBuffer( const model_t *mod, const byte *buf, size_t len );
 +void RP_TriBegin( int mode ); // kit 77 (R324): TriAPI's corners in fixed point
 +void RP_TriVertex( float x, float y, float z, int s, int t );
 +int  RP_TriCoord( float u, int size );
@@ -4336,6 +4742,91 @@ index 2c644f6..6ef542d 100644
  	if( !R_InitBlit( glblit ))
  	{
  		gEngfuncs.R_Free_Video();
+diff --git a/ref/soft/r_misc.c b/ref/soft/r_misc.c
+index e308395..7d1f5a0 100644
+--- a/ref/soft/r_misc.c
++++ b/ref/soft/r_misc.c
+@@ -100,6 +100,60 @@ R_TransformFrustum
+ */
+ void R_TransformFrustum( void )
+ {
++	/* RetroPane kit 103 (run 146: 0.42 ms of a calm frame in the software
++	   floats; run 150: one remembered frustum missed every time, the
++	   brush entities alternating with the world's): called for each brush
++	   entity (R_RotateBmodel) and again after it to put the world's back.
++	   The planes' normals depend only on the screen's edges and the three
++	   rows, their distances on the eye too. Two slots keep the inputs'
++	   bits with what was made from them (the world's view and the last
++	   entity's): the same rows give the same normals, copied; the same eye
++	   the same distances, else only the four dot products are made, from
++	   the same normals' bits. Exact. */
++	static struct
++	{
++		uint32_t key[21], org[3];
++		vec3_t   n[4];
++		vec_t    d[4];
++		int      used;
++	} slot[2];
++	static int clock_;
++	uint32_t   now[21], org[3];
++	int        hit = -1;
++
++	if( rp_cook_on )
++	{
++		for( int i = 0; i < 4; i++ )
++			__builtin_memcpy( &now[i * 3], qfrustum.screenedge[i].normal, 12 );
++		__builtin_memcpy( &now[12], RI.vright, 12 );
++		__builtin_memcpy( &now[15], RI.vup, 12 );
++		__builtin_memcpy( &now[18], RI.vforward, 12 );
++		__builtin_memcpy( org, tr.modelorg, 12 );
++		for( int k = 0; k < 2 && hit < 0; k++ )
++		{
++			int same = slot[k].used;
++
++			for( int i = 0; same && i < 21; i++ )
++				same = now[i] == slot[k].key[i];
++			if( same )
++				hit = k;
++		}
++		if( hit >= 0 )
++		{
++			int sameorg = slot[hit].org[0] == org[0] && slot[hit].org[1] == org[1] && slot[hit].org[2] == org[2];
++
++			slot[hit].used = ++clock_;
++			for( int i = 0; i < 4; i++ )
++			{
++				VectorCopy( slot[hit].n[i], qfrustum.view_clipplanes[i].normal );
++				if( !sameorg )
++					slot[hit].d[i] = DotProduct( tr.modelorg, slot[hit].n[i] );
++				qfrustum.view_clipplanes[i].dist = slot[hit].d[i];
++			}
++			__builtin_memcpy( slot[hit].org, org, 12 );
++			return;
++		}
++	}
+ 	for( int i = 0; i < 4; i++ )
+ 	{
+ 		vec3_t v, v2;
+@@ -116,6 +170,19 @@ void R_TransformFrustum( void )
+ 
+ 		qfrustum.view_clipplanes[i].dist = DotProduct( tr.modelorg, v2 );
+ 	}
++	if( rp_cook_on )
++	{
++		int k = slot[0].used <= slot[1].used ? 0 : 1; /* the older slot */
++
++		__builtin_memcpy( slot[k].key, now, sizeof( now ));
++		__builtin_memcpy( slot[k].org, org, sizeof( org ));
++		for( int i = 0; i < 4; i++ )
++		{
++			VectorCopy( qfrustum.view_clipplanes[i].normal, slot[k].n[i] );
++			slot[k].d[i] = qfrustum.view_clipplanes[i].dist;
++		}
++		slot[k].used = ++clock_;
++	}
+ }
+ 
+ 
 diff --git a/ref/soft/r_polyse.c b/ref/soft/r_polyse.c
 index 52e713a..1c01fff 100644
 --- a/ref/soft/r_polyse.c

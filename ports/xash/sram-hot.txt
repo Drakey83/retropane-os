@@ -90,7 +90,7 @@ engine GL_Bind
 engine _RNvNtNtCsiCeottVcy03_17compiler_builtins3int19specialized_div_rem11u64_div_rem
 engine pfnGetEngineTimes
 engine R_StudioEntityLight
-engine R_RecursiveWorldNode
+engine RP_CookWalk
 engine __aeabi_dcmplt
 engine SV_FindTouchedLeafs
 engine Mod_PointInLeaf
