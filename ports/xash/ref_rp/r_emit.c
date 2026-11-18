@@ -256,6 +256,13 @@ static void RP_EmitReport( void )
 			rp_prof[0] / f, rp_prof[1] / f, rp_prof[2] / f, rp_prof[3] / f, rp_prof[4] / f, rp_prof[5] / f, rp_prof[6] / f, rp_prof[7] / f, rp_prof[8] / f, rp_prof[9] / f, rp_pre_counts[0] / f, rp_pre_counts[1] / f );
 		fprintf( stderr, "rp-emit: kit 90's light walk a frame: %u light nodes met, %u surfaces tried\n", rp_ln_counts[0] / f, rp_ln_counts[1] / f );
 		rp_ln_counts[0] = rp_ln_counts[1] = 0;
+		{
+			extern unsigned rp_grid_counts[2]; /* option C (ref_light.c) */
+
+			if( rp_grid_counts[0] + rp_grid_counts[1] )
+				fprintf( stderr, "rp-emit: option C's light grid a frame: %u points made, %u reused\n", rp_grid_counts[0] / f, rp_grid_counts[1] / f );
+			rp_grid_counts[0] = rp_grid_counts[1] = 0;
+		}
 		rp_pre_counts[0] = rp_pre_counts[1] = 0;
 		for( int i = 0; i < 10; i++ )
 			rp_prof[i] = 0;
