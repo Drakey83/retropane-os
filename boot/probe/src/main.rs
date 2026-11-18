@@ -988,6 +988,10 @@ mod image {
             say!("hw: count {k}: 41a00000 {a:08x}, OSCR0 {o:08x}, 41a00004 {b:08x}, 43000000 {c:08x}");
         }
         say!("hw: pass C from {from:08x} to 5fffffff, a line a MiB (non-zero / zero / abort pages)");
+        // The internal memory's clock on first (CKEN 20, as take_sram
+        // does): 0x58000000 (its controller) aborted with it off.
+        let sram_clock = diag::take_sram().is_some();
+        say!("hw: the internal memory's clock on: {sram_clock}");
         let mut scan = || {
             let mut mib = from & !0xF_FFFF;
             while mib < 0x6000_0000 {

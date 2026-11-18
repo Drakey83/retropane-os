@@ -202,6 +202,22 @@ first word is non-zero: `0x40000000`-`0x400FFFFF`, `0x40300000`-`0x40400FFF`,
 `0x41300000`-`0x413FFFFF`, `0x41500000`-`0x416FFFFF`, `0x43000000`-
 `0x43FFFFFF`, `0x48000000`-`0x4C000FFF`; past `0x4C000FFF` (the USB host's
 page) a read raised an imprecise data abort the fault catch could not
-resume (the image stopped and the loader took over by itself). Still to
-do: compare each run with the documented map, pages whose first word is
-0, and `0x4C001000`-`0x5FFFFFFF` (resumed past the USB host's MiB).
+resume (the image stopped and the loader took over by itself). **The whole space, a MiB at a time (probe-0079 to 0082):** every MiB our
+page table leaves unmapped mapped as a device section for the scan, each
+MiB's 256 pages counted by what their first word does. Against Intel's map:
+`0x40000000`-`0x41600000` answer at the documented units (DMA, I2C, I2S,
+UDC, RTC, OS timers, PWM, GPIO, SSP, clocks, keypad, USIM; the others read
+0); **`0x41A00000`-`0x43FFFFFF` is open bus**, not a unit: `0x41A00004`
+returns exactly the OS timer value read just before it (each page echoes
+the bus's last value, which is why the first words seemed to count); **one
+real register there: `0x43000000` reads a steady `0x8A12E004`** (open);
+`0x44000000`-`0x47FFFFFF` read 0 (the LCD controller, unused here);
+`0x48000000`-`0x4BFFFFFF` repeat the memory controller (`0x0ACB2BCC`);
+`0x4C000000` the USB host (its first page only: past it a read raised a
+late abort); `0x4C100000`-`0x4FFFFFFF` read 0; `0x50000000`-`0x53FFFFFF`
+repeat `0x3FF` (the camera interface's reset value). **`0x54000000`,
+`0x55000000` and `0x58000000` each raise a late (imprecise) bus abort on
+their first word**, the internal memory's clock on or off, so those MiBs
+were not read; `0x5C000000` is the SRAM (in use, kit 93). No unit outside
+Intel's map answers anywhere a word read reaches; what remains unread is
+`0x54000000`-`0x5BFFFFFF`, which faults instead of answering.
