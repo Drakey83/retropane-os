@@ -1774,6 +1774,13 @@ mod image {
             fit,
             hint: code_hint,
         });
+        // ADR-0040 step 7g1: the PXA270's media unit (iWMMXt) on for the
+        // OS mixer's filter dot products (`rp_hal_simd::dot`, held equal to
+        // the plain loop by the audio crate's tests), as `rp-audio-s2` does;
+        // the game's code is built without it, so nothing else touches its
+        // registers. Put back as found at the end.
+        let simd_was = rp_hal_pxa27x::iwmmxt::single_access(true);
+        rp_hal_simd::set_unit(true);
         if let Some(v) = voice {
             s.set_sound(v);
         }
@@ -1958,6 +1965,8 @@ mod image {
         // C2: Dell's 624 MHz back whatever the program left (its screen's
         // close puts it back first; this is the net under it).
         super::cpu::put_back(gfx_log);
+        rp_hal_simd::set_unit(false);
+        rp_hal_pxa27x::iwmmxt::single_access(simd_was);
         // Stopped at once: what follows is the runner's, not the program's.
         if let Some((buf, taken, full)) = rt::stop_sampling() {
             write_samples(buf, taken, full);

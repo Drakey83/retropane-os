@@ -991,6 +991,7 @@ dependencies = [
  "rp-hal-cabi",
  "rp-hal-mem",
  "rp-hal-pxa27x",
+ "rp-hal-simd",
  "rp-hal-x51v",
  "rp-image",
  "rp-mbx3d-render",
