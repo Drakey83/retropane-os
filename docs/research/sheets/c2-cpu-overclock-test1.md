@@ -161,3 +161,50 @@ is memory first:
 dangerous kind (RAM past its rating fails silently, onto a shared card),
 so it was not built or run; the RAM rule stands; C2 is closed at 624 MHz
 for this unit.
+
+## 10. Route C reopened for the cascade (2026-11-18, the owner: "Yes, try the clock")
+
+The cascade's heavy half stands at 9.7 fps (kit 86) after the exact levers
+ran thin (R324), and the owner chose the clock over lighter debris work.
+Route B stays declined (the SDRAM past its rating: his 2026-11-16 ruling
+holds), so the try is **route C at its lowest step past 624: L 15 x 2N 7,
+682.5 MHz** (`-rpcpu 157`, `cpu::asked`).
+
+- **What Dell / Intel do:** 624 MHz at L 16 x 2N 6, the bus and memory
+  208 MHz, the SDRAM 104 (§1). Their table stops there: a rating, not a
+  measured limit of this unit.
+- **Ours:** the core +9.4% (682.5 against 624), lower than run 44's 728
+  that faulted, with the run clock, the bus and the memory clock 195 MHz
+  and the SDRAM 97.5 MHz, all within their ratings (the RAM rule holds:
+  Dell's timing registers, which count cycles, gain margin at the slower
+  clock; the refresh interval is worked out for 195 MHz by
+  `mdrefr_around`). The voltage pins are never touched (the step needs
+  Dell's 624 point as found). The known-answer check runs every frame and
+  before every card write, as in §7.
+- **Why it can win:** Half-Life's heavy frames are mostly core work (soft
+  floats, the debris' lighting, bones and traces; R324's profiles), so
+  +9.4% core against -6% bus should net a few per cent; the run measures
+  how much, the same cascade against kit 86's 9.7 / 23.4 fps and its last
+  picture byte for byte.
+- **What would overturn it:** a wrong answer or a fault at 682.5 (this
+  unit's core holds no step past 624 at Dell's voltage); or no gain (the
+  slower bus eats the core's step).
+
+### Run 88 on the X51v (2026-11-18, port-runner-0112, unattended)
+
+The cascade (`-rpcascade`) with `-rpcpu 157`. **The PLL took L 15 x 2N 7
+and the core counted 682,470 kHz** (682,500 planned), the bus and memory
+195 MHz, the SDRAM 97.5. **Clean:** 633 known-answer checks past 624,
+0 wrong; no fault; 624 put back at the end; the last picture
+(`frame-gpu.565`) byte for byte kit 86's.
+
+**No gain:** calm frames 23.3 fps, the heavy half 9.6 fps, against kit 86
+at 624 MHz: 23.4 and 9.7. The core's +9.4% is cancelled by the bus and
+memory's -6.25%: Half-Life's frames on this unit are bound by the bus and
+SDRAM about as much as by the core (the TA's feed, the debris' and
+lightmaps' memory traffic). Read for the clock: route C's other steps run
+the bus slower still (L 14 x 2N 8: 728 MHz with the bus 182), route A
+(the bus kept at 208) faulted at 728 in run 44, and route B (the bus past
+208) stays declined. **Left for the owner (a result, not a decision):**
+the clock gives the cascade nothing on this unit at Dell's voltage; the
+lever it points at is memory traffic (fewer bytes a frame), not cycles.

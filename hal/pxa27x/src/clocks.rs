@@ -844,6 +844,38 @@ mod tests {
     }
 
     #[test]
+    fn route_c_682_keeps_the_memory_within_its_rating() {
+        // Route C's lowest step (the owner 2026-11-18, "Yes, try the clock";
+        // c2-cpu-overclock-test1.md section 10): L 15 x 2N 7, the core
+        // 682.5 MHz with the run clock, bus and memory 195 MHz and the SDRAM
+        // halved to 97.5, under its rated 104.
+        let p = pt(15, 7, true);
+        assert!(!p.legal() && p.legal_past_rating());
+        assert_eq!(
+            (p.core_khz(), p.bus_khz(), p.mem_khz(), p.sdclk_khz()),
+            (682_500, 195_000, 195_000, 97_500)
+        );
+        assert!(p.sdclk_khz() <= SDCLK_MAX_KHZ && p.sdram_div2());
+        // From 624: a relock with L 15, the dividers kept, the refresh
+        // interval the rule's for 195 MHz (never late at the slower clock
+        // during the change either: the smaller interval first).
+        let now = raw(POINTS[6].1, WM_MDREFR);
+        let pl = plan_past_rating(now, p).unwrap();
+        assert!(pl.relock);
+        assert_eq!(pl.cccr & 0xFFF, 15 | 7 << 7);
+        let rows = sdram_rows(WM_MDCNFG);
+        assert_eq!(pl.first & MDREFR_DRI, dri(195_000, rows));
+        assert_eq!(
+            pl.pre & MDREFR_DRI,
+            dri(195_000, rows).min(WM_MDREFR & MDREFR_DRI)
+        );
+        assert_eq!(pl.first & !MDREFR_DRI, WM_MDREFR & !MDREFR_DRI);
+        assert_eq!(pl.settle, None);
+        // Route B's 663 (L 17: the SDRAM past its rating) stays refused.
+        assert!(!pt(17, 6, true).legal_past_rating());
+    }
+
+    #[test]
     fn refresh_interval_from_the_rule() {
         let rows = sdram_rows(WM_MDCNFG);
         assert_eq!(rows, 8192);

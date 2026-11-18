@@ -845,7 +845,7 @@ pub struct Chip {
     ladder: Option<Ladder>,
     /// C2: the core's turbo multiplier while the program has the screen
     /// (`-rpcpu`), or Dell's 624 MHz.
-    cpu: Option<u8>,
+    cpu: Option<u16>,
     /// Step 4f's probe (`-rp4f`).
     probe: Option<Probe>,
     /// Step 4f: the frames fed by one DMA chain each (`None`: by the CPU).
@@ -973,7 +973,7 @@ impl Chip {
     /// C2 (`crate::cpu`): the core past 624 MHz while the program has the
     /// screen (`-rpcpu 7` or `8`).
     #[must_use]
-    pub const fn with_cpu(mut self, n2: Option<u8>) -> Self {
+    pub const fn with_cpu(mut self, n2: Option<u16>) -> Self {
         self.cpu = n2;
         self
     }

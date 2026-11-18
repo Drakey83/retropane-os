@@ -70,15 +70,34 @@ fn at624() -> Point {
     POINTS[6].1
 }
 
-/// Steps the core to 2N `n2` (7: 728 MHz, 8: 832) if it runs Dell's 624
-/// point; logs what happened. A refused or unlatched step leaves 624.
-pub fn step(n2: u8, log: fn(Arguments<'_>)) {
-    if !(7..=8).contains(&n2) {
+/// The point a `-rpcpu` number asks for: 7 or 8 is route A (L 16, 2N 7
+/// or 8: 728 or 832 MHz); `L` x 10 + `2N` is route C, L 13-15 with 2N 7 or
+/// 8 (157: L 15 x 2N 7, 682.5 MHz core with the run clock, bus and memory
+/// 195 MHz and the SDRAM 97.5, all within their ratings). Route B (L 17 and
+/// up, the SDRAM past its rating) is never taken: the owner, 2026-11-16,
+/// "if its dangerous dont do it".
+#[must_use]
+pub fn asked(code: u16) -> Option<Point> {
+    let (l, n2) = match code {
+        7 | 8 => (16, code as u8),
+        130..=158 => ((code / 10) as u8, (code % 10) as u8),
+        _ => return None,
+    };
+    let to = Point { l, n2, ..at624() };
+    ((7..=8).contains(&n2) && (13..=16).contains(&l) && to.legal_past_rating()).then_some(to)
+}
+
+/// Steps the core to the point `-rpcpu code` asks for ([`asked`]) if it runs
+/// Dell's 624 point; logs what happened. A refused or unlatched step leaves
+/// 624.
+pub fn step(code: u16, log: fn(Arguments<'_>)) {
+    let Some(to) = asked(code) else {
         log(format_args!(
-            "rp-cpu: 2N {n2} not a C2 step (7 or 8): 624 MHz kept"
+            "rp-cpu: {code} not a C2 step (7, 8, or L x 10 + 2N with L 13-15 and 2N 7-8): 624 MHz kept"
         ));
         return;
-    }
+    };
+    let n2 = to.n2;
     let found = clocks::read();
     if found.point() != at624() {
         log(format_args!(
@@ -89,10 +108,10 @@ pub fn step(n2: u8, log: fn(Arguments<'_>)) {
     }
     let answer = work(0x5EED_0001);
     STATE.with(|s| s.answer = answer);
-    let to = Point { n2, ..at624() };
     if !clocks::change_past_rating(to) {
         log(format_args!(
-            "rp-cpu: 2N {n2} refused by the plan: 624 MHz kept"
+            "rp-cpu: L {} x 2N {n2} refused by the plan: 624 MHz kept",
+            to.l
         ));
         return;
     }
@@ -100,8 +119,8 @@ pub fn step(n2: u8, log: fn(Arguments<'_>)) {
     if now.point() != to {
         clocks::change(at624());
         log(format_args!(
-            "rp-cpu: the PLL didn't take 2N {n2} (CCSR 0x{:x}): 624 MHz put back",
-            now.ccsr
+            "rp-cpu: the PLL didn't take L {} x 2N {n2} (CCSR 0x{:x}): 624 MHz put back",
+            to.l, now.ccsr
         ));
         return;
     }
@@ -109,8 +128,11 @@ pub fn step(n2: u8, log: fn(Arguments<'_>)) {
     STATE.with(|s| s.stepped = true);
     let ok = check(log);
     log(format_args!(
-        "rp-cpu: the core stepped to 2N {n2} ({} kHz planned, {khz} counted; bus, memory and SDRAM as at 624), the first check {}",
+        "rp-cpu: the core stepped to L {} x 2N {n2} ({} kHz planned, {khz} counted; bus and memory {} kHz, SDRAM {} kHz), the first check {}",
+        to.l,
         to.core_khz(),
+        to.bus_khz(),
+        to.sdclk_khz(),
         if ok { "right" } else { "WRONG: 624 put back" }
     ));
 }

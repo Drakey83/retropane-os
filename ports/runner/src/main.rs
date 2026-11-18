@@ -207,8 +207,9 @@ mod image {
     const LADDER_WORD: &[u8] = b"-rpladder";
 
     /// A test run's word for C2 (`cpu`): the core's turbo multiplier past
-    /// 624 MHz while the program has the screen, `-rpcpu 7` (728 MHz) or
-    /// `-rpcpu 8` (832), every frame and card write checked.
+    /// 624 MHz while the program has the screen, `-rpcpu 7` (728 MHz),
+    /// `-rpcpu 8` (832) or `-rpcpu 157` (L 15 x 2N 7, 682.5 MHz, the bus
+    /// and memory 195 MHz: `cpu::asked`), every frame and card write checked.
     const CPU_WORD: &[u8] = b"-rpcpu";
 
     /// A test run's word for the frame-rate bar along the screen's bottom
@@ -1502,7 +1503,7 @@ mod image {
             .rposition(|a| a.to_bytes() == CPU_WORD)
             .and_then(|at| args[..arg_count].get(at + 1))
             .and_then(|v| match number(v.to_bytes()) {
-                Some((n, [])) => u8::try_from(n).ok(),
+                Some((n, [])) => u16::try_from(n).ok(),
                 _ => None,
             });
         // Step 4f's probe: its walk from the samples' room, its channel.
