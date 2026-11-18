@@ -460,15 +460,57 @@ def owner_and_spawns(transcript):
     return last, len(started)
 
 
+# A reply that turns a question down (the owner's buttons and words).
+DECLINES = re.compile(r"^\s*(no\b|not now|not yet|later|do it here|here\b|keep\b|stop\b|cancel|skip)", re.I)
+QUESTION_TOOLS = ("mcp__ccd_turn__wrap_up", "AskUserQuestion")
+
+
+def answered_question(transcript):
+    """The question the owner's latest message answers: the text of the last
+    wrap_up ask (with its buttons) or AskUserQuestion before it, or ""."""
+    asked, answered = "", ""
+    with open(transcript, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            a = o.get("attachment") if o.get("type") == "attachment" else None
+            if isinstance(a, dict) and a.get("type") == "queued_command":
+                if (a.get("origin") or {}).get("kind") == "human":
+                    answered = asked
+                continue
+            c = (o.get("message") or {}).get("content")
+            if o.get("type") == "assistant" and isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "tool_use" and x.get("name") in QUESTION_TOOLS:
+                        asked = json.dumps(x.get("input") or {})
+                continue
+            if o.get("type") != "user" or o.get("isMeta"):
+                continue
+            texts = [c] if isinstance(c, str) else [
+                x.get("text", "") for x in (c or []) if isinstance(x, dict) and x.get("type") == "text"
+            ]
+            if [t for t in texts if t.strip() and not t.lstrip().startswith("<")]:
+                answered = asked
+    return answered
+
+
 def last_owner_message(transcript):
     """The owner's latest message in the session's transcript."""
     return owner_and_spawns(transcript)[0]
 
 
-def spawn_verdict(message, started=0):
+def spawn_verdict(message, started=0, question=""):
+    """`question`: what his message answers (answered_question). The owner,
+    2026-11-17 and again 2026-11-18: "if I tell you to start a new session do
+    it" (his button "Start 7c fresh" answering "Start 7c, in a fresh
+    session?" was refused): a yes to a question that offers a session is his
+    go, whatever the button's words."""
     if message is None:
         return "one session: the owner's latest message couldn't be read"
-    if not ASKS_FOR_SPAWN.search(message):
+    said_yes_to_session = bool(question) and ASKS_FOR_SPAWN.search(question) is not None and not DECLINES.search(message)
+    if not ASKS_FOR_SPAWN.search(message) and not said_yes_to_session:
         return (
             "one session (the owner's hard rule, credits): another session or agent only when his "
             "latest message asks for one; do the work here"
@@ -514,9 +556,10 @@ def hook(mode):
     if mode == "spawn":
         try:
             msg, started = owner_and_spawns(data.get("transcript_path") or "")
+            question = answered_question(data.get("transcript_path") or "")
         except OSError:
-            msg, started = None, 0
-        reason = spawn_verdict(msg, started)
+            msg, started, question = None, 0, ""
+        reason = spawn_verdict(msg, started, question)
         if reason:
             deny(reason)
         return
@@ -687,6 +730,16 @@ def self_test():
         if (spawn_verdict(msg) is None) != allow:
             bad += 1
             print("WRONG spawn:", msg)
+    offer = '{"ask": "Start 7c, in a fresh session?", "actions": [{"label": "Start 7c fresh"}]}'
+    if spawn_verdict("Start 7c fresh", 0, offer) is not None:
+        bad += 1
+        print("WRONG spawn: a yes to a session question refused")
+    if spawn_verdict("Not now", 0, offer) is None or spawn_verdict("Do it here", 0, offer) is None:
+        bad += 1
+        print("WRONG spawn: a no to a session question allowed")
+    if spawn_verdict("Build kit 92", 0, '{"ask": "Build kit 92 next?"}') is None:
+        bad += 1
+        print("WRONG spawn: a yes to a question with no session allowed")
     if spawn_verdict("start a new session", SPAWN_MAX - 1) is not None:
         bad += 1
         print("WRONG spawn: the fifth start refused")
