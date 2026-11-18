@@ -5082,8 +5082,15 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 				   columns exactly, nothing of its neighbours. Kit 76's half
 				   texel inside the tile's edges was this same shift seen
 				   at a tile's edge, and goes. */
+				/* kit 98 (the owner on kit 97: "lines ... above and
+				   below"): the chip samples at each pixel's corner, not its
+				   centre, and the picture is turned: across the game's
+				   screen that corner is the pixel's right edge (half a
+				   texel back puts it at the texel's centre), up and down it
+				   is the pixel's top edge (half a texel forward does). Both
+				   now land on texel centres, away from any boundary. */
 				float ua = a0 - tx - 0.5f, ub = a1 - tx - 0.5f;
-				float va = b0 - ty - 0.5f, vb = b1 - ty - 0.5f;
+				float va = b0 - ty + 0.5f, vb = b1 - ty + 0.5f;
 
 				RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y + ( b0 - T1 ) / ( T2 - T1 ) * h,
 					x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,

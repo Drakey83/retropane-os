@@ -1333,7 +1333,7 @@ index 3ff8edb..ceceaf1 100644
  	// always send servertime at new frame
  	MSG_BeginServerCmd( &msg, svc_time );
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
-index 37e79df..396c3bc 100644
+index 37e79df..6adc335 100644
 --- a/engine/server/sv_game.c
 +++ b/engine/server/sv_game.c
 @@ -1050,6 +1050,7 @@ edict_t *GAME_EXPORT SV_AllocEdict( void )
@@ -1344,7 +1344,39 @@ index 37e79df..396c3bc 100644
  	e = SV_EdictNum( i );
  	SV_InitEdict( e );
  
-@@ -1479,6 +1480,20 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1311,10 +1312,31 @@ static int GAME_EXPORT pfnModelIndex( const char *m )
+ 	Q_strncpy( name, m, sizeof( name ));
+ 	COM_FixSlashes( name );
+ 
++	/* RetroPane (ADR-0040 step 7g2, run 131: the game asks a model's
++	   number by name every frame, each a walk of the precache list with
++	   case-blind compares, ~0.3 ms a fight frame in strcasecmp and
++	   tolower): the number last found for a name kept by the name's
++	   case-blind hash; it is taken only if that precache entry still
++	   matches the name case-blind, and the list holds no two such names
++	   (SV_ModelIndex adds a name only when none matches), so it is the
++	   walk's own answer */
++	static int rp_mi[256];
++	uint32_t   h = 2166136261u;
++
++	for( const char *c = name; *c; c++ )
++		h = ( h ^ (byte)Q_tolower( *c )) * 16777619u;
++	int k = rp_mi[h & 255];
++
++	if( k > 0 && k < MAX_MODELS && sv.model_precache[k][0] && !Q_stricmp( sv.model_precache[k], name ))
++		return k;
++
+ 	for( int i = 1; i < MAX_MODELS && sv.model_precache[i][0]; i++ )
+ 	{
+ 		if( !Q_stricmp( sv.model_precache[i], name ))
++		{
++			rp_mi[h & 255] = i;
+ 			return i;
++		}
+ 	}
+ 
+ 	Con_Printf( S_ERROR "Cannot get index for model %s: not precached\n", name );
+@@ -1479,6 +1501,20 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  
  	if( pStartEdict ) e = NUM_FOR_EDICT( pStartEdict );
  
@@ -1365,7 +1397,7 @@ index 37e79df..396c3bc 100644
  	for( int i = 0; i < ARRAYSIZE( gEntvarsDescription ); i++ )
  	{
  		if( !Q_strcmp( pszField, gEntvarsDescription[i].fieldName ))
-@@ -1487,6 +1502,10 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1487,6 +1523,10 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  			break;
  		}
  	}
@@ -1376,7 +1408,7 @@ index 37e79df..396c3bc 100644
  
  	if( desc == NULL )
  	{
-@@ -1494,11 +1513,119 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1494,11 +1534,119 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  		return svgame.edicts;
  	}
  
@@ -1496,7 +1528,7 @@ index 37e79df..396c3bc 100644
  		if( !SV_IsValidEdict( ed )) continue;
  
  		if( e <= svs.maxclients && !SV_ClientFromEdict( ed, ( svs.maxclients != 1 )))
-@@ -1509,6 +1636,29 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1509,6 +1657,29 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  		case FIELD_STRING:
  		case FIELD_MODELNAME:
  		case FIELD_SOUNDNAME:
@@ -1526,7 +1558,7 @@ index 37e79df..396c3bc 100644
  			t = SV_GetString( *(string_t *)&((byte *)&ed->v)[desc->fieldOffset] );
  			if( t != NULL && t != svgame.globals->pStringBase )
  			{
-@@ -5330,6 +5480,7 @@ qboolean SV_LoadProgs( const char *name )
+@@ -5330,6 +5501,7 @@ qboolean SV_LoadProgs( const char *name )
  	svs.static_entities = Z_Calloc( sizeof( entity_state_t ) * MAX_STATIC_ENTITIES );
  	svs.baselines = Z_Calloc( sizeof( entity_state_t ) * GI->max_edicts );
  	svgame.numEntities = svs.maxclients + 1; // clients + world
