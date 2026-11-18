@@ -1615,7 +1615,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..73d0fb1 100644
+index dd01c0f..9c98834 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1707,7 +1707,7 @@ index dd01c0f..73d0fb1 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -364,6 +399,148 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -364,6 +399,252 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
  }
  
@@ -1853,10 +1853,114 @@ index dd01c0f..73d0fb1 100644
 +}
 +#endif
 +
++#if defined( __retropane__ )
++/*
++Kit 83 (R324, run 82: the sky check's surface walk, PM_RecursiveSurfCheck
++and its floats, ~5% of the cascade's heavy half, one a model a frame).
++Iterate (rule 0): Xash walks the world's nodes in floats to the first face
++the line meets (its bevel planes) for each model; ours walks the same
++nodes in the same order in 16.16 integers (planes read from their float
++bits), the bevel's sphere and edge planes tested in integers. A face with
++a see-through texture ("{": its texel decides) hands the line to the
++engine's float walk, as does a world not at the origin.
++*/
++#define RP_SURF_FLOAT ( (msurface_t *)(uintptr_t)1 )
++
++static inline int64_t RP_LFix64( float f )
++{
++	/* f x 2^16 as 64 bits (a bevel's squared radius passes 2^15) */
++	uint32_t u, m;
++	int      e;
++	int64_t  v;
++
++	__builtin_memcpy( &u, &f, sizeof( u ));
++	__asm__( "" : "+r"( u ));
++	e = (int)( u >> 23 & 0xFF ) - 127 + 16;
++	if( e < 0 )
++		return 0;
++	if( e > 60 )
++		return u >> 31 ? -INT64_MAX : INT64_MAX;
++	m = ( u & 0x007FFFFFu ) | 0x00800000u;
++	v = e >= 23 ? (int64_t)m << ( e - 23 ) : (int64_t)( m >> ( 23 - e ));
++	return u >> 31 ? -v : v;
++}
++
++static msurface_t *RP_SurfFix( model_t *mod, mnode_t *node, const int32_t p1[3], const int32_t p2[3] )
++{
++	const int32_t eps = 64; /* FRAC_EPSILON, 1/1024, in 16.16 */
++loc0:
++	if( node->contents < 0 )
++		return NULL;
++
++	int32_t t1 = RP_LPlane( node->plane, p1 );
++	int32_t t2 = RP_LPlane( node->plane, p2 );
++
++	if( t1 >= -eps && t2 >= -eps )
++	{
++		node = node_child( node, 0, mod );
++		goto loc0;
++	}
++	if( t1 < eps && t2 < eps )
++	{
++		node = node_child( node, 1, mod );
++		goto loc0;
++	}
++
++	int     side = t1 < 0;
++	int32_t frac = (int32_t)(( (int64_t)t1 << 16 ) / ( (int64_t)t1 - t2 ));
++
++	frac = frac < 0 ? 0 : frac > ( 1 << 16 ) ? ( 1 << 16 ) : frac;
++
++	int32_t mid[3];
++
++	for( int k = 0; k < 3; k++ )
++		mid[k] = p1[k] + (int32_t)(( (int64_t)( p2[k] - p1[k] ) * frac ) >> 16 );
++
++	msurface_t *surf = RP_SurfFix( mod, node_child( node, side, mod ), p1, mid );
++
++	if( surf != NULL )
++		return surf;
++
++	int numsurfaces = node_numsurfaces( node, mod );
++	int firstsurface = node_firstsurface( node, mod );
++
++	for( int i = 0; i < numsurfaces; i++ )
++	{
++		msurface_t   *sf = &mod->surfaces[firstsurface + i];
++		mfacebevel_t *fb = sf->info->bevel;
++		int64_t       d2 = 0;
++		int           j;
++
++		if( !fb )
++			continue;
++		for( int k = 0; k < 3; k++ )
++		{
++			int64_t d = (int64_t)mid[k] - RP_LFix( fb->origin[k], 16 );
++
++			d2 += ( d * d ) >> 16;
++		}
++		if( d2 >= RP_LFix64( fb->radius ))
++			continue; // no intersection
++		for( j = 0; j < fb->numedges; j++ )
++		{
++			if( RP_LPlane( &fb->edges[j], mid ) > eps )
++				break; // outside the bounds
++		}
++		if( j != fb->numedges )
++			continue;
++		if( sf->texinfo && sf->texinfo->texture && sf->texinfo->texture->name[0] == '{' )
++			return RP_SURF_FLOAT; // its texel decides: the engine's walk
++		return sf; // the face's own contents (sky or solid), as PM_SampleMiptex
++	}
++
++	return RP_SurfFix( mod, node_child( node, side ^ 1, mod ), mid, p2 );
++}
++#endif
++
  /*
  =================
  R_LightVecInternal
-@@ -373,6 +550,11 @@ check bspmodels to get light from
+@@ -373,6 +654,11 @@ check bspmodels to get light from
  */
  static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t lvec )
  {
@@ -1868,7 +1972,7 @@ index dd01c0f..73d0fb1 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -385,18 +567,121 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -385,18 +671,121 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  	float last_fraction = 1.0f;
  	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
  	colorVec light = { 0 };
@@ -1878,7 +1982,7 @@ index dd01c0f..73d0fb1 100644
 +	   the brush physents' boxes made once a frame in 16.16 (a unit wider;
 +	   the radius if turned), each trace's box tested against them in
 +	   integers; the same models passed by as kit 79's float test */
-+	enum { RP_LBOX = 128 };
++	enum { RP_LBOX = 512 }; /* c1a0e: over 128 brush physents near the player */
 +	static struct { int16_t i; int32_t lo[3], hi[3]; } rp_lbox[RP_LBOX];
 +	static int    rp_lbox_n = -1, rp_lbox_all;
 +	static double rp_lbox_time = -1.0;
@@ -1990,7 +2094,7 @@ index dd01c0f..73d0fb1 100644
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
  
-@@ -419,8 +704,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,8 +808,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -2029,7 +2133,7 @@ index dd01c0f..73d0fb1 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +804,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +908,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2105,7 +2209,7 @@ index dd01c0f..73d0fb1 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +904,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1008,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -2145,7 +2249,7 @@ index dd01c0f..73d0fb1 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +949,21 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1053,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -2155,7 +2259,29 @@ index dd01c0f..73d0fb1 100644
 +		   world (physent 0), so trace.ent is 0 or -1 and the surface is
 +		   always looked up on the world: the trace decides nothing and is
 +		   not made; the same surface, exactly */
-+		msurface_t *psurf = gEngfuncs.EV_TraceSurface( 0, vecSrc, vecEnd );
++		msurface_t       *psurf = RP_SURF_FLOAT;
++		const physent_t  *world = gEngfuncs.EV_GetPhysent( 0 );
++
++		if( world && world->model && world->model->type == mod_brush && VectorIsNull( world->origin )
++			&& VectorIsNull( world->angles ) && VectorIsNull( world->model->hulls[0].clip_mins ))
++		{
++			int32_t a[3], b[3];
++
++			for( int k = 0; k < 3; k++ )
++			{
++				a[k] = RP_LFix( vecSrc[k], 16 );
++				b[k] = RP_LFix( vecEnd[k], 16 );
++			}
++			/* kit 83: the same walk in 16.16 */
++			int big = 0;
++
++			for( int k = 0; k < 3; k++ )
++				big |= a[k] >= 0x7FFF0000 || a[k] <= -0x7FFF0000 || b[k] >= 0x7FFF0000 || b[k] <= -0x7FFF0000;
++			if( !big ) /* past 32767 units (large coordinates): the float walk */
++				psurf = RP_SurfFix( world->model, &world->model->nodes[world->model->hulls[0].firstclipnode], a, b );
++		}
++		if( psurf == RP_SURF_FLOAT )
++			psurf = gEngfuncs.EV_TraceSurface( 0, vecSrc, vecEnd );
 +#else
  		pmtrace_t trace = gEngfuncs.CL_TraceLine( vecSrc, vecEnd, PM_WORLD_ONLY );
  		msurface_t *psurf;
@@ -2167,7 +2293,7 @@ index dd01c0f..73d0fb1 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -562,6 +982,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +1108,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -2175,7 +2301,7 @@ index dd01c0f..73d0fb1 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +1025,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +1151,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2196,7 +2322,7 @@ index dd01c0f..73d0fb1 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1056,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1182,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
