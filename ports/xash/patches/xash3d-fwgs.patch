@@ -1237,7 +1237,7 @@ index 3ff8edb..758957e 100644
  	// always send servertime at new frame
  	MSG_BeginServerCmd( &msg, svc_time );
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
-index 37e79df..929e113 100644
+index 37e79df..396c3bc 100644
 --- a/engine/server/sv_game.c
 +++ b/engine/server/sv_game.c
 @@ -1050,6 +1050,7 @@ edict_t *GAME_EXPORT SV_AllocEdict( void )
@@ -1280,7 +1280,7 @@ index 37e79df..929e113 100644
  
  	if( desc == NULL )
  	{
-@@ -1494,11 +1513,61 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1494,11 +1513,119 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  		return svgame.edicts;
  	}
  
@@ -1319,6 +1319,64 @@ index 37e79df..929e113 100644
 +		for( const unsigned char *c = (const unsigned char *)pszValue; *c; c++ )
 +			rp_want = ( rp_want ^ *c ) * 16777619u;
 +	}
++
++	/*
++	Kit 91 (R324, run 102: this search 3.0% of the cascade's play, 12 a
++	frame over ~4,100 edicts; with kit 86's hashes it is the memory, two
++	cache lines an edict ~1 KiB apart: `free` and the name).
++	Iterate (rule 0): GoldSrc and Xash test each edict's validity, then
++	its name; kit 86 the same with a hash before strcmp. Ours reads the
++	name's handle first: when it is the handle the hash was made from and
++	the hash differs from the wanted name's, the edict cannot match
++	whether it is valid or not, so it is passed by on that one line; only a
++	new handle or a matching hash reads `free` and goes the old way. The
++	same edicts tested in the same order, the same first match proven by
++	strcmp; the line prefetched four edicts ahead (the XScale's four fill
++	buffers, now one line an edict).
++	*/
++	if( rp_tn && rp_tn_cap > 0 && svgame.numEntities <= rp_tn_cap )
++	{
++		for( e++; e < svgame.numEntities; e++ )
++		{
++			edict_t *ed = svgame.edicts + e;
++
++			if( e + 4 < svgame.numEntities )
++				__builtin_prefetch( &svgame.edicts[e + 4].v.targetname );
++
++			string_t key = ed->v.targetname;
++
++			if( rp_tn_key[e] == key && rp_tn_hash[e] != rp_want )
++				continue; /* this name's hash: not the wanted one */
++
++			if( !SV_IsValidEdict( ed )) continue;
++
++			if( e <= svs.maxclients && !SV_ClientFromEdict( ed, ( svs.maxclients != 1 )))
++				continue;
++
++			const char *t;
++
++			if( rp_tn_key[e] != key )
++			{
++				uint32_t h = 0; /* a null name: never matches (as below) */
++
++				t = SV_GetString( key );
++				if( t != NULL && t != svgame.globals->pStringBase )
++				{
++					h = 2166136261u;
++					for( const unsigned char *c = (const unsigned char *)t; *c; c++ )
++						h = ( h ^ *c ) * 16777619u;
++				}
++				rp_tn_key[e] = key;
++				rp_tn_hash[e] = h;
++			}
++			if( rp_tn_hash[e] != rp_want )
++				continue;
++			t = SV_GetString( key );
++			if( t != NULL && t != svgame.globals->pStringBase && !Q_strcmp( t, pszValue ))
++				return ed;
++		}
++		return svgame.edicts;
++	}
 +#endif
 +
  	for( e++; e < svgame.numEntities; e++ )
@@ -1342,7 +1400,7 @@ index 37e79df..929e113 100644
  		if( !SV_IsValidEdict( ed )) continue;
  
  		if( e <= svs.maxclients && !SV_ClientFromEdict( ed, ( svs.maxclients != 1 )))
-@@ -1509,6 +1578,29 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1509,6 +1636,29 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  		case FIELD_STRING:
  		case FIELD_MODELNAME:
  		case FIELD_SOUNDNAME:
@@ -1372,7 +1430,7 @@ index 37e79df..929e113 100644
  			t = SV_GetString( *(string_t *)&((byte *)&ed->v)[desc->fieldOffset] );
  			if( t != NULL && t != svgame.globals->pStringBase )
  			{
-@@ -5330,6 +5422,7 @@ qboolean SV_LoadProgs( const char *name )
+@@ -5330,6 +5480,7 @@ qboolean SV_LoadProgs( const char *name )
  	svs.static_entities = Z_Calloc( sizeof( entity_state_t ) * MAX_STATIC_ENTITIES );
  	svs.baselines = Z_Calloc( sizeof( entity_state_t ) * GI->max_edicts );
  	svgame.numEntities = svs.maxclients + 1; // clients + world
