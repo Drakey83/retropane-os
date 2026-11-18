@@ -251,7 +251,15 @@ static void RP_EmitReport( void )
 			rp_vn_counts[0], rp_vn_counts[0] ? rp_vn_counts[1] / rp_vn_counts[0] : 0 );
 		fprintf( stderr, "rp-emit: kit 103's screen test (rp_facecull %d): %u world faces a frame wholly off the screen not sent, %u sent\n",
 			rp_facecull, rp_vn_counts[2] / f, rp_vn_counts[3] / f );
-		rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
+{
+			extern int      rp_light_check;
+			extern unsigned rp_light_checks[2];
+
+			if( rp_light_check > 0 )
+				fprintf( stderr, "rp-emit: kit 107's light lists checked against the scans: %u checks, %u differed (must be 0)%c", rp_light_checks[0], rp_light_checks[1], 10 );
+			rp_light_checks[0] = rp_light_checks[1] = 0;
+		}
+				rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
 	}
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: atlas (R297, R299, rp_mip %d): %u faces a frame switched mip level (a pop each, the old place kept), the pages %u%% filled to their shelves; %u faces a frame drawn from their old place (no room), %u pages dropped to unjam, %u faces taken a level coarser (too large or no room), %u faces a frame waiting for the upload budget; %u faces a frame relit for a dynamic light (%u KiB, never waiting: R305)\n",

@@ -1332,6 +1332,22 @@ needs ~10 ms, about the debris' whole cost, so it needs a change to what the
 debris does (fewer pieces drawn, lit more simply), which is the owner's
 call.
 
+**Kit 107, 7e's exact fixes (the owner: "Exact fixes, then options").**
+The dynamic and entity lights change only through the engine's writers
+(allocate, decay, clear, the test lights), which now give `rp_light_gen`
+a new number; each frame's live lights are listed once and kept while it
+holds (`R_StudioEntityLight` no longer scans 128 slots for every piece,
+`R_EntityDynamicLight` 32, and the pre-pass's copy is known equal while
+the number has not moved). The light walk's 64-bit division is 17 steps of
+shift and subtract (checked on the PC against C's over 2 million pairs).
+Run 173 (`-rplightcheck`): 80,414 lists and answers checked against the
+scans on the X51v, 0 differed. Runs 176-177: cascade **29.9 / 23.8**,
+fight **21.8 / 24.0** (kit 106: 29.8 / 23.0 and 21.7 / 23.9). **The
+cascade's end picture varies between runs of one kit** in a 7-pixel spot
+at (546, 235) (runs 165 and 169 one way, 172 the other, kit 106 both):
+kit 107's runs match one or the other exactly, and kit 105's one-pixel
+"difference" was likely this spot.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

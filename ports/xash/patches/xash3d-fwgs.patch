@@ -110,7 +110,7 @@ index 39e4f9c..bbb2eaf 100644
  	Cmd_AddCommand ("fullupdate", NULL, "re-init HUD on start demo recording" );
  	Cmd_AddCommand ("give", NULL, "give specified item or weapon" );
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
-index 95c85f7..d0dc455 100644
+index 95c85f7..03190a3 100644
 --- a/engine/client/cl_tent.c
 +++ b/engine/client/cl_tent.c
 @@ -37,7 +37,20 @@ TEMPENTS MANAGEMENT
@@ -264,7 +264,63 @@ index 95c85f7..d0dc455 100644
  	{
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
-@@ -3054,6 +3110,10 @@ void CL_ClearStaticEntities( void )
+@@ -2431,6 +2487,13 @@ DLIGHT MANAGEMENT
+ */
+ static dlight_t cl_dlights[MAX_DLIGHTS];
+ static dlight_t cl_elights[MAX_ELIGHTS];
++// RetroPane kit 107 (ADR-0040 7e): a new number whenever the engine hands
++// out, decays or clears a dynamic or entity light (every writer of the two
++// tables: the callers of CL_AllocDlight / CL_AllocElight fill the light
++// they were given at once), so ref_rp keeps each frame's live lights as a
++// list and checks it against this number instead of scanning every slot
++// for every model (`-rplightcheck` scans too and counts any difference)
++int rp_light_gen;
+ 
+ /*
+ ================
+@@ -2439,6 +2502,7 @@ CL_ClearDlights
+ */
+ static void CL_ClearDlights( void )
+ {
++	rp_light_gen++;
+ 	memset( cl_dlights, 0, sizeof( cl_dlights ));
+ 	memset( cl_elights, 0, sizeof( cl_elights ));
+ }
+@@ -2454,6 +2518,8 @@ dlight_t *CL_AllocDlight( int key )
+ 	dlight_t	*dl;
+ 	int	i;
+ 
++	rp_light_gen++; // RetroPane kit 107
++
+ 	// first look for an exact key match
+ 	if( key )
+ 	{
+@@ -2499,6 +2565,8 @@ dlight_t *CL_AllocElight( int key )
+ 	dlight_t	*dl;
+ 	int	i;
+ 
++	rp_light_gen++; // RetroPane kit 107
++
+ 	// first look for an exact key match
+ 	if( key )
+ 	{
+@@ -2541,6 +2609,7 @@ CL_DecayLights
+ */
+ void CL_DecayLights( void )
+ {
++	rp_light_gen++; // RetroPane kit 107
+ 	const float time = cl.time;
+ 	const float dt = cl.time - cl.oldtime;
+ 
+@@ -2839,6 +2908,7 @@ void CL_TestLights( void )
+ 
+ 	int numLights = bound( 1, cl_testlights.value, MAX_DLIGHTS );
+ 	AngleVectors( cl.viewangles, forward, right, NULL );
++	rp_light_gen++; // RetroPane kit 107: writes the table itself
+ 
+ 	for( int i = 0; i < numLights; i++ )
+ 	{
+@@ -3054,6 +3124,10 @@ void CL_ClearStaticEntities( void )
  	// clear out efrags in case the level hasn't been reloaded
  	for( int i = 0; i < cl.worldmodel->numleafs; i++ )
  		cl.worldmodel->leafs[i+1].efrags = NULL;
@@ -1920,7 +1976,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..97719ec 100644
+index dd01c0f..e028821 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -2012,7 +2068,7 @@ index dd01c0f..97719ec 100644
  
  		// a1ba: the fix was taken from JoeQuake, which traces back to FitzQuake,
  		// which attributes it to LadyHavoc (Darkplaces author)
-@@ -364,6 +399,539 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -364,6 +399,571 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
  }
  
@@ -2294,6 +2350,38 @@ index dd01c0f..97719ec 100644
 +	return 1;
 +}
 +
++/*
++RetroPane kit 107 (run 165: the 64-bit division here +0.22 ms a heavy
++frame, a library call of ~100 steps): front and back have opposite signs,
++so front - back has front's sign, |front - back| = |front| + |back| fits
++32 bits, and |front| <= |front - back|: the quotient (front << 16) /
++(front - back) is in [0, 65536], made by 17 steps of shift and subtract
++on the magnitudes. The same value as C's division (both truncate a
++non-negative quotient). Exact.
++*/
++static inline int32_t RP_FracDiv( int32_t front, int32_t back )
++{
++	uint32_t a = front < 0 ? 0u - (uint32_t)front : (uint32_t)front;
++	uint32_t d = a + ( back < 0 ? 0u - (uint32_t)back : (uint32_t)back );
++	uint64_t r = a;
++	uint32_t q = 0;
++
++	if( !d )
++		return 0; /* never: the signs differ, so d > 0 */
++	for( int i = 0; i < 17; i++ )
++	{
++		/* bit 16 - i of the quotient of (a << 16) / d */
++		q <<= 1;
++		if( r >= d )
++		{
++			r -= d;
++			q |= 1;
++		}
++		r <<= 1;
++	}
++	return (int32_t)q;
++}
++
 +/* RP_LightPointFix on the light nodes: the same walk, node by number */
 +static int RP_LightPointLn( const model_t *model, const rp_lnode_t *ln, int ni, int32_t p1f, int32_t p2f, colorVec *cv, const int32_t start[3], const int32_t end[3] )
 +{
@@ -2317,7 +2405,7 @@ index dd01c0f..97719ec 100644
 +	}
 +
 +	/* frac = front / ( front - back ), 16.16, in [0, 1] (the signs differ) */
-+	int32_t frac = (int32_t)(( (int64_t)front << 16 ) / ( (int64_t)front - back ));
++	int32_t frac = RP_FracDiv( front, back ); /* kit 107: (front << 16) / (front - back), exactly */
 +	int32_t mid[3];
 +
 +	for( int k = 0; k < 3; k++ )
@@ -2364,7 +2452,7 @@ index dd01c0f..97719ec 100644
 +	}
 +
 +	/* frac = front / ( front - back ), 16.16, in [0, 1] (the signs differ) */
-+	int32_t frac = (int32_t)(( (int64_t)front << 16 ) / ( (int64_t)front - back ));
++	int32_t frac = RP_FracDiv( front, back ); /* kit 107: (front << 16) / (front - back), exactly */
 +	int32_t mid[3];
 +
 +	for( int k = 0; k < 3; k++ )
@@ -2552,7 +2640,7 @@ index dd01c0f..97719ec 100644
  /*
  =================
  R_LightVecInternal
-@@ -371,8 +939,17 @@ R_LightVecInternal
+@@ -371,8 +971,17 @@ R_LightVecInternal
  check bspmodels to get light from
  =================
  */
@@ -2570,7 +2658,7 @@ index dd01c0f..97719ec 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -385,18 +962,125 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -385,18 +994,125 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  	float last_fraction = 1.0f;
  	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
  	colorVec light = { 0 };
@@ -2675,7 +2763,7 @@ index dd01c0f..97719ec 100644
 +		{
 +			const model_t *m = pe->model;
 +			int            miss = 0;
-+
+ 
 +			for( int k = 0; k < 3 && !miss; k++ )
 +			{
 +				float lo = start[k] < end[k] ? start[k] : end[k];
@@ -2689,14 +2777,14 @@ index dd01c0f..97719ec 100644
 +				continue;
 +		}
 +#endif
- 
++
 +#if defined( __retropane__ )
 +		rp_prof[3]++;
 +#endif
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
  
-@@ -419,11 +1103,57 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,11 +1135,57 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -2754,7 +2842,7 @@ index dd01c0f..97719ec 100644
  			if( lspot ) VectorCopy( g_trace_lightspot, lspot );
  			if( lvec ) VectorNormalize2( g_trace_lightvec, lvec );
  
-@@ -489,6 +1219,471 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +1251,543 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -3113,7 +3201,78 @@ index dd01c0f..97719ec 100644
 +adds nothing either way, so only the others are compared, whole. The time
 +itself is compared with the rest.
 +*/
++/*
++RetroPane kit 107 (ADR-0040 7e; run 165: the heavy half spent +0.38 ms a
++frame in RP_PreDlSame and part of R_EntityDynamicLight's +0.86 scanning
++the 32 dynamic lights for each of ~110 debris pieces). The tables change
++only through the engine's own writers, each of which gives rp_light_gen a
++new number (engine/client/cl_tent.c), so a frame's live dynamic lights are
++listed once and kept while the number, the time and r_dynamic hold, and
++the pre-pass's copy is known equal while the number has not moved since
++it was taken. -rplightcheck scans as before too and counts differences.
++*/
++extern int rp_light_gen;
++int        rp_light_check = -1;  // -rplightcheck
++unsigned   rp_light_checks[2];   // lists or answers checked, differences (must be 0)
++static int      rp_pre_gen;
++static uint8_t  rp_dl_live[MAX_DLIGHTS];
++static int      rp_dl_n, rp_dl_gen = -1;
++static uint32_t rp_dl_tbits, rp_dl_dbits;
++
++static __attribute__(( noinline )) int RP_DlScan( float time_f, uint8_t *out )
++{
++	int n = 0;
++
++	for( uint lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
++		if( !( RP_FloatLess( gp_dlights[lnum].die, time_f ) || !r_dynamic->value ))
++			out[n++] = (uint8_t)lnum;
++	return n;
++}
++
++static int RP_DlLive( float time_f, const uint8_t **live )
++{
++	uint32_t tb, db;
++
++	if( rp_light_check < 0 )
++		rp_light_check = !!gEngfuncs.Sys_CheckParm( "-rplightcheck" );
++	memcpy( &tb, &time_f, 4 );
++	memcpy( &db, &r_dynamic->value, 4 );
++	if( rp_dl_gen != rp_light_gen || tb != rp_dl_tbits || db != rp_dl_dbits )
++	{
++		rp_dl_n = RP_DlScan( time_f, rp_dl_live );
++		rp_dl_gen = rp_light_gen;
++		rp_dl_tbits = tb;
++		rp_dl_dbits = db;
++	}
++	else if( rp_light_check )
++	{
++		uint8_t fresh[MAX_DLIGHTS];
++		int     n = RP_DlScan( time_f, fresh );
++
++		rp_light_checks[0]++;
++		rp_light_checks[1] += n != rp_dl_n || memcmp( fresh, rp_dl_live, n );
++	}
++	*live = rp_dl_live;
++	return rp_dl_n;
++}
++
++static int RP_PreDlSameScan( double time );
++
 +static int RP_PreDlSame( double time )
++{
++	if( rp_pre_gen == rp_light_gen )
++	{
++		if( rp_light_check > 0 )
++		{
++			rp_light_checks[0]++;
++			rp_light_checks[1] += !RP_PreDlSameScan( time );
++		}
++		return 1;
++	}
++	return RP_PreDlSameScan( time );
++}
++
++static __attribute__(( noinline )) int RP_PreDlSameScan( double time )
 +{
 +	float time_f = RP_TimeCeil( time );
 +
@@ -3155,6 +3314,7 @@ index dd01c0f..97719ec 100644
 +		return;
 +	rp_pre_stamp++;
 +	memcpy( rp_pre_dl, gp_dlights, sizeof( rp_pre_dl ));
++	rp_pre_gen = rp_light_gen; // kit 107: the copy is the table while this holds
 +	rp_pre_filling = 1;
 +	for( int l = 0; l < 2; l++ )
 +	{
@@ -3226,7 +3386,7 @@ index dd01c0f..97719ec 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -499,6 +1694,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -499,6 +1798,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  {
  	if( !plight || !ent )
  		return;
@@ -3264,7 +3424,7 @@ index dd01c0f..97719ec 100644
  
  	if( !draw_world || r_fullbright->value || FBitSet( ent->curstate.effects, EF_FULLBRIGHT ))
  	{
-@@ -520,11 +1746,69 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1850,69 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -3335,7 +3495,7 @@ index dd01c0f..97719ec 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1822,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1926,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -3379,7 +3539,7 @@ index dd01c0f..97719ec 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -561,9 +1876,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -561,9 +1980,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorScale( lightDir, 2048.0f, vecEnd );
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
@@ -3414,7 +3574,7 @@ index dd01c0f..97719ec 100644
  		{
  			float grad[4];
  			colorVec gcolor;
-@@ -603,7 +1942,39 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -603,7 +2046,39 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  			VectorCopy( lightvec, lightDir );
  		}
  	}
@@ -3455,21 +3615,26 @@ index dd01c0f..97719ec 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1992,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,13 +2096,14 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
+-	for( uint lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
+-	{
+-		const dlight_t *dl = &gp_dlights[lnum];
 +	float time_f = RP_TimeCeil( time );
-+
- 	for( uint lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
- 	{
- 		const dlight_t *dl = &gp_dlights[lnum];
  
 -		if( dl->die < time || !r_dynamic->value )
-+		if( RP_FloatLess( dl->die, time_f ) || !r_dynamic->value )
- 			continue;
+-			continue;
++	const uint8_t *live; // kit 107: the frame's live lights, in slot order
++	const int      nlive = RP_DlLive( time_f, &live );
  
++	for( int li = 0; li < nlive; li++ )
++	{
++		const dlight_t *dl = &gp_dlights[live[li]];
  		vec3_t dist;
+ 		VectorSubtract( ent->origin, dl->origin, dist );
+ 
 diff --git a/ref/soft/r_beams.c b/ref/soft/r_beams.c
 index d962d45..bcd577a 100644
 --- a/ref/soft/r_beams.c
@@ -4881,30 +5046,93 @@ index 621d74f..93f4f53 100644
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..5565828 100644
+index 03790d8..b320c84 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1293,11 +1293,18 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+@@ -1272,6 +1272,61 @@ pfnStudioEntityLight
+ 
+ ===============
+ */
++/*
++RetroPane kit 107 (ADR-0040 7e; run 165: R_StudioEntityLight +0.83 ms a
++heavy frame, its 128 entity-light slots scanned for each of ~110 debris
++pieces, nearly every one dead): the frame's live slots listed once and
++kept while the engine's light number (rp_light_gen: every writer of the
++table gives it a new one), the time and the table hold; the same slots in
++the same order as the scan. -rplightcheck scans too and counts differences.
++*/
++extern int      rp_light_gen, rp_light_check;
++extern unsigned rp_light_checks[2];
++static uint8_t  rp_el_live[MAX_ELIGHTS];
++static int      rp_el_n, rp_el_gen = -1;
++static uint32_t rp_el_tbits;
++static const dlight_t *rp_el_table;
++
++static __attribute__(( noinline )) int RP_ElScan( float time_f, uint8_t *out )
++{
++	int n = 0;
++
++	for( int lnum = 0; lnum < MAX_ELIGHTS; lnum++ )
++	{
++		const dlight_t *el = &tr.elights[lnum];
++
++		if( lnum + 4 < MAX_ELIGHTS )
++			__builtin_prefetch( &tr.elights[lnum + 4].die );
++		if( !( RP_FloatLess( el->die, time_f ) || el->radius <= 0.0f ))
++			out[n++] = (uint8_t)lnum;
++	}
++	return n;
++}
++
++static int RP_ElLive( float time_f, const uint8_t **live )
++{
++	uint32_t tb;
++
++	memcpy( &tb, &time_f, 4 );
++	if( rp_el_gen != rp_light_gen || tb != rp_el_tbits || rp_el_table != tr.elights )
++	{
++		rp_el_n = RP_ElScan( time_f, rp_el_live );
++		rp_el_gen = rp_light_gen;
++		rp_el_tbits = tb;
++		rp_el_table = tr.elights;
++	}
++	else if( rp_light_check > 0 )
++	{
++		uint8_t fresh[MAX_ELIGHTS];
++		int     n = RP_ElScan( time_f, fresh );
++
++		rp_light_checks[0]++;
++		rp_light_checks[1] += n != rp_el_n || memcmp( fresh, rp_el_live, n );
++	}
++	*live = rp_el_live;
++	return rp_el_n;
++}
++
+ static void R_StudioEntityLight( alight_t *lightinfo )
+ {
+ 	int         lnum, i, j, k;
+@@ -1293,13 +1348,16 @@ static void R_StudioEntityLight( alight_t *lightinfo )
  	dist2 = 1000000.0f;
  	k = 0;
  
+-	for( lnum = 0; lnum < MAX_ELIGHTS; lnum++ )
 +	float time_f = RP_TimeCeil( g_studio.time );
 +
- 	for( lnum = 0; lnum < MAX_ELIGHTS; lnum++ )
++	const uint8_t *live; // kit 107: the frame's live slots, in slot order
++	const int      nlive = RP_ElLive( time_f, &live );
++
++	for( int li = 0; li < nlive; li++ )
  	{
++		lnum = live[li];
  		el = &tr.elights[lnum];
  
 -		if( el->die < g_studio.time || el->radius <= 0.0f )
-+		// RetroPane (kit 66, run 63: 320 samples on the die time's first
-+		// load, nearly every record dead): the record four on asked for
-+		if( lnum + 4 < MAX_ELIGHTS )
-+			__builtin_prefetch( &tr.elights[lnum + 4].die );
-+
-+		if( RP_FloatLess( el->die, time_f ) || el->radius <= 0.0f )
- 			continue;
- 
+-			continue;
+-
  		if(( el->key & 0xFFF ) == ent->index )
-@@ -1675,6 +1682,138 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+ 		{
+ 			int att = ( el->key >> 12 ) & 0xF;
+@@ -1675,6 +1733,138 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -5043,7 +5271,7 @@ index 03790d8..5565828 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1825,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1876,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -5057,7 +5285,7 @@ index 03790d8..5565828 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1865,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1916,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -5071,7 +5299,7 @@ index 03790d8..5565828 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1754,6 +1907,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1754,6 +1958,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
  	qboolean glowShell = ( scale > 0.0f ) ? true : false;
  	vec3_t   vert;
  
@@ -5087,7 +5315,7 @@ index 03790d8..5565828 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +1974,7 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +2025,7 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -5095,7 +5323,7 @@ index 03790d8..5565828 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +2013,39 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +2064,39 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -5138,7 +5366,7 @@ index 03790d8..5565828 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1886,10 +2075,42 @@ static void R_StudioDrawPoints( void )
+@@ -1886,10 +2126,42 @@ static void R_StudioDrawPoints( void )
  				VectorSet( g_studio.lightvalues[k], tr.blend, tr.blend, tr.blend );
  			}
  		}
@@ -5181,7 +5409,7 @@ index 03790d8..5565828 100644
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1947,14 +2168,16 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2219,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  
