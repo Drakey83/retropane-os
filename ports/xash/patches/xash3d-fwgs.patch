@@ -1615,7 +1615,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..9c98834 100644
+index dd01c0f..fcebca2 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1972,7 +1972,7 @@ index dd01c0f..9c98834 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -385,18 +671,121 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -385,18 +671,122 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  	float last_fraction = 1.0f;
  	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
  	colorVec light = { 0 };
@@ -1987,7 +1987,7 @@ index dd01c0f..9c98834 100644
 +	static int    rp_lbox_n = -1, rp_lbox_all;
 +	static double rp_lbox_time = -1.0;
 +	int32_t       ray_lo[3], ray_hi[3];
-+	int           rp_idx[RP_LBOX + 1], rp_n = max_ents;
++	int           rp_n = max_ents;
 +	const int    *rp_list = NULL;
 +
 +	if( rp_lbox_time != gp_cl->time || rp_lbox_n < 0 )
@@ -2030,7 +2030,8 @@ index dd01c0f..9c98834 100644
 +	if( rp_lbox_all )
 +	{
 +		/* the world, then only the brush models whose boxes the ray meets */
-+		int n = 0;
++		static int rp_idx[RP_LBOX + 1];
++		int        n = 0;
 +
 +		rp_idx[n++] = 0;
 +		for( int j = 0; j < rp_lbox_n; j++ )
@@ -2094,7 +2095,7 @@ index dd01c0f..9c98834 100644
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
  
-@@ -419,8 +808,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,8 +809,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -2133,7 +2134,7 @@ index dd01c0f..9c98834 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +908,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +909,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2209,7 +2210,7 @@ index dd01c0f..9c98834 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +1008,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1009,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -2249,7 +2250,7 @@ index dd01c0f..9c98834 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1053,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1054,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -2293,7 +2294,7 @@ index dd01c0f..9c98834 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -562,6 +1108,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +1109,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -2301,7 +2302,7 @@ index dd01c0f..9c98834 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +1151,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +1152,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2322,7 +2323,7 @@ index dd01c0f..9c98834 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1182,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1183,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
@@ -3093,10 +3094,97 @@ index 1a7efd6..08ae21c 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..084020c 100644
+index 2c644f6..a0b09e6 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
-@@ -959,7 +959,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
+@@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
+ 	return 0;
+ }
+ 
++#if defined( __retropane__ )
++/*
++Kit 84 (R324, run 83: R_TransEntityCompare and its floats ~1.5% of the
++cascade's heavy half, ~100 see-through debris pieces sorted a frame, two
++distances worked out in floats at every comparison). Iterate (rule 0):
++Xash's comparator measures both entities each time it is called (n log n
++distances); ours measures each entity once, by the comparator's own rules
++(its quirk kept: the second entity's test reads the first's model), and
++sorts those keys with the same qsort and the same comparison outcomes,
++so the same order.
++*/
++typedef struct
++{
++	cl_entity_t *ent;
++	float        dist1, dist2; /* as the first argument, as the second */
++	int          rank;
++} rp_tkey_t;
++
++static int RP_TransKeyCompare( const rp_tkey_t *a, const rp_tkey_t *b )
++{
++	if( a->dist1 > b->dist2 )
++		return -1;
++	if( a->dist1 < b->dist2 )
++		return 1;
++	if( a->rank > b->rank )
++		return 1;
++	if( a->rank < b->rank )
++		return -1;
++	return 0;
++}
++
++/* 0 if it cannot (more than it holds, or an entity with no model) */
++static int RP_SortTrans( void )
++{
++	enum { RP_TKEYS = 1024 };
++	static rp_tkey_t keys[RP_TKEYS];
++	int              n = tr.draw_list->num_trans_entities;
++
++	if( n > RP_TKEYS )
++		return 0;
++	for( int i = 0; i < n; i++ )
++	{
++		cl_entity_t *e = tr.draw_list->trans_entities[i];
++		int          rm;
++
++		if( !e->model )
++			return 0;
++		rm = R_GetEntityRenderMode( e );
++		keys[i].ent = e;
++		keys[i].rank = R_RankForRenderMode( rm );
++		/* every model is set, so both of the comparator's tests read alike */
++		if( e->model->type != mod_brush || rm != kRenderTransAlpha )
++		{
++			vec3_t org, vecLen;
++
++			VectorAverage( e->model->mins, e->model->maxs, org );
++			VectorAdd( e->origin, org, org );
++			VectorSubtract( RI.rvp.vieworigin, org, vecLen );
++			keys[i].dist1 = keys[i].dist2 = DotProduct( vecLen, vecLen );
++		}
++		else
++			keys[i].dist1 = keys[i].dist2 = 1000000000;
++	}
++	qsort( keys, n, sizeof( keys[0] ), (void *)RP_TransKeyCompare );
++	for( int i = 0; i < n; i++ )
++		tr.draw_list->trans_entities[i] = keys[i].ent;
++	return 1;
++}
++#endif
++
+ /*
+ ===============
+ R_WorldToScreen
+@@ -485,6 +555,9 @@ static void R_SetupFrame( void )
+ //	if( !gl_nosort->value )
+ 	{
+ 		// sort translucents entities by rendermode and distance
++#if defined( __retropane__ )
++		if( !RP_SortTrans( ))
++#endif
+ 		qsort( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities, sizeof( cl_entity_t * ), (void *)R_TransEntityCompare );
+ 	}
+ 
+@@ -959,7 +1032,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
  
  
  	insubmodel = false;
@@ -3106,7 +3194,7 @@ index 2c644f6..084020c 100644
  	alphaspans = false;
  }
  
-@@ -1010,7 +1011,8 @@ static void R_EdgeDrawing( void )
+@@ -1010,7 +1084,8 @@ static void R_EdgeDrawing( void )
  	R_DrawBEntitiesOnList();
  
  	// display all edges
@@ -3116,7 +3204,7 @@ index 2c644f6..084020c 100644
  }
  
  /*
-@@ -1113,6 +1115,9 @@ R_BeginFrame
+@@ -1113,6 +1188,9 @@ R_BeginFrame
  */
  void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
@@ -3126,7 +3214,7 @@ index 2c644f6..084020c 100644
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1229,7 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1302,7 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -3134,7 +3222,7 @@ index 2c644f6..084020c 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1376,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1449,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  
