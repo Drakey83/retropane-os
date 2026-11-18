@@ -317,15 +317,33 @@ def scope_verdict(paths, strict=False):
     return "rule 0 reaches the build: " + "; ".join(bad[:3]) + more
 
 
-def push_verdict(head, clean, stamp):
+def is_backup_ref(ref):
+    """A backup branch: `backup/...` (the owner, 2026-11-17)."""
+    ref = ref.lstrip("+")
+    return ref.startswith("backup/") or ref.startswith("refs/heads/backup/")
+
+
+def push_verdict(head, clean, stamp, dests=None):
+    """`dests`: the remote refs the push writes (None: not known). A
+    backup stamp (`cargo xtask ci --backup`: every step enforced but the
+    app scope, reported only; the owner's ruling 2026-11-17, "Allow a
+    backup push") lets a push through only to `backup/...` branches."""
     if stamp is None:
         return "CI before push: `cargo xtask ci` has not passed here (no target/ci-pass.txt)"
-    s_head, s_state = stamp
+    s_head, s_state = stamp[0], stamp[1]
     if s_head != head:
         return f"CI before push: CI last passed on {s_head[:8]}, HEAD is {head[:8]}: run `cargo xtask ci` again"
     if s_state != "clean" or not clean:
         return "CI before push: CI passed with tracked changes uncommitted, or there are some now: commit, then run `cargo xtask ci`"
+    if len(stamp) > 2 and stamp[2] == "backup" and (not dests or not all(is_backup_ref(d) for d in dests)):
+        return "CI before push: this commit passed `cargo xtask ci --backup` (the app scope reported, not enforced): it goes only to `backup/...` branches, named in the push (`origin HEAD:backup/<name>`); anything else needs a full `cargo xtask ci`"
     return None
+
+
+def push_dests(words):
+    """The remote refs a push command's words name (after the remote)."""
+    specs = [w for w in words if not w.startswith("-")][1:]
+    return [s.partition(":")[2] or s for s in specs]
 
 
 FORK_URL = re.compile(r"github\.com[/:]Drakey83/retropane-qemu(\.git)?/?$", re.I)
@@ -382,7 +400,7 @@ def read_stamp():
     try:
         with open(os.path.join(REPO, "target", "ci-pass.txt"), encoding="utf-8") as fh:
             parts = fh.read().split()
-        return (parts[0], parts[1]) if len(parts) >= 2 else None
+        return tuple(parts[:3]) if len(parts) >= 2 else None
     except OSError:
         return None
 
@@ -539,7 +557,7 @@ def hook(mode):
             return
         head = git("rev-parse", "HEAD")[0]
         clean = not git("status", "--porcelain", "--untracked-files=no")
-        reason = push_verdict(head, clean, read_stamp())
+        reason = push_verdict(head, clean, read_stamp(), push_dests(words))
         if reason:
             deny(reason)
 
@@ -589,7 +607,18 @@ def self_test():
         (("a" * 40, False, ("a" * 40, "clean")), False),
         (("a" * 40, True, ("a" * 40, "dirty")), False),
         (("a" * 40, True, None), False),
+        # A backup pass (the owner, 2026-11-17): backup/... branches only.
+        (("a" * 40, True, ("a" * 40, "clean", "backup"), ["backup/x"]), True),
+        (("a" * 40, True, ("a" * 40, "clean", "backup"), ["refs/heads/backup/x"]), True),
+        (("a" * 40, True, ("a" * 40, "clean", "backup"), ["backup/x", "main"]), False),
+        (("a" * 40, True, ("a" * 40, "clean", "backup"), ["fix/x"]), False),
+        (("a" * 40, True, ("a" * 40, "clean", "backup"), []), False),
+        (("a" * 40, True, ("a" * 40, "clean", "backup"), None), False),
+        (("a" * 40, True, ("a" * 40, "clean"), ["main"]), True),
     ]
+    if push_dests(["origin", "HEAD:backup/x", "-u"]) != ["backup/x"] or push_dests(["origin", "fix/y"]) != ["fix/y"]:
+        bad += 1
+        print("WRONG push_dests")
     # Which repository: the git -C folder, the cds before the git command
     # (chained, relative to the last), the hook's folder, Git Bash paths.
     dirs = [
@@ -607,8 +636,9 @@ def self_test():
         if os.path.normcase(got) != os.path.normcase(os.path.normpath(want)):
             bad += 1
             print("WRONG folder:", cmd, "->", got)
-    for (head, clean, stamp), allow in pushes:
-        if (push_verdict(head, clean, stamp) is None) != allow:
+    for args_, allow in pushes:
+        head, clean, stamp = args_[:3]
+        if (push_verdict(*args_) is None) != allow:
             bad += 1
             print("WRONG push:", head[:4], clean, stamp)
     # The emulator fork: releases only (a fast-forward of `retropane`, a new
@@ -759,7 +789,9 @@ def git_hook(mode):
     else:
         head = git("rev-parse", "HEAD")[0]
         clean = not git("status", "--porcelain", "--untracked-files=no")
-        reason = push_verdict(head, clean, read_stamp())
+        # git hands the hook "<local ref> <local sha> <remote ref> <remote sha>" lines
+        dests = [l.split()[2] for l in sys.stdin.read().splitlines() if len(l.split()) >= 4]
+        reason = push_verdict(head, clean, read_stamp(), dests)
     if reason:
         print("Refused by the owner's hard rules (tools/remind/rules_gate.py): " + reason, file=sys.stderr)
         return 1

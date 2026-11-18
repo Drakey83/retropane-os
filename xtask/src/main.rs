@@ -431,6 +431,24 @@ fn scope_check() -> Result {
     Err("scope: no python found to run tools/remind/rules_gate.py".into())
 }
 
+/// CI's last step, the app scope (rule 0 reaches the build). With
+/// `--backup` (the owner's ruling 2026-11-17, "Allow a backup push") it is
+/// run and shown but not enforced, and the stamp says `backup`: the rules
+/// gate then lets that commit go only to `backup/...` branches, never to a
+/// working branch or `main`, so an app short of its plan still never
+/// reaches either.
+fn ci_scope(backup: bool) -> Result {
+    if !backup {
+        return run_step("scope");
+    }
+    if let Err(e) = scope_check() {
+        eprintln!(
+            "xtask: {e}; reported, not enforced: a backup pass (`ci --backup`), its pushes to backup/... only"
+        );
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let cmd = args().nth(1).unwrap_or_default();
     let flag = args().nth(2).unwrap_or_default();
@@ -446,11 +464,11 @@ fn main() -> ExitCode {
             "test",
             "cross",
             "stacks",
-            "scope",
         ]
         .iter()
         .try_for_each(|c| run_step(c))
-        .and_then(|()| ci_stamp(&workspace_root())),
+        .and_then(|()| ci_scope(flag == "--backup"))
+        .and_then(|()| ci_stamp(&workspace_root(), flag == "--backup")),
         "eol"
         | "reminders"
         | "fmt"
@@ -882,7 +900,7 @@ fn args() -> impl Iterator<Item = String> {
 /// tracked files were clean, the stamp `tools/remind/rules_gate.py`
 /// checks before a push (the owner's rule: full CI before every push;
 /// 2026-10-25, a push found three problems a skipped CI would have).
-fn ci_stamp(root: &std::path::Path) -> Result {
+fn ci_stamp(root: &std::path::Path, backup: bool) -> Result {
     let git = |args: &[&str]| -> std::result::Result<String, String> {
         let out = std::process::Command::new("git")
             .args(args)
@@ -908,11 +926,12 @@ fn ci_stamp(root: &std::path::Path) -> Result {
     let head = git(&["rev-parse", "HEAD"])?;
     let dirty = !git(&["status", "--porcelain", "--untracked-files=no"])?.is_empty();
     let state = if dirty { "dirty" } else { "clean" };
+    let kind = if backup { " backup" } else { "" };
     let path = root.join("target").join("ci-pass.txt");
     std::fs::write(
         &path,
         format!(
-            "{head} {state}
+            "{head} {state}{kind}
 "
         ),
     )
