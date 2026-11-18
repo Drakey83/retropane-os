@@ -57,3 +57,4 @@ copied from the log.
 | gpubench-0002 to -0006 (X50v) | 2026-11-13 | GC2EB-GC2EG: the steps above 139.75 / 1; 143.00 / 1 soak-clean | [2026-11-13-gpubench-0002-0006-x50v-high-steps.md](2026-11-13-gpubench-0002-0006-x50v-high-steps.md) |
 | gpubench-0007 (X50v) | 2026-11-13 | GC2EH: 145.60 / 1 soak-proven on the X50v | [2026-11-13-gpubench-0007-x50v-145.md](2026-11-13-gpubench-0007-x50v-145.md) |
 | gpubench-0138 | 2026-11-14 | GC2DR on a cold X51v (R189 item 2): first wrong step 139.75 / 1 (3 of 400), 138.67 / 1 right | [2026-11-14-gpubench-0138-cold-gc2dr.md](2026-11-14-gpubench-0138-cold-gc2dr.md) |
+| port-runner 17, 18, 19, 0032 | 2026-11-16 | R295, the TA path's render hangs at 136.50 / 1 (Half-Life) | [2026-11-16-port-runner-17-18-19-32-r295.md](2026-11-16-port-runner-17-18-19-32-r295.md) |

@@ -7,6 +7,9 @@ owner, after run 17: "we need to make it so 136, can be ran cleanly".
 
 ## The symptom, counted (run 17, `local/half-life/device-run-17-port-runner.txt`)
 
+The committed report of runs 17, 18, 19 and 32, their lines copied from
+the logs: [2026-11-16-port-runner-17-18-19-32-r295.md](../../reports/runs/2026-11-16-port-runner-17-18-19-32-r295.md).
+
 - 998 frames, **316 renders never done** in 200 ms (32%, one in three, not
   one in four as first read); 0 TA hangs, 0 frames refused.
 - A render that finishes takes 10.7 ms (13.2 at 108.33 / 1).

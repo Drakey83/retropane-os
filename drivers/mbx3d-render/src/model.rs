@@ -970,7 +970,7 @@ mod ta_forms {
         );
         mem.fill(TARGET, STRIDE, (0, 0, 24, 16), PREFILL);
         let mut gpu = Gpu::new(shared, &clock);
-        gpu.write32(MBXCLK, 0x6);
+        rp_drv_mbx_display::clock::restore(&mut gpu, 0x6);
         gpu.write32(MBX + 0x838, 1);
         for (off, v) in [
             (0x608, REGIONS),
@@ -1038,7 +1038,7 @@ mod ta_forms {
             &[0x2000_0004 | m3::LAST_REGION, 0x20_0000],
         );
         let mut gpu = Gpu::new(shared, &clock);
-        gpu.write32(MBXCLK, 0x6);
+        rp_drv_mbx_display::clock::restore(&mut gpu, 0x6);
         gpu.write32(MBX + 0x838, 1);
         for (off, val) in [
             (0x608, REGIONS),
