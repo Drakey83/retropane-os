@@ -634,6 +634,12 @@ static void RP_End( void )
 				why = "the cascade's|500 frames are done";
 			else if( frames >= RP_WALK_WINDOW && Sys_CheckParm( "-rpcalm" ))
 				why = "the cascade's|calm frames are done";
+			/* -rpcascademid (the owner, 2026-11-18: "Mid-cascade shots"):
+			   the run ends at frame 300, the debris falling, so the end
+			   picture shows the debris's shading (options A and B judged
+			   against the plain kit at the same game frame) */
+			else if( frames >= RP_WALK_WINDOW + 50u && Sys_CheckParm( "-rpcascademid" ))
+				why = "the cascade's|frame 300: a|picture mid-cascade";
 		}
 	}
 	/* R321's check (-rpcam x,y,z,pitch,yaw): the player put at one spot
