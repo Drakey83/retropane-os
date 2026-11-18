@@ -87,7 +87,7 @@ index 39e4f9c..bbb2eaf 100644
  	Cmd_AddCommand ("fullupdate", NULL, "re-init HUD on start demo recording" );
  	Cmd_AddCommand ("give", NULL, "give specified item or weapon" );
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
-index 95c85f7..4d67425 100644
+index 95c85f7..d98f549 100644
 --- a/engine/client/cl_tent.c
 +++ b/engine/client/cl_tent.c
 @@ -37,7 +37,20 @@ TEMPENTS MANAGEMENT
@@ -200,7 +200,22 @@ index 95c85f7..4d67425 100644
  	}
  }
  
-@@ -440,7 +488,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
+@@ -392,6 +440,14 @@ void CL_TempEntUpdate( void )
+ 	float	gravity = clgame.movevars.gravity;
+ 
+ 	clgame.dllFuncs.pfnTempEntUpdate( ft, cl.time, gravity, &cl_free_tents, &cl_active_tents, CL_TempEntAddEntity, CL_TempEntPlaySound );
++#if defined( __retropane__ )
++	{
++		extern unsigned int rp_prof[10];
++
++		for( TEMPENTITY *t = cl_active_tents; t; t = t->next )
++			rp_prof[6]++;
++	}
++#endif
+ }
+ 
+ /*
+@@ -440,7 +496,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
  	static float cl_lasttimewarn;
  	TEMPENTITY	*pTemp;
  
@@ -209,7 +224,7 @@ index 95c85f7..4d67425 100644
  	{
  		if( cl_lasttimewarn < host.realtime )
  		{
-@@ -475,14 +523,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
+@@ -475,14 +531,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
  {
  	TEMPENTITY	*pTemp;
  
@@ -753,7 +768,7 @@ index 64bc35e..1310e76 100644
  			numChanges++;
  	}
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
-index b1e8e57..5f71463 100644
+index b1e8e57..831831d 100644
 --- a/engine/common/pm_trace.c
 +++ b/engine/common/pm_trace.c
 @@ -102,6 +102,77 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
@@ -899,7 +914,31 @@ index b1e8e57..5f71463 100644
  
  	if( side ) frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );
  	else frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );
-@@ -504,7 +593,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
+@@ -320,9 +409,23 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 	return false;
+ }
+ 
++#if defined( __retropane__ )
++/* kit 80: counts for the cascade's profile (R324): [0] light setups, [1]
++   of them kept, [2] light traces, [3] brush models walked by them, [4]
++   PM_PlayerTraceExt, [5] its entities tested, [6] tempents active after
++   the update, [7] SV_FindEntityByString, [8] edicts it scanned */
++unsigned int rp_prof[10];
++#endif
++
+ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int flags, int numents, physent_t *ents, int ignore_pe, pfnIgnore pmFilter )
+ {
+ 	pmtrace_t trace_total;
++#if defined( __retropane__ )
++	extern unsigned int rp_prof[10];
++
++	rp_prof[4]++;
++	rp_prof[5] += ( flags & PM_WORLD_ONLY ) ? 1u : (unsigned)numents;
++#endif
+ 
+ 	memset( &trace_total, 0, sizeof( trace_total ));
+ 	VectorCopy( end, trace_total.endpos );
+@@ -504,7 +607,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
  		if( trace_bbox.startsolid )
  			trace_bbox.fraction = 0.0f;
  
@@ -1198,7 +1237,7 @@ index 3ff8edb..758957e 100644
  	// always send servertime at new frame
  	MSG_BeginServerCmd( &msg, svc_time );
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
-index 37e79df..da6b7ce 100644
+index 37e79df..72e1001 100644
 --- a/engine/server/sv_game.c
 +++ b/engine/server/sv_game.c
 @@ -1050,6 +1050,7 @@ edict_t *GAME_EXPORT SV_AllocEdict( void )
@@ -1209,11 +1248,15 @@ index 37e79df..da6b7ce 100644
  	e = SV_EdictNum( i );
  	SV_InitEdict( e );
  
-@@ -1479,6 +1480,16 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1479,6 +1480,20 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  
  	if( pStartEdict ) e = NUM_FOR_EDICT( pStartEdict );
  
 +#if defined( __retropane__ )
++	extern unsigned int rp_prof[10];
++
++	rp_prof[7]++;
++	rp_prof[8] += svgame.numEntities - e;
 +	/* kit 78 (R324: SV_FindEntityByString and its strcmp ~5% of c1a0e's
 +	   frame): the last field's description kept, checked by one strcmp,
 +	   not a strcmp down the table each call (the same description) */
@@ -1226,7 +1269,7 @@ index 37e79df..da6b7ce 100644
  	for( int i = 0; i < ARRAYSIZE( gEntvarsDescription ); i++ )
  	{
  		if( !Q_strcmp( pszField, gEntvarsDescription[i].fieldName ))
-@@ -1487,6 +1498,10 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1487,6 +1502,10 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  			break;
  		}
  	}
@@ -1237,7 +1280,7 @@ index 37e79df..da6b7ce 100644
  
  	if( desc == NULL )
  	{
-@@ -1499,6 +1514,19 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1499,6 +1518,19 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
  		edict_t *ed = SV_EdictNum( e );
  		const char *t;
  
@@ -1257,7 +1300,7 @@ index 37e79df..da6b7ce 100644
  		if( !SV_IsValidEdict( ed )) continue;
  
  		if( e <= svs.maxclients && !SV_ClientFromEdict( ed, ( svs.maxclients != 1 )))
-@@ -5330,6 +5358,7 @@ qboolean SV_LoadProgs( const char *name )
+@@ -5330,6 +5362,7 @@ qboolean SV_LoadProgs( const char *name )
  	svs.static_entities = Z_Calloc( sizeof( entity_state_t ) * MAX_STATIC_ENTITIES );
  	svs.baselines = Z_Calloc( sizeof( entity_state_t ) * GI->max_edicts );
  	svgame.numEntities = svs.maxclients + 1; // clients + world
@@ -1572,7 +1615,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..73222d2 100644
+index dd01c0f..1e08674 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1813,7 +1856,19 @@ index dd01c0f..73222d2 100644
  /*
  =================
  R_LightVecInternal
-@@ -396,6 +573,30 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -373,6 +550,11 @@ check bspmodels to get light from
+ */
+ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t lvec )
+ {
++#if defined( __retropane__ )
++	extern unsigned int rp_prof[10];
++
++	rp_prof[2]++;
++#endif
+ 	if( lspot )
+ 		VectorClear( lspot );
+ 
+@@ -396,7 +578,34 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  
  		if( !pe->model || pe->model->type != mod_brush )
  			continue; // skip non-bsp models
@@ -1834,17 +1889,21 @@ index dd01c0f..73222d2 100644
 +				float hi = start[k] < end[k] ? end[k] : start[k];
 +				float bl = VectorIsNull( pe->angles ) ? m->mins[k] : -m->radius;
 +				float bh = VectorIsNull( pe->angles ) ? m->maxs[k] : m->radius;
-+
+ 
 +				miss = hi < pe->origin[k] + bl - 1.0f || lo > pe->origin[k] + bh + 1.0f;
 +			}
 +			if( miss )
 +				continue;
 +		}
 +#endif
- 
++
++#if defined( __retropane__ )
++		rp_prof[3]++;
++#endif
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
-@@ -419,8 +620,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+ 
+@@ -419,8 +628,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -1883,7 +1942,7 @@ index dd01c0f..73222d2 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +720,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +728,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -1959,10 +2018,15 @@ index dd01c0f..73222d2 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +820,28 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +828,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
++	{
++		extern unsigned int rp_prof[10];
++
++		rp_prof[0]++;
++	}
 +	rp_elight_t *kept = &rp_elight[( (uintptr_t)ent >> 4 ) % RP_ELIGHTS];
 +	uint64_t key = RP_LightKey( );
 +	int effects = ent->curstate.effects & EF_INVLIGHT;
@@ -1971,6 +2035,11 @@ index dd01c0f..73222d2 100644
 +	if( kept->ent == ent && kept->model == ent->model && kept->key == key && kept->effects == effects
 +		&& !memcmp( kept->org, origin, sizeof( kept->org )))
 +	{
++		{
++			extern unsigned int rp_prof[10];
++
++			rp_prof[1]++;
++		}
 +		light = kept->light;
 +		VectorCopy( kept->dir, lightDir );
 +		if( kept->sampled )
@@ -1989,7 +2058,7 @@ index dd01c0f..73222d2 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -562,6 +879,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +897,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -1997,7 +2066,7 @@ index dd01c0f..73222d2 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +922,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +940,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2018,7 +2087,7 @@ index dd01c0f..73222d2 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +953,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +971,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  

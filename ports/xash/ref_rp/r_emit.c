@@ -73,6 +73,7 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
+static cvar_t *rp_report; /* kit 80: a report at the next frame (rp_report 1) */
 static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes, *rp_lm, *rp_lit;
 static void RP_LmFlush( void );
 static void RP_LmFrame( void );
@@ -151,6 +152,7 @@ void RP_EmitInit( void )
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
+	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
 	RP_FixedInit();
 }
 
@@ -171,6 +173,10 @@ static int rp_map_frames;
 #define RP_PROVISIONAL 0x40000000u /* a place coarser than wanted (the upload budget) */
 static int32_t rp_upload_left;
 
+/* kit 80: the cvar rp_report, set by a yardstick (in_rp.c's -rpcascade,
+   in the runner's module: a cvar crosses it) for a report at once, so one
+   covers exactly the frames it scores (declared above RP_EmitInit) */
+
 static void RP_EmitReport( void )
 {
 	static uint64_t since;
@@ -182,8 +188,10 @@ static void RP_EmitReport( void )
 	/* every 30 s, not 5: each report is a dozen lines to the SD card, and
 	   run 41's slowest card write took 108 ms (the owner: "still
 	   hitching"); the runner's own fps line stays every 5 s */
-	if( now - since < 30000000u || !f )
+	if(( now - since < 30000000u && !( rp_report && rp_report->value != 0.0f )) || !f )
 		return;
+	if( rp_report && rp_report->value != 0.0f )
+		gEngfuncs.Cvar_SetValue( "rp_report", 0.0f );
 	fprintf( stderr, "rp-emit: a frame %u words, %u faces, %u triangles, %u vertices, %u state blocks, %u near-clipped; %u words past the buffer (%u frames)\n",
 		rp_count.words / f, rp_count.faces / f, rp_count.tris / f, rp_count.verts / f,
 		rp_count.states / f, rp_count.nearclipped / f, rp_count.dropped, f );
@@ -235,6 +243,16 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: kit 77's effect corners in fixed point: %u triangles a frame, %u across the near plane (the software's way), %u off the screen\n",
 			rp_count.fx_fixed / f, rp_count.fx_cut / f, rp_count.fx_off / f );
+	if( rp_emit_on == 2 )
+	{
+		/* kit 80: the engine's own counts (engine/common/pm_trace.c), a frame */
+		extern unsigned int rp_prof[10];
+
+		fprintf( stderr, "rp-emit: kit 80's counts a frame: %u model light setups (%u kept), %u light traces walking %u brush models; %u physics traces testing %u entities; %u tempents; %u entity-by-name searches scanning %u edicts\n",
+			rp_prof[0] / f, rp_prof[1] / f, rp_prof[2] / f, rp_prof[3] / f, rp_prof[4] / f, rp_prof[5] / f, rp_prof[6] / f, rp_prof[7] / f, rp_prof[8] / f );
+		for( int i = 0; i < 10; i++ )
+			rp_prof[i] = 0;
+	}
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: kit 78's beams: %u a frame walked in 16.16, %u a frame culled (out of the visible set), %u off the screen\n",
 			rp_count.beams_fixed / f, rp_count.beams_culled / f, rp_count.beams_off / f );

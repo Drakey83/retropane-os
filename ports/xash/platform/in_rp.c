@@ -621,6 +621,10 @@ static void RP_End( void )
 			   the samples at each step line) */
 			if( frames + 1u == RP_WALK_WINDOW )
 				fprintf( stderr, "rp-step: 4/5 The cascade's|heavy half: frames|251 to 500.\n" );
+			/* ref_rp's counts reported at frames 250 and 480: the second
+			   covers the heavy half alone (the run quits at 500, before a later one) */
+			if( frames + 1u == RP_WALK_WINDOW || frames + 20u == 2u * RP_WALK_WINDOW )
+				Cvar_SetValue( "rp_report", 1.0f );
 			/* the run ends at one game frame, so two kits' end pictures
 			   (the 2700G's and the software's) show the same moment */
 			if( ++frames >= 2u * RP_WALK_WINDOW )
