@@ -1263,6 +1263,7 @@ and fight 19.6 / 21.9 fps):**
 | 155 | `-rpnocook` (the control) | | 19.5 / 21.8 | |
 | 156, 157 | the lean cook (only the world's planes and nodes, face boxes kept only for `-rpfacecull`, the file read a section at a time, the walk's array grown on demand): 168 KiB on c2a5f, 84 on c1a0e | | **19.8 / 22.2, 19.7 / 22.1** | fight pictures differ between runs of one kit (156 vs 157: 3,763 pixels; 148 vs 155, both kit 102's walk: 358), so not comparable |
 | 158 | the same kit, the cascade (cooked again for file version 3) | **29.1 / 19.2** | | **byte for byte run 146's** |
+| 159, 160 | **kit 104: `-rpfacecull` the default** (the owner, 2026-11-18, after seeing runs 146 and 152 side by side: "Yes, turn it on"; `-rpnofacecull` the control; the face boxes now kept in RAM) | **29.6 / 19.6** | **19.9 / 22.4** (48-56 of ~110 world faces a fight frame off the screen) | run 152's, the new reference |
 
 The world's bucket of the calm window: 9.7 -> 8.6 ms (run 151: the walk
 0.44 ms against the walk plus the edge clear's 1.75; the frustum's floats
@@ -1275,9 +1276,9 @@ start spends ~1.2 s in `GL_UploadTexture` and `RP_TexPlace`), so it stays.
 **Left in the world (the next levers, each with its own run):** the
 faces' corners (`RP_ChipFaceFixed` + `RP_ProjectS` ~2.3 ms: iWMMXt
 transforms, ADR-0040 part 3), the brush entities' float path
-(`R_RotateBmodel`, the float side test a face), and `-rpfacecull` (+0.5
-calm / +0.4 heavy fps) for the owner: either accepted with its changed
-texel choices, or the mip hold taught to age a face it did not draw.
+(`R_RotateBmodel`, the float side test a face), and `-rpfacecull`, ruled on by the owner and the default from kit 104
+(its changed texel choices: median 4 of 255 in one channel, not visible
+at 6x; `local/half-life/facecull/`).
 
 ## What ref_rp is
 

@@ -4478,7 +4478,7 @@ index 8a82400..024ca73 100644
  		}
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..cd34013 100644
+index 1a7efd6..49158b8 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
 @@ -992,6 +992,99 @@ typedef struct
@@ -4501,7 +4501,7 @@ index 1a7efd6..cd34013 100644
 +// ADR-0040 step 7c (kit 103): the map cooked for the X51v (r_emit.c makes
 +// and keeps it, r_bsp.c walks it); rp_cook_on 0 is the control (-rpnocook)
 +extern int rp_cook_on;
-+extern int rp_facecull; // -rpfacecull: faces wholly off the screen not sent (kit 103)
++extern int rp_facecull; // kit 104: faces wholly off the screen not sent (-rpnofacecull the control)
 +typedef struct { int32_t n[3], d, type; } rp_cplane_t;           // 2.30, 16.16 (rp_fixq's)
 +typedef struct
 +{

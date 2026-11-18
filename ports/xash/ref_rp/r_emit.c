@@ -167,8 +167,8 @@ void RP_EmitInit( void )
 		rp_noz = 0; /* the control: seven-word corners */
 	if( gEngfuncs.Sys_CheckParm( "-rpnocook" ))
 		rp_cook_on = 0; /* kit 103's control: kit 102's walk, no cooked map */
-	if( gEngfuncs.Sys_CheckParm( "-rpfacecull" ))
-		rp_facecull = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rpnofacecull" ))
+		rp_facecull = 0; /* kit 104's control: off-screen faces sent as kit 103 did */
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
@@ -2082,7 +2082,7 @@ typedef struct
 } rp_cook_head_t;
 
 int                rp_cook_on = 1;
-int                rp_facecull; /* -rpfacecull (kit 103: to be shown the same picture first) */
+int                rp_facecull = 1; /* kit 104, the owner 2026-11-18 ("Yes, turn it on", R331); -rpnofacecull the control */
 static uint8_t     rp_bsp_md5[16];
 static uint32_t    rp_bsp_len;
 static char        rp_bsp_name[64]; /* whose buffer was hashed */
