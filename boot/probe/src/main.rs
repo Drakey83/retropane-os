@@ -977,6 +977,16 @@ mod image {
             Some(h) => usize::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or(0x4000_0000),
             None => 0x4000_0000,
         };
+        // The counting range (probe-0079: 0x41A00000-0x43FFFFFF, every
+        // page non-zero, the first word climbing MiB by MiB): its words
+        // against the OS timer's counter (OSCR0, 0x40A00010), back to back.
+        for k in 0..6 {
+            let a = rt::try_read(rp_hal_pxa27x::devmap::va(0x41A0_0000)).unwrap_or(0);
+            let o = rt::try_read(rp_hal_pxa27x::devmap::va(0x40A0_0010)).unwrap_or(0);
+            let b = rt::try_read(rp_hal_pxa27x::devmap::va(0x41A0_0004)).unwrap_or(0);
+            let c = rt::try_read(rp_hal_pxa27x::devmap::va(0x4300_0000)).unwrap_or(0);
+            say!("hw: count {k}: 41a00000 {a:08x}, OSCR0 {o:08x}, 41a00004 {b:08x}, 43000000 {c:08x}");
+        }
         say!("hw: pass C from {from:08x} to 5fffffff, a line a MiB (non-zero / zero / abort pages)");
         let mut scan = || {
             let mut mib = from & !0xF_FFFF;
