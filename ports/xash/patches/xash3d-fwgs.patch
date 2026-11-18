@@ -1615,7 +1615,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..1e08674 100644
+index dd01c0f..73d0fb1 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -1868,7 +1868,94 @@ index dd01c0f..1e08674 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -396,7 +578,34 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -385,18 +567,121 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+ 	float last_fraction = 1.0f;
+ 	int max_ents = r_lighting_extended.value ? MAX_PHYSENTS : 1; // get light from bmodels too
+ 	colorVec light = { 0 };
++#if defined( __retropane__ )
++	/* kit 82 (run 81: R_LightVecInternal 3.1% of the cascade's heavy half,
++	   521 traces a frame each testing every brush physent's box in floats):
++	   the brush physents' boxes made once a frame in 16.16 (a unit wider;
++	   the radius if turned), each trace's box tested against them in
++	   integers; the same models passed by as kit 79's float test */
++	enum { RP_LBOX = 128 };
++	static struct { int16_t i; int32_t lo[3], hi[3]; } rp_lbox[RP_LBOX];
++	static int    rp_lbox_n = -1, rp_lbox_all;
++	static double rp_lbox_time = -1.0;
++	int32_t       ray_lo[3], ray_hi[3];
++	int           rp_idx[RP_LBOX + 1], rp_n = max_ents;
++	const int    *rp_list = NULL;
++
++	if( rp_lbox_time != gp_cl->time || rp_lbox_n < 0 )
++	{
++		rp_lbox_time = gp_cl->time;
++		rp_lbox_n = 0;
++		rp_lbox_all = 1;
++		for( int i = 1; i < max_ents; i++ )
++		{
++			const physent_t *pe = gEngfuncs.EV_GetPhysent( i );
++
++			if( !pe )
++				break;
++			if( !pe->model || pe->model->type != mod_brush )
++				continue;
++			if( rp_lbox_n == RP_LBOX )
++			{
++				rp_lbox_all = 0; /* more than the table: the float test for the rest */
++				break;
++			}
++			rp_lbox[rp_lbox_n].i = (int16_t)i;
++			for( int k = 0; k < 3; k++ )
++			{
++				float bl = VectorIsNull( pe->angles ) ? pe->model->mins[k] : -pe->model->radius;
++				float bh = VectorIsNull( pe->angles ) ? pe->model->maxs[k] : pe->model->radius;
++
++				rp_lbox[rp_lbox_n].lo[k] = RP_LFix( pe->origin[k] + bl, 16 ) - ( 1 << 16 );
++				rp_lbox[rp_lbox_n].hi[k] = RP_LFix( pe->origin[k] + bh, 16 ) + ( 1 << 16 );
++			}
++			rp_lbox_n++;
++		}
++	}
++	for( int k = 0; k < 3; k++ )
++	{
++		int32_t a = RP_LFix( start[k], 16 ), b = RP_LFix( end[k], 16 );
++
++		ray_lo[k] = a < b ? a : b;
++		ray_hi[k] = a < b ? b : a;
++	}
++	if( rp_lbox_all )
++	{
++		/* the world, then only the brush models whose boxes the ray meets */
++		int n = 0;
++
++		rp_idx[n++] = 0;
++		for( int j = 0; j < rp_lbox_n; j++ )
++		{
++			if( ray_hi[0] < rp_lbox[j].lo[0] || ray_lo[0] > rp_lbox[j].hi[0]
++				|| ray_hi[1] < rp_lbox[j].lo[1] || ray_lo[1] > rp_lbox[j].hi[1]
++				|| ray_hi[2] < rp_lbox[j].lo[2] || ray_lo[2] > rp_lbox[j].hi[2] )
++				continue;
++			rp_idx[n++] = rp_lbox[j].i;
++		}
++		rp_list = rp_idx;
++		rp_n = n;
++	}
++#endif
+ 
+ 	// check all the bsp-models
++#if defined( __retropane__ )
++	for( int li = 0; li < rp_n; li++ )
++	{
++		const int i = rp_list ? rp_list[li] : li;
++		const physent_t *pe = gEngfuncs.EV_GetPhysent( i );
++#else
+ 	for( int i = 0; i < max_ents; i++ )
+ 	{
+ 		const physent_t *pe = gEngfuncs.EV_GetPhysent( i );
++#endif
+ 
+ 		if( !pe )
+ 			break;
  
  		if( !pe->model || pe->model->type != mod_brush )
  			continue; // skip non-bsp models
@@ -1878,7 +1965,7 @@ index dd01c0f..1e08674 100644
 +		   traces each): a brush model whose bounds the ray's box misses
 +		   cannot be hit (its surfaces lie inside them), so it is passed
 +		   by, exactly; the bounds grown by a unit, the radius if turned */
-+		if( i > 0 )
++		if( i > 0 && !rp_list )
 +		{
 +			const model_t *m = pe->model;
 +			int            miss = 0;
@@ -1889,21 +1976,21 @@ index dd01c0f..1e08674 100644
 +				float hi = start[k] < end[k] ? end[k] : start[k];
 +				float bl = VectorIsNull( pe->angles ) ? m->mins[k] : -m->radius;
 +				float bh = VectorIsNull( pe->angles ) ? m->maxs[k] : m->radius;
- 
++
 +				miss = hi < pe->origin[k] + bl - 1.0f || lo > pe->origin[k] + bh + 1.0f;
 +			}
 +			if( miss )
 +				continue;
 +		}
 +#endif
-+
+ 
 +#if defined( __retropane__ )
 +		rp_prof[3]++;
 +#endif
  		mnode_t *pnodes = &pe->model->nodes[pe->model->hulls[0].firstclipnode];
  		vec3_t offset, start_l, end_l;
  
-@@ -419,8 +628,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,8 +704,38 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -1942,7 +2029,7 @@ index dd01c0f..1e08674 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +728,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +804,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2018,7 +2105,7 @@ index dd01c0f..1e08674 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +828,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +904,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -2058,7 +2145,29 @@ index dd01c0f..1e08674 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -562,6 +897,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +949,21 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 
+ 		VectorSubtract( origin, skyvec, vecEnd );
+ 
++#if defined( __retropane__ )
++		/* kit 82 (R324: ~108 of the cascade's 201 physics traces a frame
++		   were this one): with PM_WORLD_ONLY the trace stops after the
++		   world (physent 0), so trace.ent is 0 or -1 and the surface is
++		   always looked up on the world: the trace decides nothing and is
++		   not made; the same surface, exactly */
++		msurface_t *psurf = gEngfuncs.EV_TraceSurface( 0, vecSrc, vecEnd );
++#else
+ 		pmtrace_t trace = gEngfuncs.CL_TraceLine( vecSrc, vecEnd, PM_WORLD_ONLY );
+ 		msurface_t *psurf;
+ 		if( trace.ent > 0 )
+ 			psurf = gEngfuncs.EV_TraceSurface( trace.ent, vecSrc, vecEnd );
+ 		else
+ 			psurf = gEngfuncs.EV_TraceSurface( 0, vecSrc, vecEnd );
++#endif
+ 
+ 		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
+ 			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
+@@ -562,6 +982,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -2066,7 +2175,7 @@ index dd01c0f..1e08674 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +940,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +1025,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2087,7 +2196,7 @@ index dd01c0f..1e08674 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +971,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1056,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
