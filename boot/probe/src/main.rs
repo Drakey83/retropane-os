@@ -1014,6 +1014,38 @@ mod image {
             }
             say!("");
         }
+        // Pass C: the PXA270's own buses (the owner, 2026-11-18: "are we
+        // probing the CPU for additional processors"): the first word of
+        // every 4 KiB page from 0x40000000 to 0x5FFFFFFF read through
+        // try_read (an abort, an unmapped or undecoded page, reads as
+        // none); runs of pages that answer non-zero are logged, to set
+        // against Intel's documented map (memory-map.md). Peripheral
+        // pages' first words have no read side effects that matter here
+        // (a FIFO's first word at worst gives up one entry).
+        say!("hw: pass C: the PXA270's buses 0x40000000-0x5FFFFFFF, a word a 4 KiB page...");
+        let mut run: Option<(usize, usize, u32)> = None;
+        let mut runs = 0;
+        let mut page = 0x4000_0000usize;
+        while page < 0x6000_0000 {
+            let v = rt::try_read(rp_hal_pxa27x::devmap::va(page));
+            let live = matches!(v, Some(x) if x != 0);
+            match (live, run) {
+                (true, None) => run = Some((page, page, v.unwrap_or(0))),
+                (true, Some((s, _, f))) => run = Some((s, page, f)),
+                (false, Some((s, e, f))) => {
+                    say!("hw: C {s:08x}-{:08x} answers (first {f:08x})", e + 0xFFF);
+                    runs += 1;
+                    run = None;
+                }
+                (false, None) => {}
+            }
+            page += 0x1000;
+        }
+        if let Some((s, e, f)) = run {
+            say!("hw: C {s:08x}-{:08x} answers (first {f:08x})", e + 0xFFF);
+            runs += 1;
+        }
+        say!("hw: pass C done, {runs} runs of pages answering");
         // Pass B: write and read back in the MBX block, the words that
         // read 0 outside the known register ranges (core control
         // 0x000-0x1FF, the 3D block 0x600-0x6FF, the TA block 0x800-0x8FF,
