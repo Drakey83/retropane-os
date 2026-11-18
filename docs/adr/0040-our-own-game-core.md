@@ -191,3 +191,9 @@ changes. The clock was tried and is not the limit (run 88).
 3. **The order:** the table above (direct link first), or another order.
 4. **Single-player first:** the direct link replaces the loopback
    network in single-player, and multiplayer keeps Xash's network path.
+
+## Amendments
+
+- 2026-11-18, the owner ("Debris first"): step 5 (models stage by stage,
+  the rigid path for debris) comes before steps 3 and 4, after kit 93's
+  run showed the cascade's heavy half furthest from 30 fps.

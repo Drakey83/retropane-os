@@ -358,9 +358,10 @@ is measured yet; no frame rate is promised before the evaluation.
 - [ ] 7. Our own game core ([ADR-0040](adr/0040-our-own-game-core.md), accepted 2026-11-18: Half-Life's game code unchanged, Xash the starting point and the reference; each part ships only with an X51v run faster than kit 91's 24.6 / 15.7 fps on the cascade and the same picture):
   - [ ] 7a. The direct link: single-player's client reads the server's entity state from memory, no delta, bit stream or packet parse
   - [ ] 7b. The hottest code in the PXA270's 256 KiB SRAM (hot functions gathered by the linker, their pages mapped onto the SRAM)
+  - [x] 7a/7b first parts: kit 92 (direct link) and kit 93 (hot code on the SRAM, 27.4 / 17.7 fps)
+  - [ ] 7e (next, the owner 2026-11-18: "Debris first"). Models stage by stage, the rigid path for debris and gibs
   - [ ] 7c. Maps cooked at their first load on the X51v and kept on the card; the world drawn from the cooked clusters (integer corners, iWMMXt, the walk only on a cluster change)
   - [ ] 7d. Collision and movement on the cooked integer hulls
-  - [ ] 7e. Models stage by stage, the rigid path for debris and gibs
   - [ ] 7f. Sound mixed in integers with iWMMXt into the OS mixer
 
 ## At the end: a faster Quake 3 port
