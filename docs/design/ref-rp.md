@@ -1082,6 +1082,20 @@ strip black, so the X51v is the check.
 |---|---|---|---|
 | See-through ('{') textures at every distance | ref_soft: the key at mip 0 only (it draws the world at its own mip, mostly 0 near); GL: alpha in every level, alpha-tested | the key at every level by the same alpha rule, kept unlit by every block drawer; the punch-through bit with the alpha test, as Dell's driver does | ladders, rails, grates and fences see-through at any level ref_rp's mip hold picks |
 
+**c1a0e to 30 fps (R324, the owner 2026-11-17: "how are we going to get it
+to 30?", "Rule 0 it").** c1a0e plays at 13-17 fps (~65 ms a frame) where
+c1a0's walk does 30: half the frame has to go. Its frames draw no more
+than c1a0's and the 2700G is never waited on, so the time is the game's
+own work. The levers below are the candidates; the sampled run on c1a0e
+picks which, by measurement, before any is built.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| How it is measured | GoldSrc's and our own so far: one fixed scene (c1a0's walk) as the yardstick | every kit timed on three: c1a0's walk, c1a0e's start and its cascade (a fixed-step script each), so "30 fps" is the game's worst, not one map | a lever that helps c1a0 and not c1a0e is seen as such; the worst scene sets the goal |
+| Single player's client and server (loopback) | GoldSrc and Xash run a listen server even alone: every frame the server packs every visible entity (`AddToFullPack`), delta-encodes each field against the last frame into a bit stream (`Delta_WriteField`), the client reads it back, decodes field by field and copies it into its entities and prediction; Quake 3 and Source keep that path in single player too (one code path); id Tech 4 and Unreal hand a local client the state directly | the same server and client, the transport short-circuited for the local client: the server's entity states handed over as they are, each field put through the same quantization the encoder applies (the bits and scale per field from the delta tables), so the client holds exactly what decoding gave, without the bit stream, the field compares or the copies | exact by construction (the same quantized values, checked field by field against the encoder in a test mode); c1a0 already spends several percent here (`Delta_CompareField`, `AddToFullPack`, the packet copies) and c1a0e sends far more entities |
+| The server's per-frame work (thinks, triggers, scripted scenes, sounds) | GoldSrc runs every entity's think at the drawn frame rate; Quake's server ran at a fixed 10-20 Hz with client interpolation, Source at a fixed tick | first the exact way: the samples name the costly entities and their work is made cheaper without changing what it computes (as the traces and the lighting were); a fixed server tick only as the owner's ruling (it changes the game's timing slightly) | exact first; the timing change is the owner's to weigh, with numbers |
+| The CPU's clock | Dell runs the PXA270 at 624 MHz | the runner's past-rating step (`-rpcpu`), the divide-1 way: measured per device by the self-test | lifts everything at once; the owner's decision, kept as the last margin, not the plan |
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
