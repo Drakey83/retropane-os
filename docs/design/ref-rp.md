@@ -1348,6 +1348,17 @@ at (546, 235) (runs 165 and 169 one way, 172 the other, kit 106 both):
 kit 107's runs match one or the other exactly, and kit 105's one-pixel
 "difference" was likely this spot.
 
+**Option (a), shown to the owner, off by default: `-rpdebrisN`** draws at
+most the N nearest debris pieces a frame (studio temp entities); the rest
+still exist and move (their physics is the game's) but are not lit or
+drawn. Runs 188-189 (full cascade, calm / heavy): 55 nearest **29.9 /
+27.5**, 35 nearest **29.9 / 28.8** (all: 29.9 / 23.8). Pictures at cascade
+frame 300 (runs 185-187, `local/half-life/debriscap/`): 1,652 and 2,121
+pixels differ from all pieces drawn; the far clump on the lit wall
+vanishes. That vanishing is against the owner's standing rule that
+nothing vanishes (a missing feature draws plainly), so the next variant
+draws the far pieces plainly (unlit) instead of leaving them out.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

@@ -259,6 +259,13 @@ static void RP_EmitReport( void )
 				fprintf( stderr, "rp-emit: kit 107's light lists checked against the scans: %u checks, %u differed (must be 0)%c", rp_light_checks[0], rp_light_checks[1], 10 );
 			rp_light_checks[0] = rp_light_checks[1] = 0;
 		}
+		{
+			extern unsigned rp_debris_counts[2];
+
+			if( rp_debris_counts[0] )
+				fprintf( stderr, "rp-emit: debris pieces a frame %u, %u of them not drawn (-rpdebrisN)%c", rp_debris_counts[0] / f, rp_debris_counts[1] / f, 10 );
+			rp_debris_counts[0] = rp_debris_counts[1] = 0;
+		}
 				rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
 	}
 	if( rp_emit_on == 2 )
