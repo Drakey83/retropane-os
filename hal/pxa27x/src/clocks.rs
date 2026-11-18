@@ -42,6 +42,11 @@ pub mod clkcfg {
     pub const B: u32 = 1 << 3;
 }
 
+/// `MDREFR` APD: the SDRAM's automatic power-down (its clock enable
+/// dropped whenever no access is pending, raised again on the next one).
+/// Windows Mobile leaves it on (`0x201EE030` from 208 MHz, clocks.md 5);
+/// a power feature, not a timing.
+pub const MDREFR_APD: u32 = 1 << 20;
 /// `MDREFR` refresh interval field.
 pub const MDREFR_DRI: u32 = 0xFFF;
 /// `MDREFR` SDCLK1 and SDCLK2 divide-by-2 (the SDRAM clocks; SDCLK0, the
@@ -459,6 +464,24 @@ mod target {
         // registers, mapped as device memory by both maps; reads have no
         // side effects.
         unsafe { (va(phys) as *const u32).read_volatile() }
+    }
+
+    /// The SDRAM's automatic power-down on or off (`MDREFR` APD alone,
+    /// every other bit as it is: the dividers, the refresh interval and
+    /// the timings untouched); whether it was on (ADR-0040 step 7g6: a
+    /// test run's `-rpnoapd`, put back at its end).
+    pub fn sdram_auto_power_down(on: bool) -> bool {
+        let now = rd(MDREFR);
+        let v = if on { now | super::MDREFR_APD } else { now & !super::MDREFR_APD };
+        if v != now {
+            // SAFETY: the memory controller's refresh register, device
+            // memory in both maps; only APD changes, which the PXA27x
+            // allows while the SDRAM is in use (it gates the clock enable
+            // between accesses, nothing of the timing or refresh).
+            unsafe { (va(MDREFR) as *mut u32).write_volatile(v) };
+            let _ = rd(MDREFR);
+        }
+        now & super::MDREFR_APD != 0
     }
 
     /// The power manager's configuration registers (no FIFOs, nothing

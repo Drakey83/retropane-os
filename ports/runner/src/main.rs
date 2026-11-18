@@ -220,6 +220,14 @@ mod image {
     /// and memory 195 MHz: `cpu::asked`), every frame and card write checked.
     const CPU_WORD: &[u8] = b"-rpcpu";
 
+    /// ADR-0040 step 7g6: the SDRAM's automatic power-down is off while
+    /// the program runs (Windows Mobile leaves it on: the SDRAM's clock
+    /// dropped between accesses, so a miss after a gap waits for it to
+    /// wake; runs 139-141: the cascade 27.5 / 17.6 -> 28.1 / 18.6 fps, the
+    /// fight 18.4 / 20.7 -> 19.5 / 21.8); put back as found at the end.
+    /// A test run's `-rpapd` keeps Windows Mobile's setting (the control).
+    const APD_WORD: &[u8] = b"-rpapd";
+
     /// A test run's word for the frame-rate bar along the screen's bottom
     /// (`gfx::BAR_ROWS`): frames a second, the 2700G's clock, the hangs.
     const BAR_WORD: &[u8] = b"-rpfpsbar";
@@ -1781,6 +1789,13 @@ mod image {
         // registers. Put back as found at the end.
         let simd_was = rp_hal_pxa27x::iwmmxt::single_access(true);
         rp_hal_simd::set_unit(true);
+        let apd_was = if args[..arg_count].iter().any(|a| a.to_bytes() == APD_WORD) {
+            None
+        } else {
+            let was = rp_hal_pxa27x::clocks::sdram_auto_power_down(false);
+            let _ = writeln!(uart, "runner: the SDRAM's automatic power-down off while the program runs (it was {})", if was { "on" } else { "off" });
+            Some(was)
+        };
         if let Some(v) = voice {
             s.set_sound(v);
         }
@@ -1967,6 +1982,9 @@ mod image {
         super::cpu::put_back(gfx_log);
         rp_hal_simd::set_unit(false);
         rp_hal_pxa27x::iwmmxt::single_access(simd_was);
+        if let Some(was) = apd_was {
+            rp_hal_pxa27x::clocks::sdram_auto_power_down(was);
+        }
         // Stopped at once: what follows is the runner's, not the program's.
         if let Some((buf, taken, full)) = rt::stop_sampling() {
             write_samples(buf, taken, full);
