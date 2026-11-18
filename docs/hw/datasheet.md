@@ -134,6 +134,7 @@ watching.
 ## 5. Devices
 
 ### Display (2700G)
+- The MBX core's register block read whole on the X51v (2026-11-18): six non-zero words (core ID `0x01020000`, revision `0x00010000`, four unknowns), no geometry unit's register file; undecoded words of the space (e.g. `0x0FFE2FFC`) hang the bus (2700g.md "The register space probed").
 
 - 3D core's TA (2700g.md "Dell's drivers read for unused features", 2026-11-18): **strip header bit 21 shown on the X51v** (kit 101, run 144): corners of six words without the z word (depth from 1/w) draw the identical picture; bit 17 with 16.16 vertex words drew nothing (run 143): open. From Dell's drivers, unproven: no geometry hardware in their use, points (type 0xE), partial state blocks, PVRTC 2/4 bpp.
 - The video plane in RGB565 (`VSCTRL` format 7, the colour-space
@@ -607,3 +608,5 @@ lines and whether its PCM port reaches the codec; VBUS on the USB connector; GPI
 the 2700G's TA vertex formats for fog and a second texture unit. Each is
 listed with its next step on its own page and in
 [../quality-audit.md](../quality-audit.md).
+
+- CPU coprocessors asked directly on the X51v (2026-11-18, cpu.md): CP1 (iWMMXt), CP6 (interrupt controller), CP7 (unknown, reads 0); **no FPU** (the VFP's FPSID traps with access granted).

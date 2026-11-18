@@ -168,3 +168,14 @@ misses, so a stall that overlaps another counts in both.
 **Not modellable in the emulator:** its event counters read 0, so no event
 sample is ever taken there. Its I-cache has no lock: the lock instructions
 are accepted and do nothing.
+
+## Coprocessors asked directly (2026-11-18, `rp-probe` `RP_PROBE_HW`, card log probe-0075)
+
+With every access bit of `CPAR` set (it reads `0x3FFF` as Windows Mobile
+leaves it), each of CP0-CP13 read once (`MRC pN, 0, r0, c0, c0, 0`, a trap
+meaning absent: the undefined entry resumes at a registered fixup, rt.rs):
+**CP1** answers (iWMMXt's `wCID` `0x69051020`), **CP6** (the PXA27x's
+interrupt controller) and **CP7** answer, both `0` at c0; CP7 is not in our
+documents (open). **No FPU:** the VFP's FPSID (`MRC p10, 7, r0, c0, c0, 0`)
+traps with CP10 access granted: the X51v's CPU has no floating-point unit,
+shown on the device.

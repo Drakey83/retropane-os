@@ -258,6 +258,13 @@ mod image {
             }
             let _ = writeln!(log, "panel: {panel_name}");
 
+            // The survey before the SD card is taken: the card log stays
+            // on it, every line written through (run 1, 2026-11-18: the
+            // log moved to the CF card when the SD was taken and lost the
+            // lines before the hang).
+            if super::HW_ONLY {
+                hw(&mut log);
+            }
             let _ = writeln!(log, "SD...");
             let mut card = None;
             if let (Some(c), Some(mmc), Some(dma)) = (
@@ -365,9 +372,6 @@ mod image {
                 }
             }
 
-            if super::HW_ONLY {
-                hw(&mut log);
-            }
             let _ = writeln!(log, "benchmarks...");
             let mut r = suite::Runner::new(&mut results);
             if super::MINI_ONLY {
@@ -911,44 +915,50 @@ mod image {
     /// before it is read, so a read that never answers (a VLIO cycle with
     /// no ready) leaves its block as the last line.
     fn hw(log: &mut impl Write) {
+        macro_rules! say {
+            ($($a:tt)*) => {{
+                let _ = writeln!(log, $($a)*);
+                rp_hal_x51v::cardsink::flush();
+            }};
+        }
+        say!("hw: the coprocessor survey (CP0-CP13, then the FPU's FPSID)...");
         let was = rt::irqs_enabled_now();
         rt::irq_disable();
         let s = diag::coprocessor_survey();
         if was {
             rt::irq_enable();
         }
-        let _ = writeln!(log, "hw: CPAR {:08x}, all asked {:08x}; MRC answered by {:014b} (CP13..CP0)", s.cpar_was, s.cpar_settable, s.answered);
+        say!("hw: CPAR {:08x}, all asked {:08x}; MRC answered by {:014b} (CP13..CP0)", s.cpar_was, s.cpar_settable, s.answered);
         for n in 0..14 {
             if s.answered & 1 << n != 0 {
-                let _ = writeln!(log, "hw: CP{n} c0 {:08x}", s.c0[n]);
+                say!("hw: CP{n} c0 {:08x}", s.c0[n]);
             }
         }
         match s.fpsid {
-            Some(v) => { let _ = writeln!(log, "hw: FPU: FPSID {v:08x}"); }
-            None => { let _ = writeln!(log, "hw: FPU: none (FPSID read trapped)"); }
+            Some(v) => { say!("hw: FPU: FPSID {v:08x}"); }
+            None => { say!("hw: FPU: none (FPSID read trapped)"); }
         }
         const BASE: usize = 0x0FFE_0000;
-        // The space's most common word first (a sample of every 64th).
         let read = |a: usize| -> u32 {
             // A read of the 2700G's register space (device memory in the
-            // bring-up map); an abort reads as 0xDEADDEAD (see the
-            // function's notes on a read that never answers).
+            // bring-up map); an abort reads as 0xDEADDEAD. A block the chip
+            // does not decode never answers (no VLIO ready, no timeout):
+            // runs 1 and 2 hung sampling the whole space, so the known
+            // blocks go first and each block is named before it is read.
             rt::try_read(rp_hal_pxa27x::devmap::va(a)).unwrap_or(0xDEAD_DEAD)
         };
-        let mut common = [(0u32, 0u32); 8];
-        for k in (0..0x1_0000).step_by(256) {
-            let v = read(BASE + k);
-            if let Some(c) = common.iter_mut().find(|c| c.0 == v && c.1 > 0) {
-                c.1 += 1;
-            } else if let Some(c) = common.iter_mut().min_by_key(|c| c.1) {
-                *c = (v, 1);
-            }
-        }
-        let filler = common.iter().max_by_key(|c| c.1).map_or(0, |c| c.0);
-        let _ = writeln!(log, "hw: 2700G scan of {BASE:08x}+64K, the common word {filler:08x}");
+        // The MBX core first (where a geometry unit's registers would be),
+        // then the display and the video decoder, then the rest in order.
+        let order: [usize; 16] = [
+            0x4000, 0x2000, 0x3000, 0x0000, 0x1000, 0x5000, 0x6000, 0x7000, 0x8000, 0x9000,
+            0xA000, 0xB000, 0xC000, 0xD000, 0xE000, 0xF000,
+        ];
+        say!("hw: 2700G scan of {BASE:08x}+64K, the MBX block first");
         let mut live_rows = 0;
-        for block in (0..0x1_0000usize).step_by(0x1000) {
-            let _ = writeln!(log, "hw: block +{block:05x}");
+        for block in order {
+            say!("hw: block +{block:05x}");
+            let filler = read(BASE + block + 0xFFC);
+            say!("hw: block +{block:05x} answers; its last word {filler:08x}");
             for row in (block..block + 0x1000).step_by(256) {
                 let mut n = 0;
                 let mut first = [(0u16, 0u32); 8];
@@ -972,11 +982,11 @@ mod image {
                     for (o, v) in &first[..n.min(8)] {
                         let _ = write!(log, " {o:04x}={v:08x}");
                     }
-                    let _ = writeln!(log);
+                    say!("");
                 }
             }
         }
-        let _ = writeln!(log, "hw: scan done, {live_rows} rows answered");
+        say!("hw: scan done, {live_rows} rows answered");
     }
 
     /// [`super::MINI_ONLY`]: the first MiB of the RAM pool as the window,
