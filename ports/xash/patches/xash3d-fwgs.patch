@@ -1745,7 +1745,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..08f9699 100644
+index dd01c0f..06f7c66 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -2542,7 +2542,7 @@ index dd01c0f..08f9699 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +1187,260 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +1187,306 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2575,6 +2575,52 @@ index dd01c0f..08f9699 100644
 +
 +#define RP_ELIGHTS 256
 +static rp_elight_t rp_elight[RP_ELIGHTS];
++
++/*
++The owner's options A and B (2026-11-18, "Measure options A and B": the
++cascade's debris lighting ~7 ms of a heavy frame). Measured behind
++switches, off by default; they change the shading slightly, so they stay
++off until the owner rules on them.
++-rplighthalf (A): a model lit afresh last frame takes that frame's light
++this frame (its own slot, probed by entity), then is lit afresh again: each
++model lit every second frame. The dynamic lights are still added each frame.
++-rplightone (B): one light trace a model, not five: the four side traces
++that tilt the light's direction are not made (the light straight down).
++*/
++typedef struct
++{
++	const cl_entity_t *ent;
++	const model_t     *model;
++	uint64_t          key;
++	int               effects;
++	unsigned          frame, fresh;
++	colorVec          light;
++	vec3_t            dir, spot, vec;
++	qboolean          sampled;
++} rp_half_t;
++
++#define RP_HALF 1024
++static rp_half_t rp_half[RP_HALF];
++static unsigned  rp_half_frame;
++static double    rp_half_time = -1.0;
++static int       rp_light_half = -1, rp_light_one = -1;
++
++static rp_half_t *RP_HalfSlot( const cl_entity_t *ent )
++{
++	uint32_t   h = (uint32_t)(uintptr_t)ent * 2654435761u >> 22;
++	rp_half_t *old = NULL;
++
++	for( int k = 0; k < 8; k++ )
++	{
++		rp_half_t *p = &rp_half[( h + k ) & ( RP_HALF - 1 )];
++
++		if( p->ent == ent )
++			return p;
++		if( !old && p->frame + 2 <= rp_half_frame )
++			old = p;
++	}
++	return old;
++}
 +static uint64_t    rp_elight_key;
 +static double      rp_elight_time = -1.0;
 +
@@ -2803,7 +2849,7 @@ index dd01c0f..08f9699 100644
  /*
  ===============
  R_EntityDynamicLight
-@@ -499,6 +1451,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -499,6 +1497,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  {
  	if( !plight || !ent )
  		return;
@@ -2841,7 +2887,7 @@ index dd01c0f..08f9699 100644
  
  	if( !draw_world || r_fullbright->value || FBitSet( ent->curstate.effects, EF_FULLBRIGHT ))
  	{
-@@ -520,11 +1503,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1549,65 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -2872,6 +2918,33 @@ index dd01c0f..08f9699 100644
 +		}
 +		goto rp_kept;
 +	}
++
++	if( rp_light_half < 0 )
++	{
++		rp_light_half = !!gEngfuncs.Sys_CheckParm( "-rplighthalf" );
++		rp_light_one = !!gEngfuncs.Sys_CheckParm( "-rplightone" );
++	}
++	if( rp_half_time != gp_cl->time )
++	{
++		rp_half_time = gp_cl->time;
++		rp_half_frame++;
++	}
++	rp_half_t *half = rp_light_half ? RP_HalfSlot( ent ) : NULL;
++
++	if( half && half->ent == ent && half->model == ent->model && half->key == key && half->effects == effects
++		&& half->fresh && half->frame + 1 == rp_half_frame )
++	{
++		half->fresh = 0;
++		half->frame = rp_half_frame;
++		light = half->light;
++		VectorCopy( half->dir, lightDir );
++		if( half->sampled )
++		{
++			VectorCopy( half->spot, lightspot );
++			VectorCopy( half->vec, lightvec );
++		}
++		goto rp_kept;
++	}
  
  	vec3_t vecSrc = { origin[0], origin[1], origin[2] - lightDir[2] * 8.0f };
  	vec3_t vecEnd;
@@ -2881,7 +2954,7 @@ index dd01c0f..08f9699 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1548,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1621,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -2925,15 +2998,18 @@ index dd01c0f..08f9699 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -562,6 +1603,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,8 +1676,9 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
 +		sampled = true;
  
- 		if( VectorIsNull( lightvec ))
+-		if( VectorIsNull( lightvec ))
++		if( VectorIsNull( lightvec ) && !rp_light_one )
  		{
-@@ -604,6 +1646,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 			float grad[4];
+ 			colorVec gcolor;
+@@ -604,6 +1719,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2950,11 +3026,28 @@ index dd01c0f..08f9699 100644
 +		VectorCopy( lightspot, kept->spot );
 +		VectorCopy( lightvec, kept->vec );
 +	}
++	if( half )
++	{
++		half->ent = ent;
++		half->model = ent->model;
++		half->key = key;
++		half->effects = effects;
++		half->frame = rp_half_frame;
++		half->fresh = 1;
++		half->light = light;
++		VectorCopy( lightDir, half->dir );
++		half->sampled = sampled;
++		if( sampled )
++		{
++			VectorCopy( lightspot, half->spot );
++			VectorCopy( lightvec, half->vec );
++		}
++	}
 +rp_kept:
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1677,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1767,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
