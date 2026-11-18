@@ -915,7 +915,6 @@ mod ta_forms {
 
     use super::{Gpu, LocalMem, Mem, SimClock, memory};
     use rp_drv_blit2d::MBX;
-    use rp_drv_mbx_display::clock::MBXCLK;
     use rp_drv_mbx3d::{self as m3};
     use rp_hal_api::RegisterBus;
 
