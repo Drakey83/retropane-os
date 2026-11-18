@@ -114,6 +114,7 @@ static struct
 	uint32_t bfixed; /* brush entities' faces by the tables */
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
 	uint32_t mask_texels, mask_keys; /* R321: see-through faces' texels uploaded, the key among them */
+	uint32_t fx_fixed, fx_cut, fx_off; /* kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
@@ -230,6 +231,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: kit 74's effects (sprites, beams, particles): %u triangles a frame, %u of them plain (no picture), %u not drawn (no room)\n",
 			rp_count.fx_tris / f, rp_count.fx_plain / f, rp_count.fx_skipped / f );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: kit 77's effect corners in fixed point: %u triangles a frame, %u across the near plane (the software's way), %u off the screen\n",
+			rp_count.fx_fixed / f, rp_count.fx_cut / f, rp_count.fx_off / f );
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: R321: see-through faces' texels uploaded %u, %u of them the see-through key\n",
 			rp_count.mask_texels, rp_count.mask_keys );
@@ -5075,14 +5079,19 @@ static void RP_FxState( int pg, int fmt, int mode )
 	RP_Whole();
 }
 
-static void RP_FxTriangle( void )
+/* The bound frame's place and the state for an effect triangle (kit 74);
+   0: not drawn (no room at all). */
+typedef struct
 {
-	const finalvert_t *v[3] = { aliastriangleparms.a, aliastriangleparms.b, aliastriangleparms.c };
-	const image_t     *img = rp_tri_image;
-	const int          mode = vid.rendermode;
-	const rp_skin_t   *e = NULL;
-	int32_t            u0, v0, smin, tmin, smax, tmax;
-	int                fmt = 0, pg;
+	int32_t u0, v0, smin, tmin, smax, tmax;
+} rp_fxctx_t;
+
+static int RP_FxSetup( rp_fxctx_t *c )
+{
+	const image_t   *img = rp_tri_image;
+	const int        mode = vid.rendermode;
+	const rp_skin_t *e = NULL;
+	int              fmt = 0, pg;
 
 	if( img && img->pixels[0] && img->width >= 1 && img->height >= 1
 		&& img->width <= RP_PAGE_SIDE && img->height <= RP_PAGE_SIDE )
@@ -5095,12 +5104,12 @@ static void RP_FxTriangle( void )
 		/* half a texel inside the frame's edges (kit 76: the filter read
 		   the atlas texels beside a tile, the HUD's lines) */
 		pg = e->pg;
-		u0 = e->qx * 8 << 16;
-		v0 = e->qy * 8 << 16;
-		smin = 1 << 15;
-		tmin = 1 << 15;
-		smax = ( e->w << 16 ) - ( 1 << 15 );
-		tmax = ( e->h << 16 ) - ( 1 << 15 );
+		c->u0 = e->qx * 8 << 16;
+		c->v0 = e->qy * 8 << 16;
+		c->smin = 1 << 15;
+		c->tmin = 1 << 15;
+		c->smax = ( e->w << 16 ) - ( 1 << 15 );
+		c->tmax = ( e->h << 16 ) - ( 1 << 15 );
 	}
 	else
 	{
@@ -5109,35 +5118,208 @@ static void RP_FxTriangle( void )
 		if( pg < 0 )
 		{
 			rp_count.fx_skipped++;
-			return;
+			return 0;
 		}
 		fmt = 0;
-		u0 = ( rp_white.qx * 8 + 4 ) << 16;
-		v0 = ( rp_white.qy * 8 + 4 ) << 16;
-		smin = tmin = smax = tmax = 0;
+		c->u0 = ( rp_white.qx * 8 + 4 ) << 16;
+		c->v0 = ( rp_white.qy * 8 + 4 ) << 16;
+		c->smin = c->tmin = c->smax = c->tmax = 0;
 		rp_count.fx_plain++;
 	}
 	RP_FxState( pg, fmt, mode );
+	return 1;
+}
+
+/* One corner's texel words. */
+static inline void RP_FxTexel( const rp_fxctx_t *c, int32_t s, int32_t t )
+{
+	s = s < c->smin ? c->smin : s > c->smax ? c->smax : s;
+	t = t < c->tmin ? c->tmin : t > c->tmax ? c->tmax : t;
+	RP_Put( RP_FixBits( c->u0 + s, 16 + 9 )); /* page texels / 512 */
+	RP_Put( RP_FixBits( c->v0 + t, 16 + 9 ));
+}
+
+static void RP_FxTriangle( void )
+{
+	const finalvert_t *v[3] = { aliastriangleparms.a, aliastriangleparms.b, aliastriangleparms.c };
+	rp_fxctx_t         c;
+
+	if( !RP_FxSetup( &c ))
+		return;
 	RP_Put( RP_GFX_STRIP( 3 ));
 	for( int i = 0; i < 3; i++ )
 	{
-		int32_t s = v[i]->s, t = v[i]->t;
-
-		s = s < smin ? smin : s > smax ? smax : s;
-		t = t < tmin ? tmin : t > tmax ? tmax : t;
 		/* the upright picture: x = the game's y, y = 640 - the game's x */
 		RP_Put( RP_FixBits( v[i]->v, 0 ));
 		RP_Put( RP_FixBits( RP_GAME_W - v[i]->u, 0 ));
 		RP_Put( RP_FixBits( v[i]->zi, 31 )); /* 1/z, the world's own units */
 		RP_Put( RP_FixBits( v[i]->zi, 31 ));
 		RP_Put( rp_2d_colour );
-		RP_Put( RP_FixBits( u0 + s, 16 + 9 )); /* page texels / 512 */
-		RP_Put( RP_FixBits( v0 + t, 16 + 9 ));
+		RP_FxTexel( &c, v[i]->s, v[i]->t );
 	}
 	RP_Whole();
 	rp_count.fx_tris++;
 	rp_count.tris++;
 	rp_count.verts += 3;
+}
+
+/*
+Kit 77 (R324, run play75: c1a0e's start spent ~12% of its frame in the
+triangle interface's per-corner floats and doubles: R_SetupFinalVert's
+transform and projection, TriTexCoord2f's fmodf and double compares,
+_TriColor4f's packing for the software spans). Iterate (rule 0):
+ref_soft makes every corner a finalvert in floats for its rasteriser;
+ref_gl hands GL immediate-mode floats; ours, with the 2700G drawing: each
+corner into view space and onto the screen in fixed point as the world's
+corners are (RP_ViewPoint, RP_ProjectS: the effects meet the walls in the
+same numbers), the texel from the coordinate in 16.16, no colour packing
+the 2700G never reads. A triangle with a corner behind the near plane
+goes the software renderer's way (it clips). The same triangles, their
+corners within a sub-pixel of the old ones (visually identical).
+*/
+typedef struct
+{
+	float    x, y, z;
+	int      s, t;
+	uint32_t w[3];
+	int32_t  st[2]; /* the TA's x, y in 28.4: the off-screen cull */
+	int      front;
+} rp_tv_t;
+
+static rp_tv_t rp_tv[3];
+static int     rp_tv_mode, rp_tv_n, rp_tv_count;
+
+void RP_TriBegin( int mode )
+{
+	rp_tv_mode = mode;
+	rp_tv_n = rp_tv_count = 0;
+	RP_ViewFixed();
+}
+
+/* TriTexCoord2f's texel, as its float code makes it (within a texel). */
+int RP_TriCoord( float u, int size )
+{
+	uint32_t bits, f;
+	int32_t  q;
+
+	__builtin_memcpy( &bits, &u, sizeof( bits ));
+	if(( bits & 0x7FFFFFFFu ) >= 0x46000000u ) /* |u| >= 8192, or not finite: the float way */
+	{
+		double u1 = 0;
+
+		u = fmodf( u, 10 );
+		if( u < 1000 && u > -1000 )
+			u1 = u;
+		while( u1 < 0 )
+			u1 = u1 + 1;
+		while( u1 > 1 )
+			u1 = u1 - 1;
+		return size * bound( 0.01, u1, 0.99 );
+	}
+	q = RP_Fix16( u );
+	f = (uint32_t)q & 0xFFFFu;
+	if( !f )
+	{
+		/* a whole number: fmodf( u, 10 ) then the loops make 1 above 0
+		   (0 for a multiple of 10), else 0 */
+		int32_t whole = q >> 16;
+
+		f = whole > 0 && whole % 10 ? 0x10000u : 0;
+	}
+	f = f < 655u ? 655u : f > 64880u ? 64880u : f; /* bound( 0.01, u, 0.99 ) */
+	return (int)(( (uint32_t)size * f ) >> 16 );
+}
+
+static void RP_TriEmit( const rp_tv_t *a, const rp_tv_t *b, const rp_tv_t *c3 )
+{
+	const rp_tv_t *v[3] = { a, b, c3 };
+	rp_fxctx_t     c;
+
+	if( !a->front || !b->front || !c3->front )
+	{
+		/* across the near plane: the software renderer's set-up and clip */
+		finalvert_t fv[3];
+
+		for( int i = 0; i < 3; i++ )
+			R_SetupFinalVert( &fv[i], v[i]->x, v[i]->y, v[i]->z, 0, v[i]->s, v[i]->t );
+		R_RenderTriangle( &fv[0], &fv[1], &fv[2] );
+		rp_count.fx_cut++;
+		return;
+	}
+	if( RP_OffScreen( a->st, b->st, c3->st ))
+	{
+		rp_count.fx_off++; /* as R_RenderTriangle's "completely clipped" */
+		return;
+	}
+	if( !RP_FxSetup( &c ))
+		return;
+	RP_Put( RP_GFX_STRIP( 3 ));
+	for( int i = 0; i < 3; i++ )
+	{
+		RP_Put( v[i]->w[0] );
+		RP_Put( v[i]->w[1] );
+		RP_Put( v[i]->w[2] );
+		RP_Put( v[i]->w[2] );
+		RP_Put( rp_2d_colour );
+		RP_FxTexel( &c, v[i]->s << 16, v[i]->t << 16 );
+	}
+	RP_Whole();
+	rp_count.fx_tris++;
+	rp_count.fx_fixed++;
+	rp_count.tris++;
+	rp_count.verts += 3;
+}
+
+static void RP_TriCorner( rp_tv_t *v, float x, float y, float z, int s, int t )
+{
+	int32_t p[3] = { RP_Fix16( x ), RP_Fix16( y ), RP_Fix16( z ) }, q[3];
+
+	v->x = x;
+	v->y = y;
+	v->z = z;
+	v->s = s;
+	v->t = t;
+	RP_ViewPoint( (const int32_t( * )[3] )rp_view.m, rp_view.o, p, q );
+	v->front = q[2] >= ALIAS_Z_CLIP_PLANE * RP_ONE16; /* the software's near plane */
+	if( v->front )
+		RP_ProjectS( q, v->w, v->st );
+}
+
+/* TriVertex3f on the 2700G path: the same triangles of the same modes. */
+void RP_TriVertex( float x, float y, float z, int s, int t )
+{
+	if( rp_tv_mode == TRI_TRIANGLES )
+	{
+		RP_TriCorner( &rp_tv[rp_tv_count], x, y, z, s, t );
+		if( ++rp_tv_count == 3 )
+		{
+			RP_TriEmit( &rp_tv[0], &rp_tv[1], &rp_tv[2] );
+			rp_tv_count = 0;
+		}
+	}
+	else if( rp_tv_mode == TRI_TRIANGLE_FAN )
+	{
+		RP_TriCorner( &rp_tv[rp_tv_count], x, y, z, s, t );
+		if( ++rp_tv_count >= 3 )
+		{
+			RP_TriEmit( &rp_tv[0], &rp_tv[1], &rp_tv[2] );
+			rp_tv[1] = rp_tv[2];
+			rp_tv_count = 2;
+		}
+	}
+	else if( rp_tv_mode == TRI_TRIANGLE_STRIP )
+	{
+		RP_TriCorner( &rp_tv[rp_tv_n], x, y, z, s, t );
+		if( ++rp_tv_n == 3 )
+			rp_tv_n = 0;
+		if( ++rp_tv_count >= 3 )
+		{
+			if( rp_tv_count & 1 )
+				RP_TriEmit( &rp_tv[0], &rp_tv[1], &rp_tv[2] );
+			else
+				RP_TriEmit( &rp_tv[2], &rp_tv[1], &rp_tv[0] );
+		}
+	}
 }
 
 /* Draw_Fill: a rectangle in the colour the engine set (CL_FillRGBA's). */

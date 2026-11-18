@@ -1106,6 +1106,23 @@ they were), the cheapest of the two and enough for 1:1 HUD pictures.
 (2) `-rpsuit`: a map started on its own (c1a0e) gives no HEV suit and its
 scripted doors stay shut; the test word gives the suit once the map plays.
 
+**Kit 77 (2026-11-17, R324: the triangle interface).** The sampled run on
+c1a0e's start (play75) put ~12% of a frame in the triangle interface's
+per-corner floats: `R_SetupFinalVert` (a float transform and projection a
+corner), `TriTexCoord2f` (`fmodf`, double compares and loops a corner),
+`_TriColor4f` (packing a colour for the software spans the 2700G never
+reads). The beams and sprites of the test chamber are made of these.
+
+| Part | The vendor's or textbook way (a finding) | Ours | Why ours wins |
+|---|---|---|---|
+| A corner's place | ref_soft: a float 3x4 transform, a float divide and the screen-edge clip flags for its rasteriser; ref_gl: floats to GL immediate mode, the driver transforms | the corner into view space and onto the screen in fixed point by the world's own tables (`RP_ViewPoint`, `RP_ProjectS`), so a beam meets a wall in the same numbers; only a triangle crossing the near plane goes the software's way (it clips); the 2700G clips the screen's sides | no float call a corner; a cull of wholly off-screen triangles as the software's |
+| A corner's texel | `fmodf`, then loops in doubles, then a bound in doubles | the coordinate's fraction in 16.16 (the same `fmodf`-by-10 rule for whole numbers), clamped to the same 0.01-0.99, times the size | the same texel (within one, the float rounding); integers only |
+| The colour | packed into 5-6-5 and the software's dither bytes each call | the 8-bit colour only (`RP_Emit2DColour`), the packing skipped while the 2700G draws | work nobody reads, gone |
+
+What would overturn it: an effect visibly off by a pixel against kit 76
+in the emulator's `-rpfx` frames, or a triangle crossing the screen's
+edge that the TA does not clip (then those go the software's way too).
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

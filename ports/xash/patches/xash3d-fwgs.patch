@@ -1962,10 +1962,10 @@ index 8a82400..024ca73 100644
  		}
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..aed368f 100644
+index 1a7efd6..c6d08d8 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,60 @@ typedef struct
+@@ -992,6 +992,63 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -1981,6 +1981,9 @@ index 1a7efd6..aed368f 100644
 +void RP_EmitFill( int x, int y, int w, int h );
 +void RP_EmitFace( msurface_t *fa );
 +void RP_FaceAhead( const msurface_t *fa ); // kit 69
++void RP_TriBegin( int mode ); // kit 77 (R324): TriAPI's corners in fixed point
++void RP_TriVertex( float x, float y, float z, int s, int t );
++int  RP_TriCoord( float u, int size );
 +void RP_EmitTriangle( void );
 +void RP_EmitBind( const struct image_s *image ); // kit 74
 +void RP_EmitSurfBuilt( qboolean relit );
@@ -2612,14 +2615,61 @@ index e47e115..41478c1 100644
  		CACHESPOT( surface )[miplevel] = cache;
  		cache->owner = &CACHESPOT( surface )[miplevel];
 diff --git a/ref/soft/r_triapi.c b/ref/soft/r_triapi.c
-index a4a90ea..a1b93ca 100644
+index a4a90ea..586ceee 100644
 --- a/ref/soft/r_triapi.c
 +++ b/ref/soft/r_triapi.c
-@@ -85,6 +85,7 @@ void GAME_EXPORT _TriColor4f( float rr, float gg, float bb, float aa )
+@@ -28,6 +28,7 @@ static int         vertcount, n;
+ static int         mode;
+ static short       s, t;
+ static uint        light;
++static int         rp_fast; // kit 77 (R324): this sequence's corners in fixed point, for the 2700G
+ 
+ /*
+ ===============================================================
+@@ -61,6 +62,9 @@ void GAME_EXPORT TriBegin( int mode1 )
+ 		mode1 = TRI_TRIANGLE_FAN;
+ 	mode = mode1;
+ 	n = vertcount = 0;
++	rp_fast = rp_emit_on == 2 && !rp_both && !vid.is2d;
++	if( rp_fast )
++		RP_TriBegin( mode );
+ }
+ 
+ /*
+@@ -85,6 +89,9 @@ void GAME_EXPORT _TriColor4f( float rr, float gg, float bb, float aa )
  	// pglColor4f( r, g, b, a );
  	if( vid.rendermode == kRenderTransAdd || vid.rendermode == kRenderGlow )
  		rr *= aa, gg *= aa, bb *= aa;
 +	RP_Emit2DColour( rr, gg, bb, aa ); // ref_rp's 2D layer: the colour at 8 bits
++	if( rp_emit_on == 2 && !rp_both && !vid.is2d )
++		return; // kit 77: the 2700G reads only the colour above, never the spans' packing
  
  	// gEngfuncs.Con_Printf("%d\n", vid.alpha);
  
+@@ -179,6 +186,13 @@ TriTexCoord2f
+ */
+ void GAME_EXPORT TriTexCoord2f( float u, float v )
+ {
++	if( rp_emit_on == 2 && !rp_both )
++	{
++		// kit 77: the same texel in 16.16, no fmodf and no doubles
++		s = RP_TriCoord( u, r_affinetridesc.skinwidth );
++		t = RP_TriCoord( v, r_affinetridesc.skinheight );
++		return;
++	}
+ 	double u1 = 0, v1 = 0;
+ 	u = fmodf( u, 10 );
+ 	v = fmodf( v, 10 );
+@@ -226,6 +240,12 @@ void GAME_EXPORT TriVertex3f( float x, float y, float z )
+ 		y += vid.offset2d[1];
+ 	}
+ 
++	if( rp_fast )
++	{
++		RP_TriVertex( x, y, z, s, t ); // kit 77: the same triangles, fixed-point corners
++		return;
++	}
++
+ 	if( mode == TRI_TRIANGLES )
+ 	{
+ 		R_SetupFinalVert( &triv[vertcount], x, y, z, light << 8, s, t );
