@@ -1629,7 +1629,7 @@ index 3df187a..f663890 100644
  }
  
 diff --git a/engine/server/sv_main.c b/engine/server/sv_main.c
-index 985e438..b79e8b5 100644
+index 985e438..1da88a6 100644
 --- a/engine/server/sv_main.c
 +++ b/engine/server/sv_main.c
 @@ -19,6 +19,10 @@ GNU General Public License for more details.
@@ -1643,7 +1643,20 @@ index 985e438..b79e8b5 100644
  CVAR_DEFINE_AUTO( sv_lan, "0", 0, "server is a lan server ( no heartbeat, no authentication, no non-class C addresses, 9999.0 rate, etc." );
  CVAR_DEFINE_AUTO( sv_lan_rate, "20000.0", 0, "rate for lan server" );
  CVAR_DEFINE_AUTO( sv_nat, "0", 0, "enable NAT bypass for this server" );
-@@ -955,6 +959,7 @@ void SV_Init( void )
+@@ -114,7 +118,11 @@ static CVAR_DEFINE_AUTO( showtriggers, "0", FCVAR_LATCH|FCVAR_TEMPORARY, "debug
+ static CVAR_DEFINE_AUTO( sv_airmove, "1", FCVAR_SERVER, "obsolete, compatibility issues" );
+ static CVAR_DEFINE_AUTO( sv_version, "", FCVAR_READ_ONLY, "engine version string" );
+ CVAR_DEFINE_AUTO( hostname, "", FCVAR_PRINTABLEONLY, "name of current host" );
+-static CVAR_DEFINE_AUTO( sv_fps, "0.0", 0, "set this cvar to decouple server framerate from client framerate" );
++// RetroPane kit 106 (R324; the owner's ruling, 2026-11-18: "Yes, 20 Hz"):
++// the server ticks 20 times a second by default, the client predicting
++// the player between ticks (cl_nopred 0, the engine's own default); runs
++// 113-116 measured it. `+sv_fps 0` is the control (a tick every frame).
++static CVAR_DEFINE_AUTO( sv_fps, "20.0", 0, "set this cvar to decouple server framerate from client framerate" );
+ 
+ // gore-related cvars
+ static CVAR_DEFINE_AUTO( violence_hblood, "1", 0, "draw human blood" );
+@@ -955,6 +963,7 @@ void SV_Init( void )
  	Cvar_RegisterVariable( &sv_hostmap );
  	Cvar_DirectSet( &sv_hostmap, GI->startmap );
  	Cvar_RegisterVariable( &sv_password );
@@ -1907,7 +1920,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..2a52b9d 100644
+index dd01c0f..97719ec 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -3251,7 +3264,7 @@ index dd01c0f..2a52b9d 100644
  
  	if( !draw_world || r_fullbright->value || FBitSet( ent->curstate.effects, EF_FULLBRIGHT ))
  	{
-@@ -520,11 +1746,65 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -520,11 +1746,69 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -3285,8 +3298,12 @@ index dd01c0f..2a52b9d 100644
 +
 +	if( rp_light_half < 0 )
 +	{
-+		rp_light_half = !!gEngfuncs.Sys_CheckParm( "-rplighthalf" );
-+		rp_light_one = !!gEngfuncs.Sys_CheckParm( "-rplightone" );
++		// RetroPane kit 106: on by default (the owner's ruling, 2026-11-18,
++		// after watching runs 109-112: "Yes, A+B on"); -rpnolighthalf and
++		// -rpnolightone are the controls (the old -rplighthalf / -rplightone
++		// still accepted, now the default)
++		rp_light_half = !gEngfuncs.Sys_CheckParm( "-rpnolighthalf" );
++		rp_light_one = !gEngfuncs.Sys_CheckParm( "-rpnolightone" );
 +	}
 +	if( rp_half_time != gp_cl->time )
 +	{
@@ -3318,7 +3335,7 @@ index dd01c0f..2a52b9d 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1818,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1822,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -3362,7 +3379,7 @@ index dd01c0f..2a52b9d 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -561,9 +1872,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -561,9 +1876,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorScale( lightDir, 2048.0f, vecEnd );
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
@@ -3397,7 +3414,7 @@ index dd01c0f..2a52b9d 100644
  		{
  			float grad[4];
  			colorVec gcolor;
-@@ -603,7 +1938,39 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -603,7 +1942,39 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  			VectorCopy( lightvec, lightDir );
  		}
  	}
@@ -3438,7 +3455,7 @@ index dd01c0f..2a52b9d 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1988,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1992,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  

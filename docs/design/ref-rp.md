@@ -1301,6 +1301,17 @@ kit 104. What it shows: the world's and models' corners are a few
 thousand a frame and their multiplies are not where the frame waits;
 iWMMXt pays where 16-bit data streams (the mixer, kit 99), not here.
 
+**Kit 106, the owner's rulings (2026-11-18):** the debris lighting
+options A and B (measured on kit 91, runs 109-112, watched by the owner)
+and a 20 Hz server tick with client prediction (runs 113-116) are the
+defaults; `-rpnolighthalf`, `-rpnolightone` and `+sv_fps 0` the controls.
+The yardsticks now run with `+cl_nopred 0`, the engine's own default
+(`local/half-life/yardsticks/`). Runs 165-166: cascade **29.8 / 22.9**,
+fight **21.6 / 23.8** fps against kit 104's 29.6 / 19.6 and 19.9 / 22.4;
+run 165's end picture is the new reference. The calm frames are at 30;
+the heavy half (44 ms against 33) is the debris' own path: the next
+lever (roadmap 7e).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
