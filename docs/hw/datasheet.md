@@ -134,6 +134,8 @@ watching.
 ## 5. Devices
 
 ### Display (2700G)
+
+- 3D core's TA (2700g.md "Dell's drivers read for unused features", 2026-11-18): **strip header bit 21 shown on the X51v** (kit 101, run 144): corners of six words without the z word (depth from 1/w) draw the identical picture; bit 17 with 16.16 vertex words drew nothing (run 143): open. From Dell's drivers, unproven: no geometry hardware in their use, points (type 0xE), partial state blocks, PVRTC 2/4 bpp.
 - The video plane in RGB565 (`VSCTRL` format 7, the colour-space
   conversion off), shown exactly (run D): the driver's
   `VideoFormat::Rgb565` (2026-10-27), a 16-bit 3D target shown through
