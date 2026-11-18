@@ -1687,7 +1687,7 @@ index 32fa799..541cee7 100644
 +
  #endif // REF_COMMON_H
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0f..fcebca2 100644
+index dd01c0f..60d1578 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
 @@ -42,12 +42,21 @@ void CL_RunLightStyles( lightstyle_t *ls )
@@ -2146,7 +2146,7 @@ index dd01c0f..fcebca2 100644
 +		{
 +			const model_t *m = pe->model;
 +			int            miss = 0;
-+
+ 
 +			for( int k = 0; k < 3 && !miss; k++ )
 +			{
 +				float lo = start[k] < end[k] ? start[k] : end[k];
@@ -2160,7 +2160,7 @@ index dd01c0f..fcebca2 100644
 +				continue;
 +		}
 +#endif
- 
++
 +#if defined( __retropane__ )
 +		rp_prof[3]++;
 +#endif
@@ -2206,7 +2206,7 @@ index dd01c0f..fcebca2 100644
  
  		if( g_trace_fraction < last_fraction )
  		{
-@@ -489,6 +909,75 @@ void R_GatherPlayerLight( cl_entity_t *view )
+@@ -489,6 +909,236 @@ void R_GatherPlayerLight( cl_entity_t *view )
  	gEngfuncs.SetLocalLightLevel(( c.r + c.g + c.b ) / 3 );
  }
  
@@ -2279,10 +2279,209 @@ index dd01c0f..fcebca2 100644
 +	return h;
 +}
 +
++#if defined( __retropane__ )
++/*
++Kit 89 (R324, the owner 2026-11-18: "Debris stage by stage"; runs 90-96:
++the cascade's heavy half loses ~41% of its cycles to the I-cache, each of
++~110 debris pieces running the whole model path, lighting then bones then
++the emit, far past 32 KiB). Iterate (rule 0): GoldSrc and Xash light each
++model as it is drawn, interleaving the light code with the draw code per
++piece; ours runs the lighting stage for every model of the frame first,
++in one pass (R_DrawEntitiesOnList's start), so its code stays cached
++across all of them, and each model's draw takes the stored result. The
++same answer by construction: the result is used only when every input the
++function reads is bit for bit what the pass saw (the entity's origin,
++model, effects, render fx, the switches, the time, the world's light key
++and every dynamic light, which a model's own events may add while the
++frame draws); otherwise it is worked out anew. What the function writes
++is replayed: the light, the floor colour and exactly the light spot and
++vector components it wrote. -rpnopre: off.
++*/
++enum { RP_PRE = 1024, RP_PRE_PROBE = 8 };
++typedef struct
++{
++	const cl_entity_t *ent;
++	const model_t     *model;
++	unsigned           stamp;
++	vec3_t             org;
++	int                effects, renderfx, iuser4, draw_world;
++	double             time;
++	uint64_t           key;
++	float              fullbright, dynamic, direct;
++	/* what it wrote */
++	int                ambientlight, shadelight;
++	vec3_t             color, vec;
++	color24            floor_rgb;
++	colorVec           floor;
++	unsigned           wrote; /* bits 0-2: lightspot, 3-5: lightvec */
++	vec3_t             spot, lvec;
++} rp_pre_t;
++
++static rp_pre_t  rp_pre[RP_PRE];
++static unsigned  rp_pre_stamp;
++static int       rp_pre_live, rp_pre_filling, rp_pre_off = -1;
++static dlight_t  rp_pre_dl[MAX_DLIGHTS];
++
++#define RP_PRE_MARK 0xFFC0DEADu
++
++/* misses: no slot of this frame, or its inputs changed (the reasons) */
++unsigned rp_pre_counts[2];
++
++/* the entity's slot this frame (probed: debris entities lie at one
++   stride, which a plain modulus folds together), or with `take` a free or
++   stale one for it; NULL if none */
++static rp_pre_t *RP_PreSlot( const cl_entity_t *ent, int take )
++{
++	uint32_t h = (uint32_t)(uintptr_t)ent * 2654435761u >> 22; /* 10 bits */
++
++	for( int k = 0; k < RP_PRE_PROBE; k++ )
++	{
++		rp_pre_t *p = &rp_pre[( h + k ) & ( RP_PRE - 1 )];
++
++		if( p->stamp == rp_pre_stamp && p->ent == ent )
++			return p;
++		if( take && p->stamp != rp_pre_stamp )
++			return p;
++	}
++	return NULL;
++}
++
++static int RP_PreSame( const rp_pre_t *p, const cl_entity_t *ent, qboolean draw_world, double time )
++{
++	return p->model == ent->model
++		&& !memcmp( p->org, ent->origin, sizeof( p->org ))
++		&& p->effects == ent->curstate.effects && p->renderfx == ent->curstate.renderfx
++		&& p->iuser4 == ent->curstate.iuser4 && p->draw_world == !!draw_world
++		&& !memcmp( &p->time, &time, sizeof( time ))
++		&& !memcmp( &p->fullbright, &r_fullbright->value, sizeof( float ))
++		&& !memcmp( &p->dynamic, &r_dynamic->value, sizeof( float ))
++		&& !memcmp( &p->direct, &v_direct->value, sizeof( float ))
++		&& p->key == RP_LightKey( )
++		&& !memcmp( rp_pre_dl, gp_dlights, sizeof( rp_pre_dl ));
++}
++
++void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_world, double time, vec3_t lightspot, vec3_t lightvec );
++
++/* the lighting stage: every studio model of the draw list, once */
++void RP_LightPrepass( const cl_entity_t *const *lists[2], const uint counts[2], qboolean draw_world, double time )
++{
++	if( rp_pre_off < 0 )
++		rp_pre_off = !!gEngfuncs.Sys_CheckParm( "-rpnopre" );
++	rp_pre_live = 0;
++	if( rp_pre_off )
++		return;
++	rp_pre_stamp++;
++	memcpy( rp_pre_dl, gp_dlights, sizeof( rp_pre_dl ));
++	rp_pre_filling = 1;
++	for( int l = 0; l < 2; l++ )
++	{
++		for( uint i = 0; i < counts[l]; i++ )
++		{
++			cl_entity_t *ent = (cl_entity_t *)lists[l][i];
++
++			if( !ent || !ent->model || ent->model->type != mod_studio )
++				continue;
++
++			rp_pre_t *p = RP_PreSlot( ent, 1 );
++			alight_t  a;
++
++			if( !p || p->stamp == rp_pre_stamp )
++				continue; /* no room, or listed twice: its draw works it out */
++			vec3_t    dir, spot, lvec;
++			colorVec  floor_was = ent->cvFloorColor;
++			uint32_t  mark = RP_PRE_MARK;
++
++			for( int k = 0; k < 3; k++ )
++			{
++				memcpy( &spot[k], &mark, 4 );
++				memcpy( &lvec[k], &mark, 4 );
++			}
++			memset( &a, 0, sizeof( a ));
++			a.plightvec = dir;
++			R_EntityDynamicLight( ent, &a, draw_world, time, spot, lvec );
++
++			p->ent = ent;
++			p->model = ent->model;
++			p->stamp = rp_pre_stamp;
++			memcpy( p->org, ent->origin, sizeof( p->org ));
++			p->effects = ent->curstate.effects;
++			p->renderfx = ent->curstate.renderfx;
++			p->iuser4 = ent->curstate.iuser4;
++			p->draw_world = !!draw_world;
++			p->time = time;
++			p->key = RP_LightKey( );
++			p->fullbright = r_fullbright->value;
++			p->dynamic = r_dynamic->value;
++			p->direct = v_direct->value;
++			p->ambientlight = a.ambientlight;
++			p->shadelight = a.shadelight;
++			VectorCopy( a.color, p->color );
++			VectorCopy( dir, p->vec );
++			p->floor = ent->cvFloorColor;
++			ent->cvFloorColor = floor_was; /* written when its draw asks */
++			p->wrote = 0;
++			for( int k = 0; k < 3; k++ )
++			{
++				uint32_t u;
++
++				memcpy( &u, &spot[k], 4 );
++				if( u != RP_PRE_MARK )
++					p->wrote |= 1u << k;
++				memcpy( &u, &lvec[k], 4 );
++				if( u != RP_PRE_MARK )
++					p->wrote |= 8u << k;
++			}
++			VectorCopy( spot, p->spot );
++			VectorCopy( lvec, p->lvec );
++		}
++	}
++	rp_pre_filling = 0;
++	rp_pre_live = 1;
++}
++#endif
++
  /*
  ===============
  R_EntityDynamicLight
-@@ -520,11 +1009,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -499,6 +1149,37 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ {
+ 	if( !plight || !ent )
+ 		return;
++#if defined( __retropane__ )
++	if( rp_pre_live && !rp_pre_filling && ent->model )
++	{
++		const rp_pre_t *p = RP_PreSlot( ent, 0 );
++
++		if( !p )
++			rp_pre_counts[0]++;
++		else if( !RP_PreSame( p, ent, draw_world, time ))
++			rp_pre_counts[1]++;
++		else
++		{
++			extern unsigned int rp_prof[10];
++
++			rp_prof[9]++;
++			plight->ambientlight = p->ambientlight;
++			plight->shadelight = p->shadelight;
++			VectorCopy( p->color, plight->color );
++			if( plight->plightvec )
++				VectorCopy( p->vec, plight->plightvec );
++			ent->cvFloorColor = p->floor;
++			for( int k = 0; k < 3; k++ )
++			{
++				if( p->wrote & 1u << k )
++					lightspot[k] = p->spot[k];
++				if( p->wrote & 8u << k )
++					lightvec[k] = p->lvec[k];
++			}
++			return;
++		}
++	}
++#endif
+ 
+ 	if( !draw_world || r_fullbright->value || FBitSet( ent->curstate.effects, EF_FULLBRIGHT ))
+ 	{
+@@ -520,11 +1201,38 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorSet( lightDir, 0.0f, 0.0f, -1.0f );
  
  	vec3_t origin = Vec3( ent->origin );
@@ -2322,7 +2521,7 @@ index dd01c0f..fcebca2 100644
  	light.r = light.g = light.b = light.a = 0;
  
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
-@@ -538,12 +1054,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -538,12 +1246,43 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  		VectorSubtract( origin, skyvec, vecEnd );
  
@@ -2366,7 +2565,7 @@ index dd01c0f..fcebca2 100644
  
  		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
  			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
-@@ -562,6 +1109,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -562,6 +1301,7 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		VectorAdd( vecEnd, vecSrc, vecEnd );
  
  		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
@@ -2374,7 +2573,7 @@ index dd01c0f..fcebca2 100644
  
  		if( VectorIsNull( lightvec ))
  		{
-@@ -604,6 +1152,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -604,6 +1344,20 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  		}
  	}
  
@@ -2395,7 +2594,7 @@ index dd01c0f..fcebca2 100644
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
  		light.r *= ent->curstate.iuser4 / 10.0f;
-@@ -621,11 +1183,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +1375,13 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
@@ -3166,7 +3365,7 @@ index 1a7efd6..08ae21c 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..a0b09e6 100644
+index 2c644f6..e79c01f 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
@@ -3256,7 +3455,29 @@ index 2c644f6..a0b09e6 100644
  		qsort( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities, sizeof( cl_entity_t * ), (void *)R_TransEntityCompare );
  	}
  
-@@ -959,7 +1032,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
+@@ -510,6 +583,21 @@ static void R_DrawEntitiesOnList( void )
+ 	// RI.currententity = CL_GetEntityByIndex(0);
+ 	d_pdrawspans = R_PolysetFillSpans8;
+ 	GL_SetRenderMode( kRenderNormal );
++#if defined( __retropane__ )
++	{
++		/* kit 89: the lighting stage for every studio model first
++		   (ref_light.c RP_LightPrepass); the time as R_StudioSetupTimings
++		   gives it */
++		extern void RP_LightPrepass( const cl_entity_t *const *lists[2], const uint counts[2], qboolean draw_world, double time );
++		const cl_entity_t *const *lists[2] = { (const cl_entity_t *const *)tr.draw_list->solid_entities,
++			(const cl_entity_t *const *)tr.draw_list->trans_entities };
++		const uint counts[2] = { FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ) ? 0 : tr.draw_list->num_solid_entities,
++			tr.draw_list->num_trans_entities };
++		qboolean world = FBitSet( RI.rvp.flags, RF_DRAW_WORLD ) ? true : false;
++
++		RP_LightPrepass( lists, counts, world, world ? gp_cl->time : gp_host->realtime );
++	}
++#endif
+ 	// first draw solid entities
+ 	for( int i = 0; i < tr.draw_list->num_solid_entities && !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ); i++ )
+ 	{
+@@ -959,7 +1047,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
  
  
  	insubmodel = false;
@@ -3266,7 +3487,7 @@ index 2c644f6..a0b09e6 100644
  	alphaspans = false;
  }
  
-@@ -1010,7 +1084,8 @@ static void R_EdgeDrawing( void )
+@@ -1010,7 +1099,8 @@ static void R_EdgeDrawing( void )
  	R_DrawBEntitiesOnList();
  
  	// display all edges
@@ -3276,7 +3497,7 @@ index 2c644f6..a0b09e6 100644
  }
  
  /*
-@@ -1113,6 +1188,9 @@ R_BeginFrame
+@@ -1113,6 +1203,9 @@ R_BeginFrame
  */
  void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
@@ -3286,7 +3507,7 @@ index 2c644f6..a0b09e6 100644
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1302,7 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1317,7 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -3294,7 +3515,7 @@ index 2c644f6..a0b09e6 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1449,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1464,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  

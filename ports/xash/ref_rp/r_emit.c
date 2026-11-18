@@ -55,6 +55,9 @@ particles, the sky, water and 2D are step 4's later sub-steps.
 #include "r_local.h"
 #include "rp_fixed.h"
 
+/* kit 89 (ref_light.c): the light pre-pass's misses, by reason */
+extern unsigned rp_pre_counts[2];
+
 /* The TA's words (drivers/mbx3d: `ta::STRIP`, `ta::END`; the state
    block's mask as P4's textured draw, `ta_quads::TEXTURED_MASK`). */
 #define RP_TA_STATE_MASK 0x10000057u
@@ -248,8 +251,9 @@ static void RP_EmitReport( void )
 		/* kit 80: the engine's own counts (engine/common/pm_trace.c), a frame */
 		extern unsigned int rp_prof[10];
 
-		fprintf( stderr, "rp-emit: kit 80's counts a frame: %u model light setups (%u kept), %u light traces walking %u brush models; %u physics traces testing %u entities; %u tempents; %u entity-by-name searches scanning %u edicts\n",
-			rp_prof[0] / f, rp_prof[1] / f, rp_prof[2] / f, rp_prof[3] / f, rp_prof[4] / f, rp_prof[5] / f, rp_prof[6] / f, rp_prof[7] / f, rp_prof[8] / f );
+		fprintf( stderr, "rp-emit: kit 80's counts a frame: %u model light setups (%u kept), %u light traces walking %u brush models; %u physics traces testing %u entities; %u tempents; %u entity-by-name searches scanning %u edicts; %u model lights from kit 89's pre-pass (%u not in it, %u changed since)\n",
+			rp_prof[0] / f, rp_prof[1] / f, rp_prof[2] / f, rp_prof[3] / f, rp_prof[4] / f, rp_prof[5] / f, rp_prof[6] / f, rp_prof[7] / f, rp_prof[8] / f, rp_prof[9] / f, rp_pre_counts[0] / f, rp_pre_counts[1] / f );
+		rp_pre_counts[0] = rp_pre_counts[1] = 0;
 		for( int i = 0; i < 10; i++ )
 			rp_prof[i] = 0;
 	}

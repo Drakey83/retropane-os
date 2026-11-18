@@ -1206,6 +1206,8 @@ too far past the cache for smaller code to fit it.
 |---|---|---|---|
 | 88 | GoldSrc and Xash leave the I-cache to hardware replacement (round robin over 32 KiB on this core) | the runner locks the model path's hottest code (`ports/xash/icache-lock.txt`: functions ranked by the X51v's I-cache-stall samples per byte, run 92) into the I-cache, 8 ways of every set left free, **only while the engine says its frames are model-heavy** (`rp_code_hint`: from 40 models drawn, off below 24) | **23.4 / 10.8** (run 96, the kit as built: 24 KiB, no profiling; with the event sampler on: 24 KiB 10.5, 16 KiB 10.4; held throughout, 16 KiB: 22.7 / 10.6; none, the same profiling: 23.3 / 9.6) |
 
+| 89 | GoldSrc and Xash light each model as it is drawn, the light code between every piece's draw code | **the lighting as a stage of its own** (the owner, 2026-11-18: "Debris stage by stage"): `RP_LightPrepass` runs `R_EntityDynamicLight` for every studio model of the draw list before any is drawn, so its code stays cached across all of them; each draw takes the stored result only when every input is bit for bit what the pass saw (origin, model, effects, render fx, switches, time, the world's light key, every dynamic light) and replays exactly what the function wrote; `-rpnopre` off. With it the I-cache lock no longer pays (24 KiB: 11.8; 8 KiB re-ranked: 14.4; none: 14.7), so the kit locks nothing by default | **24.3 / 14.7** (run 100; 108 of 108 debris lights from the pass, the heavy half's I-cache share 41% -> 22%) |
+
 The picture of every run above byte for byte kit 86's. What is left in
 the I-cache share (41% of the heavy half with the lock) is the path's
 breadth: the next lever is running the debris stage by stage (all pieces

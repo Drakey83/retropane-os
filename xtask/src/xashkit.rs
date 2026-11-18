@@ -204,11 +204,13 @@ fn with_extra(base: String, extra: Option<&str>) -> String {
 /// `lock.bin` (the runner's `lock_icache`).
 pub const LOCK_KIB: &str = "RETROPANE_XASH_LOCK_KIB";
 
-/// The lock's size when [`LOCK_KIB`] is not set: 24 KiB (R324 runs 94
-/// and 95 on the X51v, held only while the engine's frames are
-/// model-heavy: the cascade's heavy half 10.4 fps at 16 KiB, 10.5 at 24,
-/// 9.6 with none; its calm half unchanged at 23.3). `0` turns it off.
-pub const LOCK_KIB_DEFAULT: u32 = 24;
+/// The lock's size when [`LOCK_KIB`] is not set: none (R324, the X51v).
+/// It paid while the debris lit each piece between its draws (kit 88,
+/// runs 94-96: the heavy half 9.6 -> 10.8 fps at 24 KiB), but once kit 89
+/// ran the lighting as a stage of its own the path nearly fits the cache
+/// and a lock only takes ways from it (runs 98-101: 11.8 fps at 24 KiB,
+/// 14.4 at 8 KiB re-ranked, 14.7 with none).
+pub const LOCK_KIB_DEFAULT: u32 = 0;
 
 /// The functions to lock, most I-cache stalls a byte first: `module
 /// symbol` a line (the symbol as the ELF names it), `#` a comment.
