@@ -965,34 +965,45 @@ mod image {
         // against Intel's documented map (memory-map.md). Peripheral
         // pages' first words have no read side effects that matter here
         // (a FIFO's first word at worst gives up one entry).
-        // From RP_PROBE_FROM (hex; default 0x4C100000: run probe-0078
-        // stopped on an imprecise abort past the USB host's first page) to
-        // 0x5FFFFFFF: a line a MiB, its 256 pages counted by what their
-        // first word does (non-zero, zero, a precise abort) and its first
-        // non-zero word; the MiB is named before it is read.
+        // The whole bus space 0x40000000-0x5FFFFFFF a MiB at a time (from
+        // RP_PROBE_FROM, hex, to resume past a stop): its 256 pages counted
+        // by what their first word does (non-zero / zero / a precise
+        // abort) and its first non-zero word; the MiB named first. MiBs our
+        // page table leaves unmapped are mapped as device memory for the
+        // scan (diag::with_device_window), so an abort is the hardware's,
+        // not the MMU's. The USB host's MiB past its first page raised an
+        // imprecise abort (probe-0078): only its first page is read.
         let from = match option_env!("RP_PROBE_FROM") {
-            Some(h) => usize::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or(0x4C10_0000),
-            None => 0x4C10_0000,
+            Some(h) => usize::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or(0x4000_0000),
+            None => 0x4000_0000,
         };
         say!("hw: pass C from {from:08x} to 5fffffff, a line a MiB (non-zero / zero / abort pages)");
-        let mut mib = from & !0xF_FFFF;
-        while mib < 0x6000_0000 {
-            say!("hw: C {mib:08x}...");
-            let (mut nz, mut z, mut ab, mut first) = (0, 0, 0, 0u32);
-            for page in (mib..mib + 0x10_0000).step_by(0x1000) {
-                match rt::try_read(rp_hal_pxa27x::devmap::va(page)) {
-                    Some(0) => z += 1,
-                    Some(v) => {
-                        if nz == 0 {
-                            first = v;
+        let mut scan = || {
+            let mut mib = from & !0xF_FFFF;
+            while mib < 0x6000_0000 {
+                say!("hw: C {mib:08x}...");
+                let (mut nz, mut z, mut ab, mut first) = (0, 0, 0, 0u32);
+                let end = if mib == 0x4C00_0000 { mib + 0x1000 } else { mib + 0x10_0000 };
+                for page in (mib..end).step_by(0x1000) {
+                    match rt::try_read(rp_hal_pxa27x::devmap::va(page)) {
+                        Some(0) => z += 1,
+                        Some(v) => {
+                            if nz == 0 {
+                                first = v;
+                            }
+                            nz += 1;
                         }
-                        nz += 1;
+                        None => ab += 1,
                     }
-                    None => ab += 1,
                 }
+                say!("hw: C {mib:08x} {nz} / {z} / {ab}, first non-zero {first:08x}");
+                rt::check_in();
+                mib += 0x10_0000;
             }
-            say!("hw: C {mib:08x} {nz} / {z} / {ab}, first non-zero {first:08x}");
-            mib += 0x10_0000;
+        };
+        let mapped = diag::with_device_window(0x4C10_0000, ((0x6000_0000u32 - 0x4C10_0000) >> 20), &mut scan);
+        if !mapped {
+            say!("hw: the device window was refused (not the bring-up map)");
         }
         say!("hw: pass C done");
 

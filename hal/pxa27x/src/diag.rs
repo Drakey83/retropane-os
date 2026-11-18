@@ -472,6 +472,51 @@ mod target {
         Some(msc1())
     }
 
+    /// Maps every MiB of `virt..virt + mibs MiB` that the live table leaves
+    /// unmapped as a device section at the same physical address (a bus
+    /// survey's reads then reach the hardware, not the MMU), runs `f`, and
+    /// unmaps them again. Under the bring-up map only (returns false and
+    /// does nothing otherwise). Interrupts masked by the caller is not
+    /// needed: nothing else uses those addresses.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn with_device_window(virt: u32, mibs: u32, f: &mut dyn FnMut()) -> bool {
+        if crate::devmap::kernel_map() || !virt.is_multiple_of(1 << 20) {
+            return false;
+        }
+        let ttb: u32;
+        // SAFETY: reading TTB has no side effects.
+        unsafe {
+            core::arch::asm!("mrc p15, 0, {}, c2, c0, 0", out(reg) ttb, options(nostack, nomem))
+        };
+        let l1 = (ttb & !0x3FFF) as *mut u32;
+        let first = (virt >> 20) as usize;
+        let mut added = [false; 512];
+        let n = (mibs as usize).min(512);
+        for i in 0..n {
+            // SAFETY: the live first-level table, identity-mapped under the
+            // bring-up map (checked); only entries that map nothing (0) are
+            // filled, and emptied again below.
+            unsafe {
+                if l1.add(first + i).read_volatile() == 0 {
+                    l1.add(first + i).write_volatile(crate::mmu::section(virt + ((i as u32) << 20), crate::mmu::Memory::Device));
+                    added[i] = true;
+                }
+            }
+        }
+        crate::cpu::clean_range(l1 as u32 + 4 * first as u32, 4 * n as u32);
+        crate::cpu::invalidate_tlb_all();
+        f();
+        for i in 0..n {
+            if added[i] {
+                // SAFETY: the entries filled above, emptied.
+                unsafe { l1.add(first + i).write_volatile(0) };
+            }
+        }
+        crate::cpu::clean_range(l1 as u32 + 4 * first as u32, 4 * n as u32);
+        crate::cpu::invalidate_tlb_all();
+        true
+    }
+
     /// CS3 as a 32-bit non-burst SRAM chip select at its longest timing
     /// (RT3 `000`, RBW3 32 bits, RDF and RDN code 15 = 30 clocks, RRR 7)
     /// instead of VLIO, for a survey of the 2700G's space (ADR-0040 step
@@ -1015,7 +1060,8 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessor_survey, coprocessors, CoSurvey, hot_code_off_sram, put_msc1, set_cs3_sram, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
+    coprocessor_survey, coprocessors, CoSurvey, hot_code_off_sram, put_msc1, set_cs3_sram,
+    with_device_window, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
     msc2, set_cs2_half, set_cs3_timing,
     set_cs3_vlio, set_cs4_vlio, set_section_memory, snapshot, take_sram, take_sram_words,
     with_window,
