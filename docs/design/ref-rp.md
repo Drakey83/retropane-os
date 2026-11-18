@@ -1280,6 +1280,27 @@ transforms, ADR-0040 part 3), the brush entities' float path
 (its changed texel choices: median 4 of 255 in one channel, not visible
 at 6x; `local/half-life/facecull/`).
 
+**Kit 105, the corners on iWMMXt (the owner, 2026-11-18: "do the corners
+on iWMMXt next"), measured and not kept.** Rule 0 first: Dell's GLES
+driver transforms with TMIA (`0x22780FC`), the Dreamcast's SH-4 with
+FTRV; iWMMXt's SIMD lanes multiply 16 bits, so 32-bit corners take TMIA
+(32 x 32 into a 64-bit wR register, one at a time), not the lanes, and the
+16-bit lanes would change the picture. Run 151's samples first:
+`RP_ProjectS` (0.57 ms) is arithmetic, but 64-bit products TMIA cannot
+pair; `RP_ChipFaceFixed` (1.8 ms) waits on loads, its kit-69 hint itself
+reading the next face's record. Built: the 3 x 3 sums of `RP_ViewPoint`
+and `rp_bone_point` by TMIA (wR0-wR2, read back by TMRRC), the projection's
+64 x 32 products as 32 x 32 where x / z fits, and a look-ahead from a
+cooked table of each face's corner run (no record read). On the X51v:
+**exact** (run 161, `-rpwmmxcheck`: 1,352,707 sums both ways, 0 differed)
+but **no faster**: TMIA on 29.5 / 19.4 (run 162) and off 29.5 / 19.4 (run
+163, the same kit), the kit as a whole 29.5 / 19.4 and fight 19.7 / 22.2
+(run 164) against kit 104's 29.6 / 19.6 and 19.9 / 22.4; its picture 1
+pixel (one green step) from kit 104's with TMIA on or off. Reverted to
+kit 104. What it shows: the world's and models' corners are a few
+thousand a frame and their multiplies are not where the frame waits;
+iWMMXt pays where 16-bit data streams (the mixer, kit 99), not here.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
