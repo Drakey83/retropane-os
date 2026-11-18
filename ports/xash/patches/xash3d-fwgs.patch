@@ -1237,7 +1237,7 @@ index 3ff8edb..758957e 100644
  	// always send servertime at new frame
  	MSG_BeginServerCmd( &msg, svc_time );
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
-index 37e79df..72e1001 100644
+index 37e79df..929e113 100644
 --- a/engine/server/sv_game.c
 +++ b/engine/server/sv_game.c
 @@ -1050,6 +1050,7 @@ edict_t *GAME_EXPORT SV_AllocEdict( void )
@@ -1280,7 +1280,49 @@ index 37e79df..72e1001 100644
  
  	if( desc == NULL )
  	{
-@@ -1499,6 +1518,19 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+@@ -1494,11 +1513,61 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+ 		return svgame.edicts;
+ 	}
+ 
++#if defined( __retropane__ )
++	/*
++	Kit 86 (R324, run 85calm: this search and its strcmp ~5% of c1a0e's
++	calm frames, 12 searches a frame over ~3,900 edicts). Iterate (rule
++	0): GoldSrc and Xash compare the wanted name with every edict's
++	string; ours keeps each edict's targetname hash beside the string
++	handle it was made from (cleared at each new server), compares hashes
++	and runs strcmp only on a match, so a match is still proven by strcmp.
++	The same scan order, the same first match.
++	*/
++	static uint32_t *rp_tn_hash;
++	static string_t *rp_tn_key;
++	static int       rp_tn_cap = -1, rp_tn_count = -1;
++	const int        rp_tn = desc->fieldOffset == offsetof( entvars_t, targetname ) && desc->fieldType == FIELD_STRING;
++	uint32_t         rp_want = 2166136261u;
++
++	if( rp_tn )
++	{
++		if( rp_tn_count != svs.spawncount || rp_tn_cap < GI->max_edicts )
++		{
++			if( rp_tn_cap < GI->max_edicts )
++			{
++				free( rp_tn_hash );
++				free( rp_tn_key );
++				rp_tn_hash = malloc( sizeof( *rp_tn_hash ) * GI->max_edicts );
++				rp_tn_key = malloc( sizeof( *rp_tn_key ) * GI->max_edicts );
++				rp_tn_cap = rp_tn_hash && rp_tn_key ? GI->max_edicts : -1;
++			}
++			if( rp_tn_cap > 0 )
++				memset( rp_tn_key, 0xFF, sizeof( *rp_tn_key ) * rp_tn_cap ); /* no handle is -1 */
++			rp_tn_count = svs.spawncount;
++		}
++		for( const unsigned char *c = (const unsigned char *)pszValue; *c; c++ )
++			rp_want = ( rp_want ^ *c ) * 16777619u;
++	}
++#endif
++
+ 	for( e++; e < svgame.numEntities; e++ )
+ 	{
  		edict_t *ed = SV_EdictNum( e );
  		const char *t;
  
@@ -1300,7 +1342,37 @@ index 37e79df..72e1001 100644
  		if( !SV_IsValidEdict( ed )) continue;
  
  		if( e <= svs.maxclients && !SV_ClientFromEdict( ed, ( svs.maxclients != 1 )))
-@@ -5330,6 +5362,7 @@ qboolean SV_LoadProgs( const char *name )
+@@ -1509,6 +1578,29 @@ static edict_t *GAME_EXPORT SV_FindEntityByString( edict_t *pStartEdict, const c
+ 		case FIELD_STRING:
+ 		case FIELD_MODELNAME:
+ 		case FIELD_SOUNDNAME:
++#if defined( __retropane__ )
++			if( rp_tn && rp_tn_cap > 0 && e < rp_tn_cap )
++			{
++				string_t key = ed->v.targetname;
++
++				if( rp_tn_key[e] != key )
++				{
++					uint32_t h = 0; /* a null name: never matches (as below) */
++
++					t = SV_GetString( key );
++					if( t != NULL && t != svgame.globals->pStringBase )
++					{
++						h = 2166136261u;
++						for( const unsigned char *c = (const unsigned char *)t; *c; c++ )
++							h = ( h ^ *c ) * 16777619u;
++					}
++					rp_tn_key[e] = key;
++					rp_tn_hash[e] = h;
++				}
++				if( rp_tn_hash[e] != rp_want )
++					break;
++			}
++#endif
+ 			t = SV_GetString( *(string_t *)&((byte *)&ed->v)[desc->fieldOffset] );
+ 			if( t != NULL && t != svgame.globals->pStringBase )
+ 			{
+@@ -5330,6 +5422,7 @@ qboolean SV_LoadProgs( const char *name )
  	svs.static_entities = Z_Calloc( sizeof( entity_state_t ) * MAX_STATIC_ENTITIES );
  	svs.baselines = Z_Calloc( sizeof( entity_state_t ) * GI->max_edicts );
  	svgame.numEntities = svs.maxclients + 1; // clients + world

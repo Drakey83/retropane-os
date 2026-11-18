@@ -1155,6 +1155,25 @@ direction), each through every brush entity near the player too.
 Measured (kit 79 on the X51v): frames 1-250 22.4 fps, 251-500 7.8 fps
 (kit 78: 21.1 and 6.9).
 
+**Kits 80-86 (2026-11-17, R324: the cascade's debris and the search by
+name).** Kit 80 counted the heavy half on the X51v: 110 debris tempents a
+frame, 109 model light setups, 525 light traces, 201 physics traces, about
+a millisecond of CPU a piece; the calm frames 43 ms. Each kit below was
+measured on the X51v with `-rpcascade`; each run's last 2700G picture
+(the same game frame) was bit-for-bit the previous kit's.
+
+| Kit | The vendor's or textbook way (a finding) | Ours | Calm / heavy fps |
+|---|---|---|---|
+| 81 | the HL SDK's studio renderer rebuilds every entity's bones from the animation each frame | a model with no blends, controllers, sequence blending or gait keeps its local bone matrices by (model, sequence, frame); a hundred identical debris pieces share one set and join their own transform | 22.6 / 8.3 (from 22.4 / 7.7) |
+| 82 | Xash's sky check traces 8192 units world-only, then looks up the world's surface along the same line whatever the trace found | the surface looked up alone (with PM_WORLD_ONLY the trace's entity is 0 or -1, both the world); the brush boxes made once a frame in 16.16 | 22.9 / 9.1; physics traces 201 to 97 a frame |
+| 83 | PM_RecursiveSurfCheck in floats | the same walk in 16.16, bevels in integers; see-through faces keep the float walk | 22.9 / 9.3 |
+| 84 | | a model's five light traces sharing one brush list: no gain, taken out | 22.9 / 9.2 |
+| 85 | Xash's translucent sort measures both entities' distances at every comparison | each entity measured once by the comparator's rules (its quirk kept), the keys sorted with the same outcomes | 23.0 / 9.4 |
+| 86 | GoldSrc and Xash strcmp the wanted name against every edict | each edict's targetname hash kept beside the string handle it came from (cleared at each new server), strcmp only on a hash match | 23.4 / 9.7 |
+
+Measured and not built: `r_lighting_extended 0` (GoldSrc's world-only
+model light) 9.6 against 9.4, the same last picture: too small to ask for.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that

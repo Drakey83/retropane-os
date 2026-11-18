@@ -610,6 +610,9 @@ static void RP_End( void )
 			stage = 2;
 			fprintf( stderr, "rp-cascade: fired (fire probe_arm_mm) at %u ms of game time\n", (unsigned)ms );
 			Cbuf_AddText( "fire probe_arm_mm\n" );
+			/* -rpcalm: the sampled play is the calm frames 1-250 alone */
+			if( Sys_CheckParm( "-rpcalm" ))
+				fprintf( stderr, "rp-step: 4/5 The cascade's|calm frames: 1|to 250.\n" );
 		}
 		else if( stage == 2 )
 		{
@@ -619,7 +622,7 @@ static void RP_End( void )
 			/* step 4 said again at the heavy half's start: the sampled
 			   run's "play" is then frames 251-500 alone (the runner marks
 			   the samples at each step line) */
-			if( frames + 1u == RP_WALK_WINDOW )
+			if( frames + 1u == RP_WALK_WINDOW && !Sys_CheckParm( "-rpcalm" ))
 				fprintf( stderr, "rp-step: 4/5 The cascade's|heavy half: frames|251 to 500.\n" );
 			/* ref_rp's counts reported at frames 250 and 480: the second
 			   covers the heavy half alone (the run quits at 500, before a later one) */
@@ -629,6 +632,8 @@ static void RP_End( void )
 			   (the 2700G's and the software's) show the same moment */
 			if( ++frames >= 2u * RP_WALK_WINDOW )
 				why = "the cascade's|500 frames are done";
+			else if( frames >= RP_WALK_WINDOW && Sys_CheckParm( "-rpcalm" ))
+				why = "the cascade's|calm frames are done";
 		}
 	}
 	/* R321's check (-rpcam x,y,z,pitch,yaw): the player put at one spot
