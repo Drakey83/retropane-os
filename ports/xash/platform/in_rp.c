@@ -627,7 +627,15 @@ static void RP_End( void )
 			/* ref_rp's counts reported at frames 250 and 480: the second
 			   covers the heavy half alone (the run quits at 500, before a later one) */
 			if( frames + 1u == RP_WALK_WINDOW || frames + 20u == 2u * RP_WALK_WINDOW )
+			{
+				extern unsigned rp_direct_count[4];
+
 				Cvar_SetValue( "rp_report", 1.0f );
+				/* ADR-0040 step 7a's counts since the last line */
+				fprintf( stderr, "rp-direct: %u states passed on the block compare, %u delta-written; physics lists %u built, %u kept\n",
+					rp_direct_count[0], rp_direct_count[1], rp_direct_count[2], rp_direct_count[3] );
+				memset( rp_direct_count, 0, sizeof( rp_direct_count ));
+			}
 			/* the run ends at one game frame, so two kits' end pictures
 			   (the 2700G's and the software's) show the same moment */
 			if( ++frames >= 2u * RP_WALK_WINDOW )

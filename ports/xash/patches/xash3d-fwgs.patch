@@ -242,7 +242,7 @@ index 95c85f7..d98f549 100644
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
 diff --git a/engine/client/dll_int/cl_pmove.c b/engine/client/dll_int/cl_pmove.c
-index 9ca1f79..3c2550e 100644
+index 9ca1f79..5c86812 100644
 --- a/engine/client/dll_int/cl_pmove.c
 +++ b/engine/client/dll_int/cl_pmove.c
 @@ -305,16 +305,24 @@ void CL_ClipPMoveToEntity( physent_t *pe, const vec3_t start, vec3_t mins, vec3_
@@ -283,6 +283,60 @@ index 9ca1f79..3c2550e 100644
  	pe->team = state->team;
  	pe->classnumber = state->playerclass;
  	pe->blooddecal = 0;	// unused in GoldSrc
+@@ -467,6 +475,36 @@ Builds all the pmove physents for the current frame
+ void CL_SetSolidEntities( void )
+ {
+ 	physent_t	*pe = clgame.pmove->physents;
++	/* RetroPane (ADR-0040 step 7a, the direct link): the client rebuilt
++	   every physent from every entity at each of its three calls a frame
++	   (the command, the parse, the packets' end), though the lists change
++	   only with the frame they are built from. The last build is kept with
++	   what it was made from (the frame parsed, its entities, the world,
++	   the player); while all are the same the lists are what that build
++	   left, so only the counts are put back (nothing but this function
++	   writes into the first `numphysent` entries: CL_SetSolidPlayers
++	   appends after them). -rpnodirect: rebuilt every call */
++	static struct
++	{
++		int      parsecount, first, num, playernum, valid;
++		model_t *world;
++		int      phys, vis, move;
++	} last = { -1 };
++	const frame_t *fr = &cl.frames[cl.parsecountmod];
++	extern int rp_direct_on( void );
++	extern unsigned rp_direct_count[4];
++
++	if( rp_direct_on( ) && last.parsecount == cl.parsecount && last.first == fr->first_entity
++		&& last.num == fr->num_entities && last.valid == fr->valid && last.world == cl.worldmodel
++		&& last.playernum == cl.playernum && last.phys > 0 )
++	{
++		clgame.pmove->numphysent = last.phys;
++		clgame.pmove->numvisent = last.vis;
++		clgame.pmove->nummoveent = last.move;
++		rp_direct_count[3]++;
++		return;
++	}
++	rp_direct_count[2]++;
+ 
+ 	// setup physents
+ 	clgame.pmove->numvisent = 1;
+@@ -486,6 +524,16 @@ void CL_SetSolidEntities( void )
+ 
+ 	// add all other entities exlucde players
+ 	CL_AddLinksToPmove( &cl.frames[cl.parsecountmod] );
++
++	last.parsecount = cl.parsecount;
++	last.first = fr->first_entity;
++	last.num = fr->num_entities;
++	last.valid = fr->valid;
++	last.world = cl.worldmodel;
++	last.playernum = cl.playernum;
++	last.phys = clgame.pmove->numphysent;
++	last.vis = clgame.pmove->numvisent;
++	last.move = clgame.pmove->nummoveent;
+ }
+ 
+ /*
 diff --git a/engine/client/dll_int/ref_common.c b/engine/client/dll_int/ref_common.c
 index 8ea38dc..5bcea01 100644
 --- a/engine/client/dll_int/ref_common.c
@@ -1203,7 +1257,7 @@ index c95ce9a..d87e892 100644
  { "pause", SV_Pause_f },
  { "sendres", SV_SendRes_f },
 diff --git a/engine/server/sv_frame.c b/engine/server/sv_frame.c
-index 3ff8edb..758957e 100644
+index 3ff8edb..ceceaf1 100644
 --- a/engine/server/sv_frame.c
 +++ b/engine/server/sv_frame.c
 @@ -93,6 +93,18 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
@@ -1225,7 +1279,49 @@ index 3ff8edb..758957e 100644
  		// don't double add an entity through portals (in case this already added)
  		if( CHECKVISBIT( ents->sended, e ))
  			continue;
-@@ -678,8 +690,8 @@ static void SV_SendClientDatagram( sv_client_t *cl )
+@@ -226,6 +238,20 @@ SV_EmitPacketEntities
+ Writes a delta update of an entity_state_t list to the message->
+ =============
+ */
++/* ADR-0040 step 7a's switch (-rpnodirect: Xash's way) and counts: states
++   passed on the block compare, states delta-written (kept with the
++   client's physics-list rebuilds made and passed, in_rp.c prints them) */
++unsigned rp_direct_count[4];
++
++int rp_direct_on( void )
++{
++	static int on = -1;
++
++	if( on < 0 )
++		on = !Sys_CheckParm( "-rpnodirect" );
++	return on;
++}
++
+ static void SV_EmitPacketEntities( sv_client_t *cl, client_frame_t *to, sizebuf_t *msg )
+ {
+ 	entity_state_t	*oldent, *newent;
+@@ -298,6 +324,20 @@ static void SV_EmitPacketEntities( sv_client_t *cl, client_frame_t *to, sizebuf_
+ 
+ 		if( newnum == oldnum )
+ 		{
++			/* RetroPane (ADR-0040 step 7a, the direct link): a state the
++			   same byte for byte as the one the client has is passed on
++			   one block compare; MSG_WriteDeltaEntity would compare all of
++			   its fields, find none changed (equal bits are equal:
++			   Delta_CompareField) and take back what it wrote, so the
++			   message is the same. -rpnodirect: the old way */
++			if( rp_direct_on( ) && !memcmp( oldent, newent, sizeof( *newent )))
++			{
++				rp_direct_count[0]++;
++				oldindex++;
++				newindex++;
++				continue;
++			}
++			rp_direct_count[1]++;
+ 			// delta update from old position
+ 			// because the force parm is false, this will not result
+ 			// in any bytes being emited if the entity has not changed at all
+@@ -678,8 +718,8 @@ static void SV_SendClientDatagram( sv_client_t *cl )
  	byte	msg_buf[MAX_DATAGRAM];
  	sizebuf_t	msg;
  
