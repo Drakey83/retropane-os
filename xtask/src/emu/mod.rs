@@ -3567,12 +3567,43 @@ fn kit_shots(root: &Path) -> Result<Option<std::thread::JoinHandle<Vec<String>>>
     let ppm = scratch(root, "emu-kit-shot.ppm")?;
     let port = monitor_port();
     Ok(Some(std::thread::spawn(move || {
-        let start = std::time::Instant::now();
+        // The shots are timed in the guest's own seconds (its OS timer,
+        // OSCR0 at 3.25 MHz, read through the monitor), not the PC's: a
+        // busy PC slows the guest, and a PC-clock shot lands on another
+        // scene (quality audit C2). The monitor is opened for each reading
+        // only, so the run's other monitor users are never kept out.
         let mut said = Vec::new();
+        let mut last: Option<u32> = None;
+        let mut ticks: u64 = 0;
+        let mut stuck = std::time::Instant::now();
+        let mut guest_ms = || -> Option<u64> {
+            let mut m = crate::screen::Monitor::connect(port).ok()?;
+            let now = audio::GuestClock::start(&mut m, "kit shots").ok()?.last;
+            if let Some(l) = last {
+                ticks += u64::from(now.wrapping_sub(l));
+            }
+            last = Some(now);
+            Some(ticks / 3_250)
+        };
         for s in at {
-            let due = Duration::from_secs(s);
-            if let Some(wait) = due.checked_sub(start.elapsed()) {
-                std::thread::sleep(wait);
+            let mut ok = true;
+            loop {
+                match guest_ms() {
+                    Some(ms) if ms >= s * 1000 => break,
+                    Some(_) => stuck = std::time::Instant::now(),
+                    None if stuck.elapsed() > Duration::from_secs(60) => {
+                        ok = false;
+                        break;
+                    }
+                    None => {}
+                }
+                audio::poll_pause(Duration::from_millis(250));
+            }
+            if !ok {
+                said.push(format!(
+                    "no screen at {s} s: the guest's clock could not be read for a minute"
+                ));
+                continue;
             }
             let guest = if wsl {
                 to_wsl_path(&ppm)
