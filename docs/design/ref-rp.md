@@ -1174,6 +1174,19 @@ measured on the X51v with `-rpcascade`; each run's last 2700G picture
 Measured and not built: `r_lighting_extended 0` (GoldSrc's world-only
 model light) 9.6 against 9.4, the same last picture: too small to ask for.
 
+**The light grid (the owner's pick, 2026-11-17: "Light grid first"),
+built and measured, taken out.** Quake 3 and Source light moving models
+from a grid; ours kept Half-Life's floor sample but took it from the
+centre of an 8-unit cell and remembered the luxel per cell (reused from no
+higher up while above the floor hit; the styles combined anew; world hits
+only). On the X51v the cascade's light traces fell from 520 to 280 a
+frame and the light functions from ~15% to ~12% of the heavy half, but
+the heavy half ran 9.5 fps against kit 86's 9.7 (the last picture the
+same): the debris fly across cells faster than cells are reused, and
+every miss still traces. Kits 87's other tries (a single-frame shortcut in
+StudioEstimateFrame, an axis test before each dynamic light's square
+root): no gain, taken out.
+
 What would overturn it: a TA fan that does not draw as the strip does
 (then fans go as strips: a fan of n corners is n - 2 triangles either
 way, a few more words); skins that wrap (s, t past the skin: then that
