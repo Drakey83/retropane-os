@@ -542,7 +542,7 @@ static void RP_End( void )
 		/* the fixed step and the seed from the first frame, before the
 		   map loads: its scientists and doors move from its first
 		   frame, in game time */
-		if( Sys_CheckParm( "-rpwalk" ) || Sys_CheckParm( "-rpcascade" ))
+		if( Sys_CheckParm( "-rpwalk" ) || Sys_CheckParm( "-rpcascade" ) || Sys_CheckParm( "-rpfight" ))
 		{
 			COM_SetRandomSeed( 0x5EED );
 			Cvar_Set( "host_framerate", RP_WALK_STEP );
@@ -648,6 +648,56 @@ static void RP_End( void )
 			   against the plain kit at the same game frame) */
 			else if( frames >= RP_WALK_WINDOW + 50u && Sys_CheckParm( "-rpcascademid" ))
 				why = "the cascade's|frame 300: a|picture mid-cascade";
+		}
+	}
+	/*
+	R329 (the owner, 2026-11-18: "will fps dip significantly on areas where
+	there is a lot of fighting too?"; "Fight test first"): -rpfight on
+	c2a5f (Surface Tension's 19 soldiers, 4 alien slaves and an alien
+	grunt, as the map places them), the cascade's way: the fixed step and
+	seed, the player put among them (god, noclip, every weapon, the MP5 in
+	hand) and firing from 4 s of game time, so the map's own soldiers and
+	aliens fight; scored from the first shot, frames 1-250 and 251-500
+	("rp-fight: frames ..."), ending at frame 500.
+	*/
+	if( state == 1 && Sys_CheckParm( "-rpfight" ))
+	{
+		static double game0 = -1.0;
+		static int    stage;
+		double        ms;
+
+		if( game0 < 0.0 && CL_Active( ))
+			game0 = cl.time;
+		ms = game0 < 0.0 ? 0.0 : ( cl.time - game0 ) * 1000.0;
+		if( stage == 0 && ms > 2000.0 )
+		{
+			stage = 1;
+			/* beside the soldiers at 402 339 -1805 and 368 305 -1806, above
+			   the floor, facing the ones to the south-east (416 -156, 982
+			   -574, 1024 -624) */
+			Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 10 -60\nweapon_9mmAR\n" );
+		}
+		else if( stage == 1 && ms > 4000.0 )
+		{
+			stage = 2;
+			fprintf( stderr, "rp-fight: firing from %u ms of game time\n", (unsigned)ms );
+			Cbuf_AddText( "+attack\n" );
+		}
+		else if( stage == 2 )
+		{
+			static uint32_t frames;
+
+			RP_ScoreAs( "rp-fight" );
+			if( frames + 1u == RP_WALK_WINDOW )
+				fprintf( stderr, "rp-step: 4/5 The fight's|second half: frames|251 to 500.\n" );
+			if( frames + 1u == RP_WALK_WINDOW || frames + 20u == 2u * RP_WALK_WINDOW )
+				Cvar_SetValue( "rp_report", 1.0f );
+			/* the ammunition topped up every 100 frames (impulse 101), so
+			   the MP5 never runs dry */
+			if( frames % 100u == 99u )
+				Cbuf_AddText( "impulse 101\n" );
+			if( ++frames >= 2u * RP_WALK_WINDOW )
+				why = "the fight's|500 frames are done";
 		}
 	}
 	/* R321's check (-rpcam x,y,z,pitch,yaw): the player put at one spot
