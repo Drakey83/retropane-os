@@ -13,12 +13,12 @@
 #![cfg_attr(not(test), no_std)]
 #![no_builtins]
 
-pub mod float;
-pub mod trig;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod div_arm;
+pub mod float;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod float_arm;
+pub mod trig;
 
 /// The ARM assembly float routines ([`float_arm`]), for the X51v's
 /// benchmark against [`float`] and the compiler's (`-rpfloat`).

@@ -245,7 +245,9 @@ impl<R: DmaRing> Voice for Sound<'_, R> {
                 per(s.cyc_clock),
                 per(s.cyc_mix),
                 per(s.cyc_end),
-                per(s.cyc_tick.saturating_sub(s.cyc_clock + s.cyc_mix + s.cyc_end)),
+                per(s
+                    .cyc_tick
+                    .saturating_sub(s.cyc_clock + s.cyc_mix + s.cyc_end)),
                 per(s.cyc_write)
             );
         }

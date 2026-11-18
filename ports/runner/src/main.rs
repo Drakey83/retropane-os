@@ -903,7 +903,10 @@ mod image {
             "float: cmp: the generic and ours in assembly; {checked} results compared, {differ} differ"
         );
         if let Some((a, b)) = first {
-            let _ = writeln!(Out, "float: cmp: the first that differs: {a:#010x}, {b:#010x}");
+            let _ = writeln!(
+                Out,
+                "float: cmp: the first that differs: {a:#010x}, {b:#010x}"
+            );
         }
     }
 
@@ -922,8 +925,22 @@ mod image {
             seed
         };
         const EDGES: [u32; 16] = [
-            0, 1, 2, 3, 7, 255, 256, 0xFFFF, 0x1_0000, 0x7FFF_FFFE, 0x7FFF_FFFF, 0x8000_0000,
-            0x8000_0001, 0xFFFF_FFFE, 0xFFFF_FFFF, 0x1234_5678,
+            0,
+            1,
+            2,
+            3,
+            7,
+            255,
+            256,
+            0xFFFF,
+            0x1_0000,
+            0x7FFF_FFFE,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0x8000_0001,
+            0xFFFF_FFFE,
+            0xFFFF_FFFF,
+            0x1234_5678,
         ];
         let mut checked = 0u32;
         let mut differ = 0u32;
@@ -1476,7 +1493,9 @@ mod image {
             }
         }
         let rung = clock_rung(&args[..arg_count]);
-        let ladder = args[..arg_count].iter().any(|a| a.to_bytes() == LADDER_WORD);
+        let ladder = args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == LADDER_WORD);
         let bar = args[..arg_count].iter().any(|a| a.to_bytes() == BAR_WORD);
         let cpu_n2 = args[..arg_count]
             .iter()
@@ -1497,15 +1516,25 @@ mod image {
                 let _ = writeln!(
                     uart,
                     "runner: -rp4f: step 4f's probe {} after {after} s of frames",
-                    if probe.is_some() { "set" } else { "NOT set (no DMA channel)" }
+                    if probe.is_some() {
+                        "set"
+                    } else {
+                        "NOT set (no DMA channel)"
+                    }
                 );
                 (samples, probe)
             }
             None => (samples, None),
         };
         // Step 4f: the DMA chain, if asked for.
-        let chain = if args[..arg_count].iter().any(|a| a.to_bytes() == NO_CHAIN_WORD) {
-            let _ = writeln!(uart, "runner: -rpnochain: the CPU feeds the TA (the control)");
+        let chain = if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == NO_CHAIN_WORD)
+        {
+            let _ = writeln!(
+                uart,
+                "runner: -rpnochain: the CPU feeds the TA (the control)"
+            );
             None
         } else {
             let chain = rt::take_dma(rp_hal_pxa27x::dma_map::UDC)
@@ -1529,11 +1558,16 @@ mod image {
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
                 .with_chain(chain)
-                .with_chain_check(if args[..arg_count].iter().any(|a| a.to_bytes() == CHAIN_CHECK_WORD) {
-                    CHAIN_CHECK_FRAMES
-                } else {
-                    0
-                })
+                .with_chain_check(
+                    if args[..arg_count]
+                        .iter()
+                        .any(|a| a.to_bytes() == CHAIN_CHECK_WORD)
+                    {
+                        CHAIN_CHECK_FRAMES
+                    } else {
+                        0
+                    },
+                )
         }) {
             Some(c) => s.set_screen(c),
             None => {
@@ -1552,7 +1586,10 @@ mod image {
             cmp_bench(seconds_after(&args[..arg_count], DOT_WORD).unwrap_or(1));
             div_bench();
         }
-        if args[..arg_count].iter().any(|a| a.to_bytes() == WALLOC_WORD) {
+        if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == WALLOC_WORD)
+        {
             let n = rt::write_allocate_sections(WALLOC_FROM, WALLOC_TO);
             let _ = writeln!(
                 uart,

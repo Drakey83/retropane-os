@@ -724,7 +724,9 @@ impl Break {
     }
 
     fn find(&self, at: usize) -> Option<usize> {
-        let i = self.big[..self.count].binary_search_by_key(&at, |b| b.at).ok()?;
+        let i = self.big[..self.count]
+            .binary_search_by_key(&at, |b| b.at)
+            .ok()?;
         self.big[i].used.then_some(i)
     }
 }
@@ -1089,7 +1091,10 @@ mod face {
     /// from the heap's top region, or NULL (then `malloc`).
     #[unsafe(no_mangle)]
     pub extern "C" fn rp_big_alloc(size: usize) -> *mut c_void {
-        with(|s| Ok(s.big_alloc(size))).ok().flatten().map_or(core::ptr::null_mut(), |a| a as *mut c_void)
+        with(|s| Ok(s.big_alloc(size)))
+            .ok()
+            .flatten()
+            .map_or(core::ptr::null_mut(), |a| a as *mut c_void)
     }
 
     /// `rp_big_free`: 1 if `p` was a large block and is free now, else 0.
@@ -1682,7 +1687,10 @@ mod big_tests {
         h.big_free(big);
         h.big_free(small);
         let x = h.big_alloc(0x800).unwrap();
-        assert!(x >= small && x < small + 0x1000, "the smaller hole was used");
+        assert!(
+            x >= small && x < small + 0x1000,
+            "the smaller hole was used"
+        );
         assert_eq!(x % 32, 0);
         let one = h.big_alloc(1).unwrap();
         assert_eq!(h.big_size(one), 32);

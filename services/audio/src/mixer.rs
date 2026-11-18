@@ -517,7 +517,10 @@ impl Slot<'_> {
             while f < BLOCK {
                 let n = (BLOCK - f).min(cap - pos);
                 let src = &self.buf[4 * pos..4 * (pos + n)];
-                for (d, s) in acc[2 * f..2 * (f + n)].iter_mut().zip(src.as_chunks::<2>().0) {
+                for (d, s) in acc[2 * f..2 * (f + n)]
+                    .iter_mut()
+                    .zip(src.as_chunks::<2>().0)
+                {
                     *d = i32::from(i16::from_le_bytes(*s)) << 8;
                 }
                 f += n;

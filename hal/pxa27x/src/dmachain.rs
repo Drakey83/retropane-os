@@ -52,7 +52,12 @@ pub const fn chain_descriptor(next: Option<u32>, src: u32, dst: u32, len: u32) -
         None => CHAIN_STOP,
     };
     // INCSRC 31, INCTRG 30, SIZE 32 bytes (3 << 16), WIDTH word (3 << 14).
-    [ddadr, src, dst, 1 << 31 | 1 << 30 | 3 << 16 | 3 << 14 | (len & CHAIN_MOST)]
+    [
+        ddadr,
+        src,
+        dst,
+        1 << 31 | 1 << 30 | 3 << 16 | 3 << 14 | (len & CHAIN_MOST),
+    ]
 }
 
 /// A transfer, cut into descriptors of `chunk` bytes: descriptor `i` moves
@@ -380,7 +385,10 @@ mod tests {
         assert_eq!((d[3] >> 14) & 3, 3, "words");
         assert_eq!(chain_descriptor(None, 0, 0, 4)[0], CHAIN_STOP);
         // A length past the field is cut, never spills into the command.
-        assert_eq!(chain_descriptor(None, 0, 0, CHAIN_MOST + 1)[3] & 0xFFFF_E000, 0xC003_C000);
+        assert_eq!(
+            chain_descriptor(None, 0, 0, CHAIN_MOST + 1)[3] & 0xFFFF_E000,
+            0xC003_C000
+        );
     }
 
     extern crate std;

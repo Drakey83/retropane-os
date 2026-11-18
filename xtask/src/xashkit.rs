@@ -47,7 +47,9 @@ fn map() -> String {
     std::env::var(MAP_VAR)
         .ok()
         .map(|v| v.trim().to_string())
-        .filter(|v| (1..32).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .filter(|v| {
+            (1..32).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
         .unwrap_or_else(|| MAP.to_string())
 }
 
@@ -219,7 +221,10 @@ pub fn card_files(
         .map(|(name, bytes)| (format!("{FOLDER}/{name}"), bytes.clone()))
         .collect();
     card.push((format!("{FOLDER}/args.txt"), args().into_bytes()));
-    card.push((format!("{FOLDER}/game/valve/{BINDS_FILE}"), BINDS.as_bytes().to_vec()));
+    card.push((
+        format!("{FOLDER}/game/valve/{BINDS_FILE}"),
+        BINDS.as_bytes().to_vec(),
+    ));
     if let Some(file) = background {
         card.push((
             format!("{FOLDER}/game/valve/{}", crate::hlprep::BACKGROUND),
@@ -414,7 +419,12 @@ mod tests {
         // and every bind names a key the engine has (runs 35-38: `AUX1`
         // named none).
         for key in KEY_NAMES {
-            assert!(BINDS.lines().any(|l| l.starts_with(&format!("bind {key} "))), "{key}");
+            assert!(
+                BINDS
+                    .lines()
+                    .any(|l| l.starts_with(&format!("bind {key} "))),
+                "{key}"
+            );
         }
         for line in BINDS.lines().filter(|l| l.starts_with("bind ")) {
             let key = line.split_whitespace().nth(1).unwrap_or("");

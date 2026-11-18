@@ -370,7 +370,13 @@ mod tests {
         let mut g = state(0x80_0000).to_vec();
         g.push(FAN | 2);
         g.extend(0..14);
-        assert_eq!(run(&g).0, Err(Refused { at: 8, why: Why::Corners }));
+        assert_eq!(
+            run(&g).0,
+            Err(Refused {
+                at: 8,
+                why: Why::Corners
+            })
+        );
     }
 
     #[test]

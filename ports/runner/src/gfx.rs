@@ -45,8 +45,8 @@ use super::panel;
 
 mod chain;
 mod probe4f;
-pub use chain::{CHAIN_BYTES, Chain};
 use chain::Settled;
+pub use chain::{CHAIN_BYTES, Chain};
 pub use probe4f::{Probe, WALK_BYTES};
 
 const W: u32 = 480;
@@ -130,7 +130,10 @@ const BAR_ROWS: u32 = 16;
 const DRAW_H: u32 = H - BAR_ROWS;
 const LAY_BAR: Lay = Lay {
     name: "all in SDRAM, the bottom 16 rows the frame-rate bar's",
-    ta: ta::Layout { height: DRAW_H, ..TA },
+    ta: ta::Layout {
+        height: DRAW_H,
+        ..TA
+    },
     pm: TA_PM,
     from: binner::Layout {
         h: DRAW_H as u16,
@@ -157,7 +160,10 @@ const _: () = assert!(DIE_REGIONS + REGION_BYTES <= DIE_TABLE && DIE_TAIL + TAIL
 const _: () = assert!(DIE_TAIL.is_multiple_of(0x2_0000) && DIE_TABLE.is_multiple_of(0x4000));
 /// The region array, the manager's block and the tail on the die (R295
 /// cell 5); the lists stay in SDRAM (they are larger than the die).
-#[allow(dead_code, reason = "run 18's cell 5 (no cure); kept for R295's next cells")]
+#[allow(
+    dead_code,
+    reason = "run 18's cell 5 (no cure); kept for R295's next cells"
+)]
 const LAY_DIE: Lay = Lay {
     name: "region array, manager block and tail on the die",
     ta: ta::Layout {
@@ -355,7 +361,9 @@ impl<F: FnMut(Piece) -> bool> Split<F> {
                                 w
                             }
                         }
-                        (2, Part::ModelsNoAlphaTest) if self.model => (w & 0x001F_FFFF) | 0xE000_0000,
+                        (2, Part::ModelsNoAlphaTest) if self.model => {
+                            (w & 0x001F_FFFF) | 0xE000_0000
+                        }
                         (3, Part::TinyTextures) => w & !(0xFF << 20),
                         _ => w,
                     };
@@ -561,7 +569,13 @@ const CELLS: [Cell; 6] = [
     warmed(cell(P121, &LAY_SDRAM, NONE, "fine ladder", 1200)),
     warmed(cell(P125, &LAY_SDRAM, NONE, "fine ladder", 1200)),
     warmed(cell(P130, &LAY_SDRAM, NONE, "fine ladder", 1200)),
-    warmed(cell(P117, &LAY_SDRAM, NONE, "fine ladder again, warm (heat)", 400)),
+    warmed(cell(
+        P117,
+        &LAY_SDRAM,
+        NONE,
+        "fine ladder again, warm (heat)",
+        400,
+    )),
 ];
 /// The ladder starts after this many frames (the map drawn and steady).
 const LADDER_FROM: u32 = 32;
@@ -917,7 +931,14 @@ impl Chip {
     }
 
     /// What a settle or a pump found, acted on.
-    fn settled(c: &mut Counts, log: fn(Arguments<'_>), o: &mut Open, regs: &mut Mmio, s: Settled, pumped: bool) {
+    fn settled(
+        c: &mut Counts,
+        log: fn(Arguments<'_>),
+        o: &mut Open,
+        regs: &mut Mmio,
+        s: Settled,
+        pumped: bool,
+    ) {
         match s {
             Settled::Idle => {}
             Settled::Done(us) => {
@@ -930,7 +951,11 @@ impl Chip {
                 if c.ta_hangs == 1 {
                     log(format_args!(
                         "rp-gfx: step 4f: a frame's chain {}: the core reset",
-                        if dma { "did not finish (the DMA)" } else { "ran but the TA never said done" }
+                        if dma {
+                            "did not finish (the DMA)"
+                        } else {
+                            "ran but the TA never said done"
+                        }
                     ));
                 }
                 o.recover(regs);
@@ -1053,7 +1078,9 @@ impl Chip {
             }
             self.ladder = None;
             self.ladder_on = false;
-            (self.log)(format_args!("rp-gfx ladder: over; the run's own clock and layout again"));
+            (self.log)(format_args!(
+                "rp-gfx ladder: over; the run's own clock and layout again"
+            ));
         }
     }
 
@@ -1068,10 +1095,18 @@ impl Chip {
         let _ = o.wait_render(regs);
         let (rung, lay, words, limit) = match CELLS.get(k) {
             Some(c) => (Some(c.rung()), c.lay, c.words, LADDER_LIMIT_US),
-            None => (self.rung.filter(|r| rung_allowed(*r)), &LAY_SDRAM, NONE, RENDER_LIMIT_US),
+            None => (
+                self.rung.filter(|r| rung_allowed(*r)),
+                &LAY_SDRAM,
+                NONE,
+                RENDER_LIMIT_US,
+            ),
         };
         if rung.is_some_and(|r| !rung_allowed(r)) {
-            log(format_args!("rp-gfx ladder: cell {} past the game step, not taken", k + 1));
+            log(format_args!(
+                "rp-gfx ladder: cell {} past the game step, not taken",
+                k + 1
+            ));
             return false;
         }
         let mut ok = true;
@@ -1090,7 +1125,11 @@ impl Chip {
             }
             log(format_args!(
                 "rp-gfx ladder: clock {} ({} kHz / {}): COREPLL 0x{:x} MBXCLK 0x{:x} LMTIM 0x{:x}; the underrun flag {}",
-                if ok { "stepped" } else { "NOT taken, Windows Mobile's put back" },
+                if ok {
+                    "stepped"
+                } else {
+                    "NOT taken, Windows Mobile's put back"
+                },
                 rung.map_or(0, |r| r.speed.khz()),
                 rung.map_or(0, |r| r.div),
                 regs.read32(clock::COREPLL),
@@ -1125,7 +1164,10 @@ impl Chip {
                 o.warm_owed = false;
             }
             Err(e) => {
-                log(format_args!("rp-gfx ladder: the TA's set-up in {} refused: {e:?}", lay.name));
+                log(format_args!(
+                    "rp-gfx ladder: the TA's set-up in {} refused: {e:?}",
+                    lay.name
+                ));
                 // Back to the layout the open proved.
                 if let Ok(r) = ta::set_up(
                     regs,
@@ -1210,7 +1252,14 @@ impl Chip {
                     (self.log)(format_args!(
                         "rp-gfx ladder: the render block after a good render, 0x{:x}: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
                         BLOCK_AT + 32 * k,
-                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+                        row[0],
+                        row[1],
+                        row[2],
+                        row[3],
+                        row[4],
+                        row[5],
+                        row[6],
+                        row[7]
                     ));
                 }
             }
@@ -1239,7 +1288,14 @@ impl Chip {
                     "rp-gfx ladder {}: the render block at the first hang (no good render), 0x{:x}: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
                     l.cell + 1,
                     BLOCK_AT + 32 * k,
-                    row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7]
                 ));
             }
         }
@@ -1318,7 +1374,14 @@ impl Open {
         let Some(rows) = self.vram.get_mut(at..at + (BAR_ROWS * W * 2) as usize) else {
             return;
         };
-        let mut c = Console::new(rows, STRIDE, (6, 0), (W as usize - 12, BAR_ROWS as usize), 2, (0xFFE0, 0x0000));
+        let mut c = Console::new(
+            rows,
+            STRIDE,
+            (6, 0),
+            (W as usize - 12, BAR_ROWS as usize),
+            2,
+            (0xFFE0, 0x0000),
+        );
         let _ = write!(
             c,
             "{}.{} fps  2700G {}.{:02} MHz  stalls {}",
@@ -1385,7 +1448,11 @@ impl Open {
             from.regions = CHK_REGIONS;
         }
         self.rendering = Some(rt::ticks());
-        let target = if self.lay.ta.height < H { SCREEN_BAR } else { SCREEN };
+        let target = if self.lay.ta.height < H {
+            SCREEN_BAR
+        } else {
+            SCREEN
+        };
         for (off, v) in binner::start_table(&from, target) {
             let words = if self.words_on { self.words } else { NONE };
             let v = words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
@@ -1465,7 +1532,11 @@ impl Screen for Chip {
                             "rp-gfx: clock {} kHz / {} not taken ({}): Windows Mobile's put back",
                             rung.speed.khz(),
                             rung.div,
-                            if other.is_none() { "the PLL did not lock" } else { "a memory-controller write never held" }
+                            if other.is_none() {
+                                "the PLL did not lock"
+                            } else {
+                                "a memory-controller write never held"
+                            }
                         ));
                     }
                 }
@@ -1511,7 +1582,11 @@ impl Screen for Chip {
             tex,
             screen,
             // Step 4f: the words are read by the chain after the call.
-            flags: if self.chain.is_some() { rp_hal_cabi::gfx_flags::KEEP } else { 0 },
+            flags: if self.chain.is_some() {
+                rp_hal_cabi::gfx_flags::KEEP
+            } else {
+                0
+            },
         };
         (self.log)(format_args!(
             "rp-gfx: the screen is the program's: 480 x 640 drawn by the 3D core into the screen, MBXCLK 0x{clk0:x}, texture memory {} KiB at 0x{TEX_AT:x}",
@@ -1654,7 +1729,11 @@ impl Screen for Chip {
                 self.chain_check -= 1;
                 let height = o.lay.ta.height;
                 let fed = probe4f::feed_cpu(o, regs, parts, &bg);
-                let cpu = if fed.done { probe4f::render_hash(o, regs, height) } else { None };
+                let cpu = if fed.done {
+                    probe4f::render_hash(o, regs, height)
+                } else {
+                    None
+                };
                 if cpu.is_none() {
                     o.recover(regs);
                 }

@@ -1546,7 +1546,15 @@ fn half_life_s_writes_are_mixed_about_once() {
     // 2026-11-16: 1,338,304 mixed for 1,323,000 played, 1 rewrite. The
     // emulator's 44% re-mixed (its game frames slower than the 120 ms
     // mix-ahead) is not the X51v's; this guards the device's pattern.
-    assert!(st.rewritten * 50 < played, "re-mixed {} of {played}", st.rewritten);
-    assert!(st.mixed < played + played / 20, "mixed {} for {played}", st.mixed);
+    assert!(
+        st.rewritten * 50 < played,
+        "re-mixed {} of {played}",
+        st.rewritten
+    );
+    assert!(
+        st.mixed < played + played / 20,
+        "mixed {} for {played}",
+        st.mixed
+    );
     assert_eq!(st.late, 0);
 }

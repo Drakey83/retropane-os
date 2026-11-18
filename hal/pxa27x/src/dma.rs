@@ -693,4 +693,3 @@ impl DmaRing for Dma {
         r
     }
 }
-

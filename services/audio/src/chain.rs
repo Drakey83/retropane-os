@@ -378,7 +378,11 @@ mod tests {
                 1 => -CEIL - 256,
                 _ => ((r as i32) >> 7).clamp(-CEIL - 256, CEIL),
             };
-            assert_eq!(high_pass_step(&SPEAKER_HP, &mut a, x), biquad(&SPEAKER_HP, &mut b, x), "at {k}");
+            assert_eq!(
+                high_pass_step(&SPEAKER_HP, &mut a, x),
+                biquad(&SPEAKER_HP, &mut b, x),
+                "at {k}"
+            );
         }
     }
 

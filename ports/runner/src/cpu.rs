@@ -74,7 +74,9 @@ fn at624() -> Point {
 /// point; logs what happened. A refused or unlatched step leaves 624.
 pub fn step(n2: u8, log: fn(Arguments<'_>)) {
     if !(7..=8).contains(&n2) {
-        log(format_args!("rp-cpu: 2N {n2} not a C2 step (7 or 8): 624 MHz kept"));
+        log(format_args!(
+            "rp-cpu: 2N {n2} not a C2 step (7 or 8): 624 MHz kept"
+        ));
         return;
     }
     let found = clocks::read();
@@ -89,7 +91,9 @@ pub fn step(n2: u8, log: fn(Arguments<'_>)) {
     STATE.with(|s| s.answer = answer);
     let to = Point { n2, ..at624() };
     if !clocks::change_past_rating(to) {
-        log(format_args!("rp-cpu: 2N {n2} refused by the plan: 624 MHz kept"));
+        log(format_args!(
+            "rp-cpu: 2N {n2} refused by the plan: 624 MHz kept"
+        ));
         return;
     }
     let now = clocks::read();

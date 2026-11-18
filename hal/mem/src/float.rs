@@ -377,9 +377,21 @@ mod tests {
     #[test]
     fn compare_orders_floats_as_the_pc_does() {
         let special = [
-            0u32, 0x8000_0000, 1, 0x8000_0001, 0x007F_FFFF, 0x0080_0000, 0x3F80_0000,
-            0xBF80_0000, 0x7F7F_FFFF, 0xFF7F_FFFF, 0x7F80_0000, 0xFF80_0000, 0x7FC0_0000,
-            0x7F80_0001, 0xFFC0_0000,
+            0u32,
+            0x8000_0000,
+            1,
+            0x8000_0001,
+            0x007F_FFFF,
+            0x0080_0000,
+            0x3F80_0000,
+            0xBF80_0000,
+            0x7F7F_FFFF,
+            0xFF7F_FFFF,
+            0x7F80_0000,
+            0xFF80_0000,
+            0x7FC0_0000,
+            0x7F80_0001,
+            0xFFC0_0000,
         ];
         let mut x = 0x9E37_79B9u32;
         let mut vals: Vec<u32> = special.to_vec();

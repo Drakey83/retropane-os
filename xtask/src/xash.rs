@@ -407,9 +407,12 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
     ref_soft.sources.extend(public());
     // ref_rp's emitter (docs/design/ref-rp.md, step 1): ours, beside the
     // software renderer whose scene code it keeps.
-    ref_soft
-        .sources
-        .push(root.join("ports").join("xash").join("ref_rp").join("r_emit.c"));
+    ref_soft.sources.push(
+        root.join("ports")
+            .join("xash")
+            .join("ref_rp")
+            .join("r_emit.c"),
+    );
 
     let sdk_flags = |dirs: &[&str], more: &[&str]| {
         let mut f = includes(&sdk, dirs);

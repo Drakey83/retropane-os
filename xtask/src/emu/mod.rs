@@ -1712,7 +1712,9 @@ pub fn boot_xash_kit(
             timeout: Duration::from_secs(u64::from(crate::xashkit::LIMIT_SECS) + 300),
         },
     )?;
-    let shots = shots.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    let shots = shots
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
     let (_, log) = output
         .rsplit_once("RPL LOG")
         .ok_or("emu-xash-kit: the loader sent no run log")?;
@@ -1730,7 +1732,10 @@ pub fn boot_xash_kit(
     // The 2700G's last frame kept even when a check below fails (a short
     // play's few frame-rate lines: R309's look at a map is still wanted).
     if let Ok(Some(gpu)) = xash_frame_words(&sd, XASH_GPU_FRAME) {
-        let gpu_png = root.join("target").join("xash-kit").join("emu-gpu-frame.png");
+        let gpu_png = root
+            .join("target")
+            .join("xash-kit")
+            .join("emu-gpu-frame.png");
         let picture = crate::ui_preview::png_rgb(XASH_FRAME.1, XASH_FRAME.2, &rgb565_to_rgb(&gpu));
         let _ = std::fs::write(&gpu_png, picture);
         eprintln!("    the 2700G's last frame: {}", gpu_png.display());

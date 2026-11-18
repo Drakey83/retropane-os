@@ -23,18 +23,58 @@
 /// 2/pi's bits after the binary point, 32 a word, most significant first
 /// (enough for any double's exponent: bit 991 + 96 + 32).
 const TWO_OVER_PI: [u32; 40] = [
-    0xA2F9_836E, 0x4E44_1529, 0xFC27_57D1, 0xF534_DDC0, 0xDB62_9599, 0x3C43_9041, 0xFE51_63AB,
-    0xDEBB_C561, 0xB724_6E3A, 0x424D_D2E0, 0x0649_2EEA, 0x09D1_921C, 0xFE1D_EB1C, 0xB129_A73E,
-    0xE882_35F5, 0x2EBB_4484, 0xE99C_7026, 0xB45F_7E41, 0x3991_D639, 0x8353_39F4, 0x9C84_5F8B,
-    0xBDF9_283B, 0x1FF8_97FF, 0xDE05_980F, 0xEF2F_118B, 0x5A0A_6D1F, 0x6D36_7ECF, 0x27CB_09B7,
-    0x4F46_3F66, 0x9E5F_EA2D, 0x7527_BAC7, 0xEBE5_F17B, 0x3D07_39F7, 0x8A52_92EA, 0x6BFB_5FB1,
-    0x1F8D_5D08, 0x5603_3046, 0xFC7B_6BAB, 0xF0CF_BC20, 0x9AF4_361D,
+    0xA2F9_836E,
+    0x4E44_1529,
+    0xFC27_57D1,
+    0xF534_DDC0,
+    0xDB62_9599,
+    0x3C43_9041,
+    0xFE51_63AB,
+    0xDEBB_C561,
+    0xB724_6E3A,
+    0x424D_D2E0,
+    0x0649_2EEA,
+    0x09D1_921C,
+    0xFE1D_EB1C,
+    0xB129_A73E,
+    0xE882_35F5,
+    0x2EBB_4484,
+    0xE99C_7026,
+    0xB45F_7E41,
+    0x3991_D639,
+    0x8353_39F4,
+    0x9C84_5F8B,
+    0xBDF9_283B,
+    0x1FF8_97FF,
+    0xDE05_980F,
+    0xEF2F_118B,
+    0x5A0A_6D1F,
+    0x6D36_7ECF,
+    0x27CB_09B7,
+    0x4F46_3F66,
+    0x9E5F_EA2D,
+    0x7527_BAC7,
+    0xEBE5_F17B,
+    0x3D07_39F7,
+    0x8A52_92EA,
+    0x6BFB_5FB1,
+    0x1F8D_5D08,
+    0x5603_3046,
+    0xFC7B_6BAB,
+    0xF0CF_BC20,
+    0x9AF4_361D,
 ];
 
 /// sin(pi/2 f) / f as a polynomial in u = f^2, Q30 (f in [-1/2, 1/2]).
 const S: [i64; 5] = [1_686_629_713, -693_598_667, 85_569_259, -5_026_472, 169_873];
 /// cos(pi/2 f) as a polynomial in u = f^2, Q30.
-const C: [i64; 5] = [1_073_741_824, -1_324_675_869, 272_375_234, -22_398_331, 970_267];
+const C: [i64; 5] = [
+    1_073_741_824,
+    -1_324_675_869,
+    272_375_234,
+    -22_398_331,
+    970_267,
+];
 
 /// `(acc * u) >> 32` steps from the top coefficient down, `u` in Q32.
 fn horner(c: &[i64; 5], u: u32) -> i64 {
@@ -75,8 +115,16 @@ fn quarter_turns(m: u64, e: i32) -> u64 {
     }
     let sh = sh as u32;
     let (mh, ml) = (m >> 32, m & 0xFFFF_FFFF);
-    let hi = if sh >= 32 + 128 { 0 } else { shr(u128::from(mh) * w, sh - 32) };
-    let lo = if sh >= 128 || ml == 0 { 0 } else { shr(u128::from(ml) * w, sh) };
+    let hi = if sh >= 32 + 128 {
+        0
+    } else {
+        shr(u128::from(mh) * w, sh - 32)
+    };
+    let lo = if sh >= 128 || ml == 0 {
+        0
+    } else {
+        shr(u128::from(ml) * w, sh)
+    };
     hi.wrapping_add(lo)
 }
 
@@ -91,23 +139,49 @@ fn sin_cos(m: u64, e: i32) -> (Num, Num) {
     let f = y.wrapping_sub(u64::from(k) << 62) as i64;
     let (fneg, a) = (f < 0, f.unsigned_abs());
     let (sin_f, cos_f) = if a == 0 {
-        (Num { neg: false, mant: 0, exp: 0 }, Num { neg: false, mant: 1, exp: 0 })
+        (
+            Num {
+                neg: false,
+                mant: 0,
+                exp: 0,
+            },
+            Num {
+                neg: false,
+                mant: 1,
+                exp: 0,
+            },
+        )
     } else {
         let lz = a.leading_zeros();
         let fm = ((a << lz) >> 32) as u32;
         // f = fm * 2^(-30 - lz); u = f^2 in Q32.
         let sh = 28 + 2 * lz;
-        let u = if sh >= 64 { 0 } else { ((u64::from(fm) * u64::from(fm)) >> sh) as u32 };
+        let u = if sh >= 64 {
+            0
+        } else {
+            ((u64::from(fm) * u64::from(fm)) >> sh) as u32
+        };
         let s = horner(&S, u) as u64;
         let c = horner(&C, u) as u64;
         (
-            Num { neg: fneg, mant: u64::from(fm) * s, exp: -60 - lz as i32 },
-            Num { neg: false, mant: c, exp: -30 },
+            Num {
+                neg: fneg,
+                mant: u64::from(fm) * s,
+                exp: -60 - lz as i32,
+            },
+            Num {
+                neg: false,
+                mant: c,
+                exp: -30,
+            },
         )
     };
     let pick = |q: u32| {
         let n = if q & 1 == 0 { sin_f } else { cos_f };
-        Num { neg: n.neg ^ (q & 2 != 0), ..n }
+        Num {
+            neg: n.neg ^ (q & 2 != 0),
+            ..n
+        }
     };
     (pick(k & 3), pick(k.wrapping_add(1) & 3))
 }
@@ -165,7 +239,11 @@ pub fn sin_cos_f32(x: u32) -> (u32, u32) {
     let neg = x >> 31 != 0;
     let be = (x >> 23) & 0xFF;
     if be == 0xFF {
-        let nan = if x & 0x7F_FFFF != 0 { x | 0x40_0000 } else { 0x7FC0_0000 };
+        let nan = if x & 0x7F_FFFF != 0 {
+            x | 0x40_0000
+        } else {
+            0x7FC0_0000
+        };
         return (nan, nan);
     }
     if be == 0 {
@@ -184,7 +262,11 @@ pub fn sin_cos_f64(x: u64) -> (u64, u64) {
     let neg = x >> 63 != 0;
     let be = ((x >> 52) & 0x7FF) as i32;
     if be == 0x7FF {
-        let nan = if x & 0xF_FFFF_FFFF_FFFF != 0 { x | 1 << 51 } else { 0x7FF8 << 48 };
+        let nan = if x & 0xF_FFFF_FFFF_FFFF != 0 {
+            x | 1 << 51
+        } else {
+            0x7FF8 << 48
+        };
         return (nan, nan);
     }
     if be == 0 {
@@ -332,7 +414,16 @@ mod tests {
             check32(q as f32);
             check32(f32::from_bits((q as f32).to_bits() + 1));
         }
-        for x in [0.0f32, -0.0, 1e-30, 1e-6, 0.5, 1.0, 1e5, core::f32::consts::PI] {
+        for x in [
+            0.0f32,
+            -0.0,
+            1e-30,
+            1e-6,
+            0.5,
+            1.0,
+            1e5,
+            core::f32::consts::PI,
+        ] {
             check32(x);
         }
     }
@@ -343,7 +434,10 @@ mod tests {
         assert!(f32::from_bits(s).is_nan() && f32::from_bits(c).is_nan());
         let (s, c) = sin_cos_f32(f32::NAN.to_bits());
         assert!(f32::from_bits(s).is_nan() && f32::from_bits(c).is_nan());
-        assert_eq!(sin_cos_f32((-0.0f32).to_bits()), ((-0.0f32).to_bits(), 1.0f32.to_bits()));
+        assert_eq!(
+            sin_cos_f32((-0.0f32).to_bits()),
+            ((-0.0f32).to_bits(), 1.0f32.to_bits())
+        );
         // Huge arguments reduce exactly (2/pi's bits reach every exponent).
         for x in [1e20f32, 3.0e38, f32::MAX] {
             let (s, c) = sin_cos_f32(x.to_bits());
@@ -352,7 +446,10 @@ mod tests {
         }
         // sin(1e22) is a well-known hard case: -0.8522008497671888...
         let s = f32::from_bits(sin_cos_f32(1e22f32.to_bits()).0);
-        assert!((f64::from(s) - f64::from(1e22f32).sin()).abs() < 1e-6, "{s}");
+        assert!(
+            (f64::from(s) - f64::from(1e22f32).sin()).abs() < 1e-6,
+            "{s}"
+        );
     }
 
     #[test]

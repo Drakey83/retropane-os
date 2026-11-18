@@ -117,7 +117,10 @@ impl Chain {
         words[T_END] = rp_drv_mbx3d::END;
         words[ZERO..DESC].fill(0);
         // the zeros reach memory once (never written again)
-        cpu::clean_range(words.as_ptr().addr() as u32 + 4 * ZERO as u32, 4 * ZERO_WORDS as u32);
+        cpu::clean_range(
+            words.as_ptr().addr() as u32 + 4 * ZERO as u32,
+            4 * ZERO_WORDS as u32,
+        );
         Some(Self {
             dma,
             mem: words,
@@ -230,7 +233,11 @@ impl Chain {
                     k += 1 + STATE_WORDS;
                 } else {
                     let n = (w & 0xFF) as usize;
-                    let head = if w & 0xFFFF_FF00 == FAN { T_FAN } else { T_STRIP };
+                    let head = if w & 0xFFFF_FF00 == FAN {
+                        T_FAN
+                    } else {
+                        T_STRIP
+                    };
                     let ok = self.to_window(self.addr(head), 4)
                         && self.to_window(src + 4, (4 * n * CORNER_WORDS) as u32)
                         && self.end();
@@ -290,10 +297,23 @@ impl Chain {
         self.last_descriptors = self.n as u32;
         // The arm drains the CPU's writes first (its clean).
         if !self.dma.arm_chain(&self.mem[DESC..DESC + n]) {
-            Self::finish(regs, Flight { t0, dma_done: true, en, grid });
+            Self::finish(
+                regs,
+                Flight {
+                    t0,
+                    dma_done: true,
+                    en,
+                    grid,
+                },
+            );
             return Err(());
         }
-        self.flight = Some(Flight { t0, dma_done: false, en, grid });
+        self.flight = Some(Flight {
+            t0,
+            dma_done: false,
+            en,
+            grid,
+        });
         Ok(true)
     }
 
