@@ -1696,6 +1696,18 @@ server's work for the client's re-prediction; the fight, where the player
 moves and the server has the most to do, comes out ~3% slower, the
 cascade ~3% faster. The default stays 20 Hz.
 
+**Option D measured: the CPU at 682.5 MHz (the owner: "Measure D
+(clock)").** Route C, the one past-rating step this unit has run clean
+(run 88; 728 MHz faulted in run 44, route B declined): `-rpcpu 157`, L 15
+x 2N 7, the core 682,478 kHz counted, the bus and memory 195 MHz, the
+SDRAM 97.5 (Dell's 208 / 104). Run 252 (2026-11-19, kit 117): fight
+**24.4 / 27.4** (624 MHz: 23.8 / 26.8), ~+2.5% from +9.4% on the core (the
+bus 6% slower takes the rest: 17% of the fight's cycles wait on code
+fetches, run 244); 634 known-answer checks past 624, 0 wrong; Dell's 624
+put back at the end. What it means: worth ~0.6 fps on the fight, on one
+unit; whether it holds on every X51v is the any-Axim question (the
+self-test per device), the owner's.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

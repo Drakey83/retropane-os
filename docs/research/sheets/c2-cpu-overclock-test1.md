@@ -190,6 +190,14 @@ holds), so the try is **route C at its lowest step past 624: L 15 x 2N 7,
   unit's core holds no step past 624 at Dell's voltage); or no gain (the
   slower bus eats the core's step).
 
+### Run 252: the fight at 682.5 MHz (2026-11-19, the owner: "Measure D (clock)")
+
+The c2a5f fight (Half-Life kit 117) with `-rpcpu 157`: 24.4 / 27.4 fps
+against 23.8 / 26.8 at 624 (run 247), ~+2.5%; the core 682,478 kHz
+counted, 634 checks past 624 with 0 wrong, 624 put back. The fight is
+partly bus-bound (run 244: 17% of its cycles on code fetches), so the
+core's +9.4% nets about a quarter of itself against the bus's -6%.
+
 ### Run 88 on the X51v (2026-11-18, port-runner-0112, unattended)
 
 The cascade (`-rpcascade`) with `-rpcpu 157`. **The PLL took L 15 x 2N 7
