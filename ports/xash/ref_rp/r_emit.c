@@ -129,7 +129,7 @@ static struct
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
 	uint32_t mask_texels, mask_keys; /* R321: see-through faces' texels uploaded, the key among them */
 	uint32_t beams_fixed, beams_culled, beams_off; /* kit 78: beams walked in 16.16, out of the visible set, off the screen */
-	uint32_t fx_fixed, fx_cut, fx_off; /* kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
+	uint32_t fx_fixed, fx_cut, fx_off, fx_behind; /* kit 114: fx_behind, wholly behind the near plane, dropped in integers; kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
@@ -322,8 +322,8 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: kit 74's effects (sprites, beams, particles): %u triangles a frame, %u of them plain (no picture), %u not drawn (no room)\n",
 			rp_count.fx_tris / f, rp_count.fx_plain / f, rp_count.fx_skipped / f );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: kit 77's effect corners in fixed point: %u triangles a frame, %u across the near plane (the software's way), %u off the screen\n",
-			rp_count.fx_fixed / f, rp_count.fx_cut / f, rp_count.fx_off / f );
+		fprintf( stderr, "rp-emit: kit 77's effect corners in fixed point: %u triangles a frame, %u across the near plane (the software's way), %u wholly behind it (kit 114: dropped in integers), %u off the screen\n",
+			rp_count.fx_fixed / f, rp_count.fx_cut / f, rp_count.fx_behind / f, rp_count.fx_off / f );
 	if( rp_emit_on == 2 )
 	{
 		/* kit 80: the engine's own counts (engine/common/pm_trace.c), a frame */
@@ -6143,6 +6143,15 @@ static void RP_TriEmit( const rp_tv_t *a, const rp_tv_t *b, const rp_tv_t *c3 )
 	const rp_tv_t *v[3] = { a, b, c3 };
 	rp_fxctx_t     c;
 
+	if( !a->front && !b->front && !c3->front )
+	{
+		/* kit 114: wholly behind the near plane, as R_RenderTriangle's
+		   "completely clipped" (every corner ALIAS_Z_CLIP), with no float
+		   set-up first (run 235: 100-168 such triangles a fight frame,
+		   R_SetupFinalVert's floats ~2% of the play) */
+		rp_count.fx_behind++;
+		return;
+	}
 	if( !a->front || !b->front || !c3->front )
 	{
 		/* across the near plane: the software renderer's set-up and clip */
@@ -6192,6 +6201,33 @@ static void RP_TriCorner( rp_tv_t *v, const int32_t p[3], int s, int t )
 	v->front = q[2] >= ALIAS_Z_CLIP_PLANE * RP_ONE16; /* the software's near plane */
 	if( v->front )
 		RP_ProjectS( q, v->w, v->st );
+}
+
+/* Kit 114: R_DrawSpriteQuad's four corners (down-left, up-left, up-right,
+   down-right) in 16.16 from the sprite's origin, its up and right vectors
+   and its frame's extents times its scale: integers where the float way
+   made each corner with two VectorMAs (run 235: R_DrawSpriteModel's floats
+   ~2.7% of a fight frame). Within ~1/16384 of a unit of the float corners. */
+void RP_SpriteCorners( const float org[3], const float vu[3], const float vr[3],
+	const float ext[4], float scale, int32_t c[4][3] )
+{
+	int32_t s16 = RP_Fix16( scale ), e[4], o[3], u[3], r[3];
+
+	for( int i = 0; i < 4; i++ ) /* down, up, left, right */
+		e[i] = (int32_t)(( (int64_t)RP_Fix16( ext[i] ) * s16 ) >> 16 );
+	for( int j = 0; j < 3; j++ )
+	{
+		o[j] = RP_Fix16( org[j] );
+		u[j] = RP_Fix30( vu[j] );
+		r[j] = RP_Fix30( vr[j] );
+	}
+	for( int k = 0; k < 4; k++ )
+	{
+		int32_t ud = k == 0 || k == 3 ? e[0] : e[1], lr = k < 2 ? e[2] : e[3];
+
+		for( int j = 0; j < 3; j++ )
+			c[k][j] = o[j] + (int32_t)(( (int64_t)ud * u[j] ) >> 30 ) + (int32_t)(( (int64_t)lr * r[j] ) >> 30 );
+	}
 }
 
 /* TriVertex3f on the 2700G path: the same triangles of the same modes. */

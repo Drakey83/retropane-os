@@ -5390,10 +5390,10 @@ index 8a82400..024ca73 100644
  		}
  
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..49158b8 100644
+index 1a7efd6..bd4fdfe 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,99 @@ typedef struct
+@@ -992,6 +992,101 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -5446,6 +5446,8 @@ index 1a7efd6..49158b8 100644
 +void RP_TriVertexFix( const int32_t p[3], int s, int t );
 +void RP_Set2DColour( uint32_t argb );
 +int  RP_TriFast( void );
++void RP_TriVertex16( const int32_t p[3] ); // kit 114
++void RP_SpriteCorners( const float org[3], const float vu[3], const float vr[3], const float ext[4], float scale, int32_t c[4][3] );
 +const float *RP_TriRGBA( void );
 +void RP_BeamNote( int culled ); // kit 78: beams walked in 16.16, or culled (out of the visible set)
 +void RP_EmitTriangle( void );
@@ -5993,11 +5995,107 @@ index 621d74f..93f4f53 100644
  	// translucent surfaces are not drawn by the edge renderer
  	if( fa->flags & ( SURF_DRAWTURB | SURF_TRANSPARENT ))
  	{
+diff --git a/ref/soft/r_sprite.c b/ref/soft/r_sprite.c
+index 3d0f609..e7299f0 100644
+--- a/ref/soft/r_sprite.c
++++ b/ref/soft/r_sprite.c
+@@ -130,6 +130,24 @@ static void R_DrawSpriteQuad( mspriteframe_t *frame, vec3_t org, vec3_t v_right,
+ 	r_affinetridesc.skinheight = image->height;*/
+ 
+ 	TriBegin( TRI_QUADS );
++	if( RP_TriFast( ))
++	{
++		// RetroPane kit 114: the corners in integers for the 2700G
++		const float ext[4] = { frame->down, frame->up, frame->left, frame->right };
++		int32_t     c[4][3];
++
++		RP_SpriteCorners( org, v_up, v_right, ext, scale, c );
++		TriTexCoord2f( 0.0f, 1.0f );
++		RP_TriVertex16( c[0] );
++		TriTexCoord2f( 0.0f, 0.0f );
++		RP_TriVertex16( c[1] );
++		TriTexCoord2f( 1.0f, 0.0f );
++		RP_TriVertex16( c[2] );
++		TriTexCoord2f( 1.0f, 1.0f );
++		RP_TriVertex16( c[3] );
++		TriEnd();
++		return;
++	}
+ 	TriTexCoord2f( 0.0f, 1.0f );
+ 	VectorMA( org, frame->down * scale, v_up, point );
+ 	VectorMA( point, frame->left * scale, v_right, point );
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..14efd2c 100644
+index 03790d8..88fd471 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
-@@ -1272,6 +1272,61 @@ pfnStudioEntityLight
+@@ -618,6 +618,10 @@ StudioFxTransform
+ 
+ ====================
+ */
++// RetroPane kit 114: a bone's light transform is its bone transform (no
++// render effect jittered its root): R_StudioSetupBones copies, not concats
++static byte rp_bsame[MAXSTUDIOBONES];
++
+ static void R_StudioFxTransform( cl_entity_t *ent, matrix3x4 transform )
+ {
+ 	switch( ent->curstate.renderfx )
+@@ -807,6 +811,7 @@ static void R_StudioMergeBones( cl_entity_t *e, model_t *m_pSubModel )
+ 			{
+ 				Matrix3x4_Copy( g_studio.bonestransform[i], g_studio.cached_bonestransform[j] );
+ 				Matrix3x4_Copy( g_studio.lighttransform[i], g_studio.cached_lighttransform[j] );
++				rp_bsame[i] = !memcmp( g_studio.bonestransform[i], g_studio.lighttransform[i], sizeof( matrix3x4 )); // kit 114
+ 				break;
+ 			}
+ 		}
+@@ -821,11 +826,23 @@ static void R_StudioMergeBones( cl_entity_t *e, model_t *m_pSubModel )
+ 
+ 				// apply client-side effects to the transformation matrix
+ 				R_StudioFxTransform( e, g_studio.bonestransform[i] );
++				// RetroPane kit 114: still the light transform (no distort,
++				// hologram or explode jitter), so its children's are too
++				rp_bsame[i] = !memcmp( g_studio.bonestransform[i], g_studio.lighttransform[i], sizeof( matrix3x4 ));
++			}
++			else if( rp_bsame[pbones[i].parent] )
++			{
++				// kit 114 (the client's kit 53 in the engine's bones): the
++				// same concat of the same matrices, copied, not made twice
++				Matrix3x4_ConcatTransforms( g_studio.bonestransform[i], g_studio.bonestransform[pbones[i].parent], bonematrix );
++				Matrix3x4_Copy( g_studio.lighttransform[i], g_studio.bonestransform[i] );
++				rp_bsame[i] = 1;
+ 			}
+ 			else
+ 			{
+ 				Matrix3x4_ConcatTransforms( g_studio.bonestransform[i], g_studio.bonestransform[pbones[i].parent], bonematrix );
+ 				Matrix3x4_ConcatTransforms( g_studio.lighttransform[i], g_studio.lighttransform[pbones[i].parent], bonematrix );
++				rp_bsame[i] = 0;
+ 			}
+ 		}
+ 	}
+@@ -980,11 +997,23 @@ static void R_StudioSetupBones( cl_entity_t *e )
+ 
+ 			// apply client-side effects to the transformation matrix
+ 			R_StudioFxTransform( e, g_studio.bonestransform[i] );
++			// RetroPane kit 114: still the light transform (no distort,
++			// hologram or explode jitter), so its children's are too
++			rp_bsame[i] = !memcmp( g_studio.bonestransform[i], g_studio.lighttransform[i], sizeof( matrix3x4 ));
++		}
++		else if( rp_bsame[pbones[i].parent] )
++		{
++			// kit 114 (the client's kit 53 in the engine's bones): the
++			// same concat of the same matrices, copied, not made twice
++			Matrix3x4_ConcatTransforms( g_studio.bonestransform[i], g_studio.bonestransform[pbones[i].parent], bonematrix );
++			Matrix3x4_Copy( g_studio.lighttransform[i], g_studio.bonestransform[i] );
++			rp_bsame[i] = 1;
+ 		}
+ 		else
+ 		{
+ 			Matrix3x4_ConcatTransforms( g_studio.bonestransform[i], g_studio.bonestransform[pbones[i].parent], bonematrix );
+ 			Matrix3x4_ConcatTransforms( g_studio.lighttransform[i], g_studio.lighttransform[pbones[i].parent], bonematrix );
++			rp_bsame[i] = 0;
+ 		}
+ 	}
+ }
+@@ -1272,6 +1301,61 @@ pfnStudioEntityLight
  
  ===============
  */
@@ -6059,7 +6157,7 @@ index 03790d8..14efd2c 100644
  static void R_StudioEntityLight( alight_t *lightinfo )
  {
  	int         lnum, i, j, k;
-@@ -1285,6 +1340,10 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+@@ -1285,6 +1369,10 @@ static void R_StudioEntityLight( alight_t *lightinfo )
  
  	if( !ent || !r_dynamic->value )
  		return;
@@ -6070,7 +6168,7 @@ index 03790d8..14efd2c 100644
  
  	for( i = 0; i < MAX_LOCALLIGHTS; i++ )
  		lstrength[i] = 0;
-@@ -1293,13 +1352,16 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+@@ -1293,13 +1381,16 @@ static void R_StudioEntityLight( alight_t *lightinfo )
  	dist2 = 1000000.0f;
  	k = 0;
  
@@ -6091,7 +6189,7 @@ index 03790d8..14efd2c 100644
  		if(( el->key & 0xFFF ) == ent->index )
  		{
  			int att = ( el->key >> 12 ) & 0xF;
-@@ -1675,6 +1737,138 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1766,159 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -6119,6 +6217,12 @@ index 03790d8..14efd2c 100644
 +	// or made in integers by R_StudioDrawPoints (4d's rest: rp_lit_part)
 +	static byte       ncol[RP_STUDIO_VERTS][3];
 +	static int        nser[RP_STUDIO_VERTS];
++	// kit 114: with a local light on, a corner's colour once a part for its
++	// vertex and normal (R_LightLambert's inputs: the vertex's light
++	// positions, the normal and its light value), not once a command
++	static byte       lcol[RP_STUDIO_VERTS][3];
++	static int        lser[RP_STUDIO_VERTS];
++	static short      lvx[RP_STUDIO_VERTS];
 +	int               i, n, w = r_affinetridesc.skinwidth, h = r_affinetridesc.skinheight;
 +	int               serial = RP_StudioSerial( );
 +	int               rp_lit_mode = RP_StudioLitMode( );
@@ -6187,6 +6291,21 @@ index 03790d8..14efd2c 100644
 +				v[k].rgb[1] = ncol[ni][1];
 +				v[k].rgb[2] = ncol[ni][2];
 +			}
++			else if( (unsigned)ni < RP_STUDIO_VERTS )
++			{
++				// kit 114 (run 235: R_LightLambert's floats ~2% of a fight
++				// frame, each corner lit again in every command using it)
++				if( lser[ni] != serial || lvx[ni] != ptricmds[0] )
++				{
++					lser[ni] = serial;
++					lvx[ni] = ptricmds[0];
++					R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ni],
++						(float *)g_studio.lightvalues[ni], lcol[ni] );
++				}
++				v[k].rgb[0] = lcol[ni][0];
++				v[k].rgb[1] = lcol[ni][1];
++				v[k].rgb[2] = lcol[ni][2];
++			}
 +			else
 +			{
 +				R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ni],
@@ -6230,7 +6349,7 @@ index 03790d8..14efd2c 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1880,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1930,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -6244,7 +6363,7 @@ index 03790d8..14efd2c 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1920,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1970,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -6258,7 +6377,7 @@ index 03790d8..14efd2c 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1754,6 +1962,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1754,6 +2012,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
  	qboolean glowShell = ( scale > 0.0f ) ? true : false;
  	vec3_t   vert;
  
@@ -6274,7 +6393,7 @@ index 03790d8..14efd2c 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +2029,10 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +2079,10 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -6285,7 +6404,7 @@ index 03790d8..14efd2c 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +2071,39 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +2121,39 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -6328,7 +6447,7 @@ index 03790d8..14efd2c 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1868,7 +2115,7 @@ static void R_StudioDrawPoints( void )
+@@ -1868,7 +2165,7 @@ static void R_StudioDrawPoints( void )
  
  	for( j = k = 0; j < m_pSubModel->nummesh; j++ )
  	{
@@ -6337,7 +6456,7 @@ index 03790d8..14efd2c 100644
  
  		// fill in sortedmesh info
  		g_studio.meshes[j].flags = g_nFaceFlags;
-@@ -1886,10 +2133,42 @@ static void R_StudioDrawPoints( void )
+@@ -1886,10 +2183,42 @@ static void R_StudioDrawPoints( void )
  				VectorSet( g_studio.lightvalues[k], tr.blend, tr.blend, tr.blend );
  			}
  		}
@@ -6380,7 +6499,7 @@ index 03790d8..14efd2c 100644
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1920,7 +2199,7 @@ static void R_StudioDrawPoints( void )
+@@ -1920,7 +2249,7 @@ static void R_StudioDrawPoints( void )
  		pmesh = g_studio.meshes[j].mesh;
  		ptricmds = (short *)((byte *)m_pStudioHeader + pmesh->triindex );
  
@@ -6389,7 +6508,7 @@ index 03790d8..14efd2c 100644
  
  		s = 1.0f / (float)ptexture[pskinref[pmesh->skinref]].width;
  		t = 1.0f / (float)ptexture[pskinref[pmesh->skinref]].height;
-@@ -1947,14 +2226,16 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2276,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  
@@ -6587,7 +6706,7 @@ index e47e115..41478c1 100644
  		CACHESPOT( surface )[miplevel] = cache;
  		cache->owner = &CACHESPOT( surface )[miplevel];
 diff --git a/ref/soft/r_triapi.c b/ref/soft/r_triapi.c
-index a4a90ea..8cb506f 100644
+index a4a90ea..12acf2d 100644
 --- a/ref/soft/r_triapi.c
 +++ b/ref/soft/r_triapi.c
 @@ -28,6 +28,7 @@ static int         vertcount, n;
@@ -6598,7 +6717,7 @@ index a4a90ea..8cb506f 100644
  
  /*
  ===============================================================
-@@ -61,6 +62,20 @@ void GAME_EXPORT TriBegin( int mode1 )
+@@ -61,6 +62,27 @@ void GAME_EXPORT TriBegin( int mode1 )
  		mode1 = TRI_TRIANGLE_FAN;
  	mode = mode1;
  	n = vertcount = 0;
@@ -6613,13 +6732,20 @@ index a4a90ea..8cb506f 100644
 +	return rp_fast;
 +}
 +
++/* Kit 114: a corner already in 16.16, with the sequence's texel (the
++   sprites' integer corners; only while RP_TriFast) */
++void RP_TriVertex16( const int32_t p[3] )
++{
++	RP_TriVertexFix( p, s, t );
++}
++
 +const float *RP_TriRGBA( void )
 +{
 +	return ds.triRGBA;
  }
  
  /*
-@@ -85,6 +100,9 @@ void GAME_EXPORT _TriColor4f( float rr, float gg, float bb, float aa )
+@@ -85,6 +107,9 @@ void GAME_EXPORT _TriColor4f( float rr, float gg, float bb, float aa )
  	// pglColor4f( r, g, b, a );
  	if( vid.rendermode == kRenderTransAdd || vid.rendermode == kRenderGlow )
  		rr *= aa, gg *= aa, bb *= aa;
@@ -6629,7 +6755,7 @@ index a4a90ea..8cb506f 100644
  
  	// gEngfuncs.Con_Printf("%d\n", vid.alpha);
  
-@@ -179,6 +197,13 @@ TriTexCoord2f
+@@ -179,6 +204,13 @@ TriTexCoord2f
  */
  void GAME_EXPORT TriTexCoord2f( float u, float v )
  {
@@ -6643,7 +6769,7 @@ index a4a90ea..8cb506f 100644
  	double u1 = 0, v1 = 0;
  	u = fmodf( u, 10 );
  	v = fmodf( v, 10 );
-@@ -226,6 +251,12 @@ void GAME_EXPORT TriVertex3f( float x, float y, float z )
+@@ -226,6 +258,12 @@ void GAME_EXPORT TriVertex3f( float x, float y, float z )
  		y += vid.offset2d[1];
  	}
  

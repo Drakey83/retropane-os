@@ -1545,6 +1545,35 @@ pixels** from run 230's; storm 24.7 / 24.9 (24.7 / 24.9: the CPU's);
 fight 22.3 / 25.0 (22.2 / 24.6), its picture 0 pixels from run 228's;
 no TA or render hang. Both cascade halves are past 30 fps.
 
+**Kit 114, the fight's floats (the owner: "keep pushing Half-Life fps").**
+Run 235's samples with each float helper charged to its caller (the fight
+is now the slowest scene, and its profile is flat): effect triangles
+wholly behind the near plane still got ref_soft's float set-up before its
+clipper threw them away (`R_SetupFinalVert`, 193 samples, 2.0%; 100-168
+such triangles a frame); the sprites' corners made by two float VectorMAs
+each (`R_DrawSpriteModel`, 267, 2.7%); a model lit by a local light (the
+muzzle flashes) lit each corner again in every command using it
+(`R_LightLambert`, 193); the engine's bone setup made each bone's light
+transform by a second concat even when it equals the bone transform.
+Vendor: ref_soft's per-corner floats and clipper; the client already copies
+(kit 53). Ours: those triangles dropped in integers (exact: ref_soft's own
+test drops them too); the sprite corners in 16.16 from the origin, the
+2.30 up and right vectors and the extents times the scale
+(`RP_SpriteCorners`, within ~1/16384 unit); the lit corner cached on its
+vertex and normal for the part (exact: R_LightLambert's inputs); the
+light transform copied while no render effect jittered the root (exact).
+Runs 236-238 (2026-11-19): cascade **36.6 / 31.4** (kit 113 36.1 / 30.9),
+the end picture 7 pixels from run 233's; storm 24.9 / 25.2 (24.7 / 24.9);
+fight **23.4 / 26.5** (22.3 / 25.0), its end picture 542 pixels from run
+235's (most 1-2 steps, on the gun and one sprite's edge: the frame drawn
+at a different game time, and the integer corners; not visible side by
+side). In the fight's samples `R_SetupFinalVert` is gone (193 -> 0), the
+sprites 267 -> 81, `R_LightLambert` 193 -> 143; the engine's
+`Matrix3x4_ConcatTransforms` did not move (248 -> 244): its time is not
+the renderer's bone setup. Next: count its callers (the server's hitbox
+bones in `mod_studio.c` the likely one, the fight's bullets tracing the
+soldiers' hitboxes).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
