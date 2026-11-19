@@ -23,6 +23,19 @@ use rp_hal_cabi::{Errno, Gfx};
 pub const STATE: u32 = 0x1000_0057;
 /// Words after [`STATE`].
 pub const STATE_WORDS: usize = 7;
+/// A two-texture state block's first word (Half-Life kit 112, the world in
+/// one pass: the texture times its lightmap on the 2700G's second texture
+/// unit; ADR-0040, under ADR-0039): mask bit 3 adds texture unit 1's three
+/// words after unit 0's, as Dell's GLES driver sends them (`0x2267868`).
+/// The TSP word's bit 16 tells the TA the corners carry a second
+/// coordinate pair (`rp-glesfeat` M). Corners of strips and fans after it
+/// carry [`UNIT1_WORDS`] more words (u1, v1).
+pub const STATE2: u32 = 0x1000_005F;
+/// Words after [`STATE2`]: TSP, ISP, unit 0's TEX0-2, unit 1's TEX0-2, the
+/// clip word, the bit 6 word.
+pub const STATE2_WORDS: usize = 10;
+/// The words a corner gains after a [`STATE2`] block.
+pub const UNIT1_WORDS: usize = 2;
 /// A strip of `n` corners: this, `| n`. The TA is sent the strip word
 /// without the count.
 pub const STRIP: u32 = 0x4000_0000;
@@ -57,6 +70,13 @@ pub const fn is_prim(w: u32) -> bool {
 #[must_use]
 pub const fn corner_words(w: u32) -> usize {
     if w & NO_Z != 0 { CORNER_WORDS_NO_Z } else { CORNER_WORDS }
+}
+
+/// Words in each corner of the strip or fan whose header is `w`, after a
+/// [`STATE2`] block when `two`.
+#[must_use]
+pub const fn corner_words_in(w: u32, two: bool) -> usize {
+    corner_words(w) + if two { UNIT1_WORDS } else { 0 }
 }
 
 /// TEX0's texel formats a texture may have here, all 16 bits a texel
@@ -180,19 +200,22 @@ pub fn send_runs<T>(
 ) -> Counts {
     let mut c = Counts::default();
     let mut at = 0;
+    let mut two = false;
     while at < words.len() {
         let w = words[at];
-        if w == STATE {
-            let Some(block) = words.get(at..=at + STATE_WORDS) else {
+        if w == STATE || w == STATE2 {
+            let sw = if w == STATE2 { STATE2_WORDS } else { STATE_WORDS };
+            let Some(block) = words.get(at..=at + sw) else {
                 break;
             };
+            two = w == STATE2;
             c.states += 1;
             if !run(ctx, block) {
                 break;
             }
-            at += 1 + STATE_WORDS;
+            at += 1 + sw;
         } else if is_prim(w) {
-            let len = (w & 0xFF) as usize * corner_words(w);
+            let len = (w & 0xFF) as usize * corner_words_in(w, two);
             let Some(corners) = words.get(at + 1..=at + len) else {
                 break;
             };
@@ -224,6 +247,7 @@ fn walk(
     let mut c = Counts::default();
     let mut at = 0;
     let mut stated = false;
+    let mut two = false;
     let refuse = |at, why| Err(Refused { at, why });
     let inside = |start: u32, bytes: u32| {
         g.is_none_or(|g| {
@@ -234,20 +258,29 @@ fn walk(
     };
     while at < words.len() {
         let w = words[at];
-        if w == STATE {
-            let Some(block) = words.get(at + 1..=at + STATE_WORDS) else {
+        if w == STATE || w == STATE2 {
+            let sw = if w == STATE2 { STATE2_WORDS } else { STATE_WORDS };
+            let Some(block) = words.get(at + 1..=at + sw) else {
                 return refuse(at, Why::Short);
             };
             match texture(block[2], block[3]) {
                 Some((start, bytes)) if inside(start, bytes) => {}
                 _ => return refuse(at, Why::Texture),
             }
+            // unit 1's texture too, inside the program's memory as unit 0's
+            if w == STATE2 {
+                match texture(block[5], block[6]) {
+                    Some((start, bytes)) if inside(start, bytes) => {}
+                    _ => return refuse(at, Why::Texture),
+                }
+            }
+            two = w == STATE2;
             stated = true;
             c.states += 1;
             if !(put(Piece::Word(w)) && block.iter().all(|&b| put(Piece::Word(b)))) {
                 return Ok(c);
             }
-            at += 1 + STATE_WORDS;
+            at += 1 + sw;
         } else if is_prim(w) {
             if !stated {
                 return refuse(at, Why::NoState);
@@ -256,7 +289,7 @@ fn walk(
             if n < STRIP_CORNERS.0 || n > STRIP_CORNERS.1 {
                 return refuse(at, Why::Corners);
             }
-            let len = n as usize * corner_words(w);
+            let len = n as usize * corner_words_in(w, two);
             let Some(corners) = words.get(at + 1..=at + len) else {
                 return refuse(at, Why::Short);
             };
@@ -356,6 +389,31 @@ mod tests {
             assert_eq!(runs, out);
         }
         (r, out)
+    }
+
+    #[test]
+    fn a_two_texture_block_takes_nine_word_corners_and_checks_both_textures() {
+        let mut b = vec![STATE2, 0x2225_0C00, 0xE000_0000];
+        b.extend_from_slice(&state(G.tex_at)[3..6]);
+        b.extend_from_slice(&state(G.tex_at + 0x1000)[3..6]);
+        b.extend_from_slice(&[0, 0]);
+        let mut f = b.clone();
+        f.push(STRIP | 3);
+        f.extend((0..27).map(|k| k as u32));
+        let (r, _) = run(&f);
+        assert_eq!(r.map(|c| (c.states, c.strips, c.corners)), Ok((1, 1, 3)));
+        // 7-word corners after it are short by six words: refused
+        let mut short = b.clone();
+        short.push(STRIP | 3);
+        short.extend((0..21).map(|k| k as u32));
+        assert!(run(&short).0.is_err());
+        // unit 1's texture outside the program's memory: refused
+        let mut out = b;
+        out[6] = state(G.tex_at + G.tex_bytes)[3];
+        out[7] = state(G.tex_at + G.tex_bytes)[4];
+        out.push(STRIP | 3);
+        out.extend((0..27).map(|k| k as u32));
+        assert!(run(&out).0.is_err());
     }
 
     #[test]

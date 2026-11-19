@@ -199,7 +199,11 @@ watching.
 - **3D second texture unit** (`rp-glesfeat` M, X51v, 2026-10-22): TSP
   bit 16 = a second coordinate set at the TA; the TA's two-unit object is
   ISP, TEX0-2 x2, TSP, x/y, z, 1/w, then colour, u0, v0, u1, v1 a vertex
-  (list layout 12); the 3D stage hangs on it (open).
+  (list layout 12); the 3D stage hung on it under our register table.
+  **Draws under Dell's full 3D table** (2026-11-18, Half-Life runs
+  222-225): TSP bits 19-17 = 2, 9-word corners, unit 1's MODULATE
+  `0x8E086E10` (Dell's unit-1 table, bit 27 = take the previous unit's
+  colour); a texture times a lightmap in one pass (docs/hw/2700g.md).
 - **2D commands by DMA** (`rp-gpubench` run FD, X51v, 2026-10-22): DMA
   into the command window (`0x0FFF5000`) works; 352 words cost the CPU 2
   us to arm against 43-60 us to write; batches must fit the FIFO's room.

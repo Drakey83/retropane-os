@@ -313,6 +313,8 @@ struct Split<F> {
     put: F,
     /// Words of the state block still to come (TSP is the first).
     state_left: u8,
+    /// The block's words after its first (7, or 10 for a two-texture block).
+    state_total: u8,
     /// Inside a primitive: dropped or not.
     in_prim: Option<bool>,
     /// The primitives after the last state are dropped.
@@ -355,7 +357,7 @@ impl<F: FnMut(Piece) -> bool> Split<F> {
                     return drop || (self.put)(p);
                 }
                 if self.state_left > 0 {
-                    let k = 8 - self.state_left;
+                    let k = 1 + self.state_total - self.state_left;
                     self.state_left -= 1;
                     let w = match (k, self.part) {
                         (1, _) => {
@@ -380,8 +382,9 @@ impl<F: FnMut(Piece) -> bool> Split<F> {
                     };
                     return (self.put)(Piece::Word(w));
                 }
-                if w == rp_port::gfx::STATE {
-                    self.state_left = 7;
+                if w == rp_port::gfx::STATE || w == rp_port::gfx::STATE2 {
+                    self.state_left = if w == rp_port::gfx::STATE2 { 10 } else { 7 };
+                    self.state_total = self.state_left;
                     return (self.put)(p);
                 }
                 // A strip's or a fan's word.
@@ -1875,6 +1878,7 @@ impl Screen for Chip {
                 part,
                 put,
                 state_left: 0,
+                state_total: 7,
                 in_prim: None,
                 dropping: false,
                 model: false,

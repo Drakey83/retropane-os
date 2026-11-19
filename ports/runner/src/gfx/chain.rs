@@ -23,7 +23,7 @@ use rp_drv_mbx3d::ta;
 use rp_hal_api::{DmaEngine, RegisterBus};
 use rp_hal_pxa27x::dma::{CHAIN_MOST, Dma, chain_descriptor};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
-use rp_port::gfx::{FAN, NO_Z, STATE, STATE_WORDS, STRIP, corner_words};
+use rp_port::gfx::{FAN, NO_Z, STATE, STATE2, STATE2_WORDS, STATE_WORDS, STRIP, corner_words_in};
 
 use super::us_since;
 
@@ -225,17 +225,21 @@ impl Chain {
         if !(self.to_window(self.addr(T_BG), 4 * bg.len() as u32) && self.end()) {
             return false;
         }
+        let mut two = false;
         for words in parts {
             let base = words.as_ptr().addr() as u32;
             let mut k = 0;
             while k < words.len() {
                 let w = words[k];
                 let src = base + 4 * k as u32;
-                if w == STATE {
-                    if !self.to_window(src, 4 * (1 + STATE_WORDS) as u32) {
+                if w == STATE || w == STATE2 {
+                    // kit 112: a two-texture block's corners carry u1, v1
+                    let sw = if w == STATE2 { STATE2_WORDS } else { STATE_WORDS };
+                    two = w == STATE2;
+                    if !self.to_window(src, 4 * (1 + sw) as u32) {
                         return false;
                     }
-                    k += 1 + STATE_WORDS;
+                    k += 1 + sw;
                 } else {
                     let n = (w & 0xFF) as usize;
                     let fan = w & !NO_Z & 0xFFFF_FF00 == FAN;
@@ -245,7 +249,7 @@ impl Chain {
                         (false, false) => T_STRIP,
                         (false, true) => T_STRIP_NO_Z,
                     };
-                    let cw = corner_words(w);
+                    let cw = corner_words_in(w, two);
                     let ok = self.to_window(self.addr(head), 4)
                         && self.to_window(src + 4, (4 * n * cw) as u32)
                         && self.end();

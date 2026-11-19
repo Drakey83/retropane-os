@@ -1494,6 +1494,29 @@ Dell's driver and tried on the X51v (hangs recover at the next image's
 start), the 2700G's clock past 108.33 (R295), or the render timed in the
 chained path first to size each.
 
+**Kit 112, the world in one pass on the second texture unit (the owner:
+"Yes, go after it").** Vendor: GoldSrc's GL renderer and Dell's GLES both
+multitexture where the hardware can; R297 B chose two passes because the
+2700G's second unit hung in test M. Ours: the reading of Dell's driver
+(`0x2267D08`: TSP bit 16 on when two units are on, bits 19-17 the
+coordinate sets; `0x2267434`: each unit's combine word from its own table)
+and the observation that test M ran under our smaller register table,
+while the runner runs Dell's full one. Run 222: two-unit faces draw, no
+hang. Run 224: unit 1's combine word as the doc summarised it
+(`0x86086E10`) draws unit 1's texture alone; Dell's table (read from the
+DLL) has `0x8E086E10`, bit 27 taking the previous unit's colour. Each
+world face R297 B took is now one strip after a two-texture state block
+(`RP_GFX_STATE2`, 10 words: unit 0 the texture, unit 1 its lightmap page,
+MODULATE), its corners nine words (u1, v1 the lightmap's); no second-pass
+words. The port layer's check takes the new block and checks unit 1's
+texture inside the program's memory as unit 0's (`ports/sys/src/gfx.rs`,
+a host test); the DMA chain walks it. `-rplm2pass`: the two passes, as
+before. Runs 225-228: the picture **101 of 307,200 pixels** from the two
+passes' (run 218); cascade **31.6 / 29.8** (kit 111 29.8 / 28.7), storm
+24.7 / 24.9 (24.1 / 24.3), fight 22.2 / 24.6 (22.0 / 24.2). The calm half
+still waits 4.8 ms a frame for the render: more of the chip's time to
+find.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

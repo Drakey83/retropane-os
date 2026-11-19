@@ -186,6 +186,12 @@ struct rp_gfx {
 #define RP_GFX_KEEP 1u
 
 #define RP_GFX_STATE 0x10000057u
+/* A two-texture state block (Half-Life kit 112): RP_GFX_STATE2, then TSP
+ * (bit 16 set, bits 19-17 2), ISP, unit 0's TEX0-2, unit 1's TEX0-2, the
+ * clip word and 0; both textures wholly inside the texture memory. Strips
+ * and fans after it have RP_GFX_UNIT1_WORDS more words a corner (u1, v1). */
+#define RP_GFX_STATE2 0x1000005Fu
+#define RP_GFX_UNIT1_WORDS 2
 #define RP_GFX_STRIP(n) (0x40000000u | (uint32_t)(n)) /* 3 to 255 corners */
 #define RP_GFX_FAN(n) (0x50000000u | (uint32_t)(n))   /* 3 to 255 corners */
 #define RP_GFX_CORNER_WORDS 7

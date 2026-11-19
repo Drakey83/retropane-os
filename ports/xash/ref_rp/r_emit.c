@@ -1838,6 +1838,102 @@ A world face (corners as RP_ChipFaceFixed made them) by option B: the
 texture's pass into the frame, the lightmap's into the second pass's
 buffer. 0: not this face (it goes the lit surface's way).
 */
+/* kit 112: one pass unless -rplm2pass, read once; the state the two-unit blocks leave (any
+   one-unit draw after them sends its own block again) */
+static rp_tex_t rp_lm1_mark;
+/* Unit 1's MODULATE for 16-bit colour textures, read from Dell's combine
+   table (libGLES_CL.dll 0x0225D3A0 + 100, kind 1, mode 0): unit 0's
+   0x86086610 with bits 27 and 11; run 224 without bit 27 drew unit 1's
+   texture alone (the previous unit's colour not taken) */
+#define RP_TEX2_UNIT1 0x8E086E10u
+
+static __attribute__(( noinline )) int RP_Lm1PassRead( void )
+{
+	/* kit 112: one pass by default (runs 222-225); -rplm2pass the control */
+	return gEngfuncs.Sys_CheckParm( "-rplm2pass" ) ? 0 : 1;
+}
+
+static inline int RP_Lm1Pass( void )
+{
+	static int on = -1;
+
+	if( on < 0 )
+		on = RP_Lm1PassRead( );
+	return on;
+}
+
+/* kit 112's one-pass face (out of the SRAM's hot code while it is tried) */
+static __attribute__(( noinline )) int RP_ChipFaceLm1( int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st,
+	const rp_tex_t *t, int pg, int qx, int qy, int32_t ks, int32_t kt, int64_t iw, int64_t ih )
+{
+	int lo, hi;
+
+	/*
+	Kit 112 (the default, `-rplm2pass` the control; the owner: "Yes, go
+	after it"): the face in
+	ONE pass, its texture on unit 0 times its lightmap on the 2700G's
+	second texture unit, as Dell's GLES driver builds a two-unit draw
+	(the state block's mask bit 3, TSP bit 16 and 2 coordinate sets in
+	bits 19-17, unit 1's MODULATE from his combine table). Run 221: the
+	second pass is the cascade's limit (35.0 / 30.5 fps without it).
+	Test M hung the chip this way under our own register table; the
+	runner runs Dell's full table and it draws (run 222, no hang). Run
+	225: 101 of 307,200 pixels from the two passes' picture, cascade
+	31.6 / 29.7 fps against 29.8 / 28.8.
+	*/
+	static const rp_tex_t *last_t;
+	static int             last_pg = -1;
+
+	if( rp_state != &rp_lm1_mark || last_t != t || last_pg != pg )
+	{
+		rp_state = &rp_lm1_mark;
+		last_t = t;
+		last_pg = pg;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE2 );
+		RP_Put(( RP_TSP_WORLD & ~0x000F0000u ) | 1u << 16 | 2u << 17 );
+		RP_Put( RP_ISP_ALWAYS );
+		RP_Put( t->tex0 );
+		RP_Put( t->tex1 );
+		RP_Put( RP_TEX2 );
+		RP_Put( RP_TEX0_PAGE );
+		RP_Put( RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+		RP_Put( RP_TEX2_UNIT1 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_Whole();
+	}
+	RP_Put( RP_GFX_STRIP( n ) | rp_noz );
+	lo = 1;
+	hi = n - 1;
+	for( int k = 0; k < n; k++ )
+	{
+		int      c = k == 0 ? 0 : ( k & 1 ) ? lo++ : hi--;
+		uint32_t fx = RP_FixBits( cxy[c][0], 4 ), fy = RP_FixBits( cxy[c][1], 4 );
+		int32_t  u = (int32_t)(( (int64_t)( st[c][0] + ks ) * iw ) >> 16 );
+		int32_t  v = (int32_t)(( (int64_t)( st[c][1] + kt ) * ih ) >> 16 );
+		int32_t  lu = ( qx << 11 ) + ( st[c][0] >> 4 ) + 128;
+		int32_t  lv = ( qy << 11 ) + ( st[c][1] >> 4 ) + 128;
+
+		RP_Put( fx );
+		RP_Put( fy );
+		if( !rp_noz ) RP_Put( zis[c] );
+		RP_Put( zis[c] );
+		RP_Put( 0xFFFFFFFFu );
+		RP_Put( RP_FixBits( u, 16 ));
+		RP_Put( RP_FixBits( v, 16 ));
+		RP_Put( RP_FixBits( lu, 8 + 9 ));
+		RP_Put( RP_FixBits( lv, 8 + 9 ));
+	}
+	RP_Whole();
+	rp_count.faces++;
+	rp_count.fixed++;
+	rp_count.lm_faces++;
+	rp_count.tris += n - 2;
+	rp_count.verts += n;
+	return 1;
+}
+
 static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st )
 {
 	texture_t *tt;
@@ -1897,6 +1993,8 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 	iw = ( (int64_t)1 << 24 ) / tw; /* (24.8 texels x 2^24 / w) >> 16: the repeat as 16.16 */
 	ih = ( (int64_t)1 << 24 ) / th;
 
+	if( RP_Lm1Pass( ))
+		return RP_ChipFaceLm1( n, zis, cxy, st, t, pg, qx, qy, ks, kt, iw, ih );
 	if( rp_state != t )
 	{
 		rp_state = t;
