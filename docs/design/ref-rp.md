@@ -1418,6 +1418,26 @@ lever left there worth measuring. What it means: the exact levers on the
 storm come to ~1 ms; its 30 needs ~13 ms more, the owner's rulings (the
 undrawn pieces' physics at a lower rate, fewer debris sounds at once).
 
+**The storm's two look and sound options (the owner: "Yes, try both"), off
+by default.** `-rpdebrishalf`: a debris piece the renderer did not draw the
+last frame (past the nearest 35 or out of view) is moved by the game every
+second frame with both frames' time in one step (pieces grouped by their
+time since the last move, one client call a group; drawn pieces, sprites
+and anything with a callback every frame); the drawn set is kept in the
+engine (cl_tent.c), filled by r_main.c `RP_DebrisCap`. `-rpdebrissoundsN`:
+at most N debris bounce sounds at once, the nearest kept (s_main.c
+`RP_TentSoundRoom`). `-rpdebrisbothN`: both in one word (run 205's first
+try had 32 words and the runner refused it at start: the owner saw its
+failure screen; not a crash of the game). Runs 203-206 (calm / heavy):
+storm half 23.0 / 23.1, sounds 8 22.5 / 22.8, both **23.3 / 23.6** (kit
+109: 22.1 / 22.2); the cascade with both 29.8 / 28.7 (no gain: few pieces
+held). Run 205's samples: `RP_TentUpdateHalf` itself ~1 ms a frame (the
+tent index search and the drawn-set probe for 500 pieces). What it means:
+these two buy ~2.6 ms on the storm, not the ~5-7 estimated; 30 there
+needs ~10 ms more than all levers found so far. The storm is the engine's
+500-piece ceiling; the game's own cascade peaks at ~106 pieces, where the
+heavy half is at 28.8.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

@@ -110,7 +110,7 @@ index 39e4f9c..bbb2eaf 100644
  	Cmd_AddCommand ("fullupdate", NULL, "re-init HUD on start demo recording" );
  	Cmd_AddCommand ("give", NULL, "give specified item or weapon" );
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
-index 95c85f7..03190a3 100644
+index 95c85f7..5c45d8a 100644
 --- a/engine/client/cl_tent.c
 +++ b/engine/client/cl_tent.c
 @@ -37,7 +37,20 @@ TEMPENTS MANAGEMENT
@@ -135,7 +135,7 @@ index 95c85f7..03190a3 100644
  
  static model_t *cl_sprite_muzzleflash[MAX_MUZZLEFLASH];	// muzzle flashes
  static model_t *cl_sprite_ricochet = NULL;
-@@ -178,17 +191,47 @@ static void CL_ClearTempEnts( void )
+@@ -178,17 +191,86 @@ static void CL_ClearTempEnts( void )
  {
  	if( !cl_tempents ) return;
  
@@ -186,10 +186,49 @@ index 95c85f7..03190a3 100644
 +	return 0;
 +}
 +
++#if defined( __retropane__ )
++/* -rpdebrishalf: each piece's last move (cl.time), 0 when it is new */
++static double rp_tent_last[RP_TENT_CHUNK * RP_TENT_CHUNKS];
++unsigned rp_tent_sound_counts[2]; /* debris sounds played, skipped (-rpdebrissoundsN) */
++
++/* -rpdebrishalf (the ref fills it, r_main.c RP_DebrisCap): the debris pieces drawn the last frame, a hash
++   by entity with the frame's stamp; every piece counts as drawn while the
++   cap is off (-rpdebrisall) */
++unsigned rp_drawn_stamp = 1;
++int      rp_drawn_cap_off;
++static struct { const cl_entity_t *e; unsigned stamp; } rp_drawn[1024];
++
++int RP_DebrisDrawn( const cl_entity_t *e )
++{
++	if( rp_drawn_cap_off )
++		return 1;
++	for( uint h = ((uintptr_t)e >> 4 ) & 1023, k = 0; k < 1024; k++, h = ( h + 1 ) & 1023 )
++	{
++		if( rp_drawn[h].stamp != rp_drawn_stamp )
++			return 0;
++		if( rp_drawn[h].e == e )
++			return 1;
++	}
++	return 0;
++}
++
++void RP_DrawnAdd( const cl_entity_t *e )
++{
++	for( uint h = ((uintptr_t)e >> 4 ) & 1023, k = 0; k < 1024; k++, h = ( h + 1 ) & 1023 )
++		if( rp_drawn[h].stamp != rp_drawn_stamp || rp_drawn[h].e == e )
++		{
++			rp_drawn[h].e = e;
++			rp_drawn[h].stamp = rp_drawn_stamp;
++			return;
++		}
++}
++
++#endif
++
  /*
  ================
  CL_InitTempents
-@@ -197,7 +240,10 @@ CL_InitTempents
+@@ -197,7 +279,10 @@ CL_InitTempents
  */
  void CL_InitTempEnts( void )
  {
@@ -201,7 +240,7 @@ index 95c85f7..03190a3 100644
  	CL_ClearTempEnts();
  
  	// load tempent sprites (glowshell, muzzleflashes etc)
-@@ -212,8 +258,10 @@ CL_FreeTempEnts
+@@ -212,8 +297,10 @@ CL_FreeTempEnts
  */
  void CL_FreeTempEnts( void )
  {
@@ -214,18 +253,172 @@ index 95c85f7..03190a3 100644
  	cl_tempents = NULL;
  }
  
-@@ -338,7 +386,7 @@ static void CL_TempEntPlaySound( TEMPENTITY *pTemp, float damp )
+@@ -226,6 +313,9 @@ set default values
+ */
+ static void CL_PrepareTEnt( TEMPENTITY *pTemp, model_t *pmodel )
+ {
++#if defined( __retropane__ )
++	rp_tent_last[CL_TentIndex( pTemp )] = 0.0; // a new piece: one frame's step first (-rpdebrishalf)
++#endif
+ 	int	frameCount = 0;
+ 	int	modelIndex = 0;
+ 	int	modelHandle = pTemp->entity.trivial_accept;
+@@ -338,7 +428,39 @@ static void CL_TempEntPlaySound( TEMPENTITY *pTemp, float damp )
  		else pitch = PITCH_NORM;
  
  		sound_t handle = S_RegisterSound( soundname );
 -		S_StartSound( pTemp->entity.origin, -(pTemp - cl_tempents), CHAN_BODY, handle, fvol, ATTN_NORM, pitch, SND_STOP_LOOPING );
++#if defined( __retropane__ )
++		{
++			/* -rpdebrissoundsN: at most N debris sounds at once, the nearest
++			   kept (s_main.c RP_TentSoundRoom) */
++			extern int RP_TentSoundRoom( const vec3_t org, int cap );
++			static int cap = -2;
++
++			if( cap == -2 )
++			{
++				cap = -1;
++				for( int k = 1; k <= 60; k++ )
++				{
++					char w[24];
++
++					Q_snprintf( w, sizeof( w ), "-rpdebrissounds%d", k );
++					if( Sys_CheckParm( w ))
++						cap = k;
++					/* -rpdebrisbothN: this and -rpdebrishalf in one word (the
++					   runner's command line holds 31; run 205 had 32) */
++					Q_snprintf( w, sizeof( w ), "-rpdebrisboth%d", k );
++					if( Sys_CheckParm( w ))
++						cap = k;
++				}
++			}
++			if( cap > 0 && !RP_TentSoundRoom( pTemp->entity.origin, cap ))
++			{
++				rp_tent_sound_counts[1]++;
++				return;
++			}
++			rp_tent_sound_counts[0]++;
++		}
++#endif
 +		S_StartSound( pTemp->entity.origin, -CL_TentIndex( pTemp ), CHAN_BODY, handle, fvol, ATTN_NORM, pitch, SND_STOP_LOOPING );
  	}
  }
  
-@@ -392,6 +440,14 @@ void CL_TempEntUpdate( void )
+@@ -386,12 +508,126 @@ temp-entities will be added on a user-side
+ setup client callback
+ ==============
+ */
++#if defined( __retropane__ )
++/*
++RetroPane (the owner, 2026-11-18: "Yes, try both"; off unless
++`-rpdebrishalf`): a debris piece the renderer did not draw last frame (past
++the 35 nearest, or out of view: r_main.c RP_DebrisDrawn) is moved by the
++game every second frame, with the two frames' time in one step; drawn
++pieces, sprites and anything with a callback every frame as before. Vendor
++(GoldSrc, Xash): every temporary entity moved and traced every frame.
++Modern engines step far or unseen physics at a lower rate (LOD physics).
++Ours: half rate only for what nobody sees; a piece seen again is moved
++every frame from its next frame on. The pieces are split by the time since
++their last move (one client call each), so each moves by its own elapsed
++time; half of the unseen ones a frame (by their index), so the work is
++spread evenly.
++*/
++unsigned rp_tent_half_counts[2];  /* pieces moved, pieces held this frame (-rpdebrishalf) */
++
++static qboolean RP_TentHalfOk( const TEMPENTITY *t )
++{
++	return t->entity.model && t->entity.model->type == mod_studio && !t->hitcallback && !t->callback
++		&& !FBitSet( t->flags, FTENT_PLYRATTACHMENT | FTENT_CLIENTCUSTOM | FTENT_NOMODEL ) && !RP_DebrisDrawn( &t->entity );
++}
++/* -rpdebrishalf's update (out of the SRAM's hot code: a call from CL_TempEntUpdate) */
++static __attribute__(( noinline )) void RP_TentUpdateHalf( float gravity )
++{
++	static unsigned frame;
++
++	/* up to four groups by elapsed time; the held pieces kept aside */
++	TEMPENTITY *grp[4] = { 0 }, *tail[4] = { 0 }, *held = NULL, *heldtail = NULL;
++	double      el[4];
++	int         ng = 0;
++
++	frame++;
++	for( TEMPENTITY *t = cl_active_tents, *next; t; t = next )
++	{
++		int idx = CL_TentIndex( t ), g;
++		double e;
++
++		next = t->next;
++		t->next = NULL;
++		if( rp_tent_last[idx] <= 0.0 || rp_tent_last[idx] > cl.time )
++			rp_tent_last[idx] = cl.oldtime; /* new: one frame's step */
++		if( RP_TentHalfOk( t ) && (( frame + (unsigned)idx ) & 1 ) && rp_tent_last[idx] >= cl.oldtime )
++		{
++			/* held: not seen, its turn next frame */
++			if( heldtail ) heldtail->next = t; else held = t;
++			heldtail = t;
++			rp_tent_half_counts[1]++;
++			continue;
++		}
++		e = cl.time - rp_tent_last[idx];
++		for( g = 0; g < ng && memcmp( &el[g], &e, sizeof( e )); g++ );
++		if( g == ng )
++		{
++			if( ng == 4 )
++				g = 0, e = el[0]; /* never: a fifth step joins the first */
++			else
++				el[ng++] = e;
++		}
++		if( tail[g] ) tail[g]->next = t; else grp[g] = t;
++		tail[g] = t;
++		rp_tent_last[idx] = cl.time;
++		rp_tent_half_counts[0]++;
++	}
++	for( int g = 0; g < ng; g++ )
++		clgame.dllFuncs.pfnTempEntUpdate( el[g], cl.time, gravity, &cl_free_tents, &grp[g], CL_TempEntAddEntity, CL_TempEntPlaySound );
++	/* the held pieces stay in the draw list where they are */
++	for( TEMPENTITY *t = held; t; t = t->next )
++		if( !FBitSet( t->flags, FTENT_NOMODEL ))
++			CL_TempEntAddEntity( &t->entity );
++	/* one list again: the groups (dead ones gone to the free list), then the held */
++	cl_active_tents = NULL;
++	{
++		TEMPENTITY **link = &cl_active_tents;
++
++		for( int g = 0; g < ng; g++ )
++		{
++			*link = grp[g];
++			while( *link )
++				link = &( *link )->next;
++		}
++		*link = held;
++	}
++}
++#endif
++
+ void CL_TempEntUpdate( void )
+ {
+ 	double	ft = cl.time - cl.oldtime;
  	float	gravity = clgame.movevars.gravity;
  
++#if defined( __retropane__ )
++	static int half = -1;
++
++	if( half < 0 )
++	{
++		half = Sys_CheckParm( "-rpdebrishalf" ) ? 1 : 0;
++		for( int k = 1; k <= 60 && !half; k++ )
++		{
++			char w[24];
++
++			Q_snprintf( w, sizeof( w ), "-rpdebrisboth%d", k );
++			half = Sys_CheckParm( w ) ? 1 : 0;
++		}
++	}
++	if( half )
++	{
++		RP_TentUpdateHalf( gravity );
++		return;
++	}
++#endif
  	clgame.dllFuncs.pfnTempEntUpdate( ft, cl.time, gravity, &cl_free_tents, &cl_active_tents, CL_TempEntAddEntity, CL_TempEntPlaySound );
 +#if defined( __retropane__ )
 +	{
@@ -238,7 +431,7 @@ index 95c85f7..03190a3 100644
  }
  
  /*
-@@ -440,7 +496,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
+@@ -440,7 +676,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
  	static float cl_lasttimewarn;
  	TEMPENTITY	*pTemp;
  
@@ -247,7 +440,7 @@ index 95c85f7..03190a3 100644
  	{
  		if( cl_lasttimewarn < host.realtime )
  		{
-@@ -475,14 +531,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
+@@ -475,14 +711,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
  {
  	TEMPENTITY	*pTemp;
  
@@ -264,7 +457,7 @@ index 95c85f7..03190a3 100644
  	{
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
-@@ -2431,6 +2487,13 @@ DLIGHT MANAGEMENT
+@@ -2431,6 +2667,13 @@ DLIGHT MANAGEMENT
  */
  static dlight_t cl_dlights[MAX_DLIGHTS];
  static dlight_t cl_elights[MAX_ELIGHTS];
@@ -278,7 +471,7 @@ index 95c85f7..03190a3 100644
  
  /*
  ================
-@@ -2439,6 +2502,7 @@ CL_ClearDlights
+@@ -2439,6 +2682,7 @@ CL_ClearDlights
  */
  static void CL_ClearDlights( void )
  {
@@ -286,7 +479,7 @@ index 95c85f7..03190a3 100644
  	memset( cl_dlights, 0, sizeof( cl_dlights ));
  	memset( cl_elights, 0, sizeof( cl_elights ));
  }
-@@ -2454,6 +2518,8 @@ dlight_t *CL_AllocDlight( int key )
+@@ -2454,6 +2698,8 @@ dlight_t *CL_AllocDlight( int key )
  	dlight_t	*dl;
  	int	i;
  
@@ -295,7 +488,7 @@ index 95c85f7..03190a3 100644
  	// first look for an exact key match
  	if( key )
  	{
-@@ -2499,6 +2565,8 @@ dlight_t *CL_AllocElight( int key )
+@@ -2499,6 +2745,8 @@ dlight_t *CL_AllocElight( int key )
  	dlight_t	*dl;
  	int	i;
  
@@ -304,7 +497,7 @@ index 95c85f7..03190a3 100644
  	// first look for an exact key match
  	if( key )
  	{
-@@ -2541,6 +2609,7 @@ CL_DecayLights
+@@ -2541,6 +2789,7 @@ CL_DecayLights
  */
  void CL_DecayLights( void )
  {
@@ -312,7 +505,7 @@ index 95c85f7..03190a3 100644
  	const float time = cl.time;
  	const float dt = cl.time - cl.oldtime;
  
-@@ -2839,6 +2908,7 @@ void CL_TestLights( void )
+@@ -2839,6 +3088,7 @@ void CL_TestLights( void )
  
  	int numLights = bound( 1, cl_testlights.value, MAX_DLIGHTS );
  	AngleVectors( cl.viewangles, forward, right, NULL );
@@ -320,7 +513,7 @@ index 95c85f7..03190a3 100644
  
  	for( int i = 0; i < numLights; i++ )
  	{
-@@ -3054,6 +3124,10 @@ void CL_ClearStaticEntities( void )
+@@ -3054,6 +3304,10 @@ void CL_ClearStaticEntities( void )
  	// clear out efrags in case the level hasn't been reloaded
  	for( int i = 0; i < cl.worldmodel->numleafs; i++ )
  		cl.worldmodel->leafs[i+1].efrags = NULL;
@@ -497,10 +690,63 @@ index 4a8e2c5..91398ed 100644
  	sxmod1cur = sxmod1 = 350 * ( idsp_dma_speed / SOUND_11k );
  	sxmod2cur = sxmod2 = 450 * ( idsp_dma_speed / SOUND_11k );
 diff --git a/engine/client/sound/s_main.c b/engine/client/sound/s_main.c
-index 2cd7030..7f02b39 100644
+index 2cd7030..00d288b 100644
 --- a/engine/client/sound/s_main.c
 +++ b/engine/client/sound/s_main.c
-@@ -1236,7 +1236,8 @@ uint S_RawSamplesStereo( portable_samplepair_t *rawsamples, uint rawend, uint ma
+@@ -411,6 +411,52 @@ channel_t *SND_PickDynamicChannel( int entnum, int channel, sfx_t *sfx, qboolean
+ 	return &snd.channels[first_to_die];
+ }
+ 
++#if defined( __retropane__ )
++/*
++RetroPane (the owner, 2026-11-18: "Yes, try both"; off unless
++`-rpdebrissoundsN`): at most N debris bounce sounds at once (a temporary
++entity's: entnum < 0), the nearest the listener kept. Vendor (GoldSrc,
++Xash): every bounce takes a dynamic channel (60 here) while one is free or
++nearly done. Modern engines (voice limits by group, nearest first) cap
++sounds of one kind. Ours: the cap on debris only, by distance; the
++world's, the monsters' and the player's sounds untouched. 1: play it (a
++farther debris sound stopped if the cap is full), 0: skip it.
++*/
++int RP_TentSoundRoom( const vec3_t org, int cap )
++{
++	int   n = 0, far = -1;
++	float fd = -1.0f, d;
++	vec3_t v;
++
++	VectorSubtract( org, snd.origin, v );
++	d = DotProduct( v, v );
++	for( int i = NUM_AMBIENTS; i < MAX_DYNAMIC_CHANNELS; i++ )
++	{
++		channel_t *ch = &snd.channels[i];
++		float      dd;
++
++		if( !ch->sfx || ch->entnum >= 0 )
++			continue;
++		n++;
++		VectorSubtract( ch->origin, snd.origin, v );
++		dd = DotProduct( v, v );
++		if( dd > fd )
++		{
++			fd = dd;
++			far = i;
++		}
++	}
++	if( n < cap )
++		return 1;
++	if( far >= 0 && d < fd )
++	{
++		S_FreeChannel( &snd.channels[far] );
++		return 1;
++	}
++	return 0;
++}
++#endif
++
+ /*
+ =====================
+ SND_PickStaticChannel
+@@ -1236,7 +1282,8 @@ uint S_RawSamplesStereo( portable_samplepair_t *rawsamples, uint rawend, uint ma
  	if( rawend < snd.paintedtime )
  		rawend = snd.paintedtime;
  
@@ -510,7 +756,7 @@ index 2cd7030..7f02b39 100644
  	uint samplefrac = 0;
  
  	if( width == 2 )
-@@ -1337,7 +1338,7 @@ static void S_FreeIdleRawChannels( void )
+@@ -1337,7 +1384,7 @@ static void S_FreeIdleRawChannels( void )
  				Voice_StopChannel( ch->entnum );
  		}
  
@@ -519,7 +765,7 @@ index 2cd7030..7f02b39 100644
  		{
  			snd.raw_channels[i] = NULL;
  			Mem_Free( ch );
-@@ -1549,7 +1550,7 @@ static void S_UpdateChannels( void )
+@@ -1549,7 +1596,7 @@ static void S_UpdateChannels( void )
  	// soundtime - total samples that have been played out to hardware at dmaspeed
  	// paintedtime - total samples that have been mixed at speed
  	// endtime - target for samples in mixahead buffer at speed
@@ -5032,7 +5278,7 @@ index 1a7efd6..49158b8 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..52938e1 100644
+index 2c644f6..0b39bdc 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
@@ -5122,7 +5368,7 @@ index 2c644f6..52938e1 100644
  		qsort( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities, sizeof( cl_entity_t * ), (void *)R_TransEntityCompare );
  	}
  
-@@ -501,6 +574,184 @@ static void R_SetupFrame( void )
+@@ -501,6 +574,207 @@ static void R_SetupFrame( void )
  R_DrawEntitiesOnList
  =============
  */
@@ -5164,6 +5410,12 @@ index 2c644f6..52938e1 100644
 +	}
 +	return 0;
 +}
++
++/* -rpdebrishalf: the drawn set lives in the engine (cl_tent.c), which the
++   ref can call and not the other way round */
++extern unsigned rp_drawn_stamp;
++extern int      rp_drawn_cap_off;
++void            RP_DrawnAdd( const cl_entity_t *e );
 +
 +static void RP_FarAdd( const cl_entity_t *e )
 +{
@@ -5218,7 +5470,10 @@ index 2c644f6..52938e1 100644
 +		}
 +	}
 +	if( rp_debris_cap < 0 )
++	{
++		rp_drawn_cap_off = 1; /* -rpdebrisall: every piece counts as drawn */
 +		return;
++	}
 +	if( ++rp_far_stamp == 0 )
 +		rp_far_stamp = 1; /* a new frame's far set: the old entries are stale */
 +	for( int l = 0; l < 2; l++ )
@@ -5237,8 +5492,21 @@ index 2c644f6..52938e1 100644
 +			}
 +		}
 +	rp_debris_counts[0] += n;
++	rp_drawn_cap_off = 0;
++	if( ++rp_drawn_stamp == 0 )
++		rp_drawn_stamp = 1; /* this frame's drawn set */
 +	if( n <= rp_debris_cap )
++	{
++		for( int l = 0; l < 2; l++ )
++			for( uint i = 0; i < *counts[l]; i++ )
++			{
++				const cl_entity_t *e = lists[l][i];
++
++				if( e && !e->index && e->model && e->model->type == mod_studio )
++					RP_DrawnAdd( e );
++			}
 +		return;
++	}
 +	/* the cap-th nearest distance: Hoare's quickselect over the bits
 +	   (linear on average; the old selection was cap x n) */
 +	if( rp_debris_cap == 0 )
@@ -5296,6 +5564,7 @@ index 2c644f6..52938e1 100644
 +					continue;
 +				}
 +				kept_near++;
++				RP_DrawnAdd( e );
 +			}
 +			lists[l][kept++] = e;
 +		}
@@ -5307,7 +5576,7 @@ index 2c644f6..52938e1 100644
  static void R_DrawEntitiesOnList( void )
  {
  	// extern int d_aflatcolor;
-@@ -510,6 +761,22 @@ static void R_DrawEntitiesOnList( void )
+@@ -510,6 +784,22 @@ static void R_DrawEntitiesOnList( void )
  	// RI.currententity = CL_GetEntityByIndex(0);
  	d_pdrawspans = R_PolysetFillSpans8;
  	GL_SetRenderMode( kRenderNormal );
@@ -5330,7 +5599,7 @@ index 2c644f6..52938e1 100644
  	// first draw solid entities
  	for( int i = 0; i < tr.draw_list->num_solid_entities && !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ); i++ )
  	{
-@@ -959,7 +1226,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
+@@ -959,7 +1249,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
  
  
  	insubmodel = false;
@@ -5340,7 +5609,7 @@ index 2c644f6..52938e1 100644
  	alphaspans = false;
  }
  
-@@ -1010,7 +1278,8 @@ static void R_EdgeDrawing( void )
+@@ -1010,7 +1301,8 @@ static void R_EdgeDrawing( void )
  	R_DrawBEntitiesOnList();
  
  	// display all edges
@@ -5350,7 +5619,7 @@ index 2c644f6..52938e1 100644
  }
  
  /*
-@@ -1113,6 +1382,9 @@ R_BeginFrame
+@@ -1113,6 +1405,9 @@ R_BeginFrame
  */
  void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
@@ -5360,7 +5629,7 @@ index 2c644f6..52938e1 100644
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1496,8 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1519,8 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -5369,7 +5638,7 @@ index 2c644f6..52938e1 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1644,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1667,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  

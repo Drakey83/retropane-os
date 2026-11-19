@@ -282,6 +282,17 @@ static void RP_EmitReport( void )
 					rp_trace_counts[0] / f, rp_trace_counts[1] / f, rp_trace_nnodes ? "on" : "off: no cooked map", 10 );
 				rp_trace_counts[0] = rp_trace_counts[1] = 0;
 			}
+			{
+				/* the owner's "Yes, try both": -rpdebrishalf, -rpdebrissoundsN */
+				extern unsigned rp_tent_half_counts[2], rp_tent_sound_counts[2];
+
+				if( rp_tent_half_counts[1] )
+					fprintf( stderr, "rp-emit: -rpdebrishalf: pieces moved %u a frame, held %u%c", rp_tent_half_counts[0] / f, rp_tent_half_counts[1] / f, 10 );
+				if( rp_tent_sound_counts[0] || rp_tent_sound_counts[1] )
+					fprintf( stderr, "rp-emit: debris sounds since the last report: %u played, %u skipped (-rpdebrissoundsN)%c", rp_tent_sound_counts[0], rp_tent_sound_counts[1], 10 );
+				rp_tent_half_counts[0] = rp_tent_half_counts[1] = 0;
+				rp_tent_sound_counts[0] = rp_tent_sound_counts[1] = 0;
+			}
 		}
 				rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
 	}
