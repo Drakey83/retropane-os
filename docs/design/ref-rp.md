@@ -1400,6 +1400,24 @@ samples): the pieces' collision traces (~5 ms, `PM_RecursiveHullCheck`
 and its float dots), the bounce sounds' mix (~3 ms), the client's
 per-piece update (~1-2 ms).
 
+**Kit 109, the exact levers for the storm (the owner: "go ahead, do the
+exact ones").** The engine's point traces (hull 0, the BSP's own nodes by
+number) decide a sloped plane's side by a 64-bit integer dot against kit
+103's cooked planes (normal 2.30, distance 16.16), the float code only
+within 1/32 unit of the plane (the float dot's rounding is at most ~0.0102
+units for coordinates under 32,768); vendor: a float dot every node, a
+software call here. Checked on the PC: 300,000 points against c2a5f's
+sloped planes, half within 0.2 units, 276,591 decided by the integers, 0
+disagreed with C's floats. A table engine node -> cooked plane (2 bytes a
+node) made on each cook or read, forgotten at every world load. Runs
+200-202: storm **22.1 / 22.2** (kit 108 21.8 / 21.9; ~2,100 of ~2,250
+sloped nodes a frame settled by the integers), cascade 29.8 / 28.8 (end
+picture byte for byte run 194's), fight 22.1 / 24.2. The mixer already
+skips sounds too quiet to hear and its inner loop is kit 68's: no exact
+lever left there worth measuring. What it means: the exact levers on the
+storm come to ~1 ms; its 30 needs ~13 ms more, the owner's rulings (the
+undrawn pieces' physics at a lower rate, fewer debris sounds at once).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
