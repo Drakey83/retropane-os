@@ -1516,6 +1516,10 @@ passes' (run 218); cascade **31.6 / 29.8** (kit 111 29.8 / 28.7), storm
 24.7 / 24.9 (24.1 / 24.3), fight 22.2 / 24.6 (22.0 / 24.2). The calm half
 still waits 4.8 ms a frame for the render: more of the chip's time to
 find.
+Runs 230 and 231 (2026-11-19, the owner watching): cascade 31.6 / 29.7
+both times, the end picture 7 pixels from run 225's; the owner: "Looked
+fine". (Run 229 was built on c1a0 by mistake: the cascade's camera stood
+outside that level, a black screen but for the HUD; not the drawing.)
 
 ## What ref_rp is
 
