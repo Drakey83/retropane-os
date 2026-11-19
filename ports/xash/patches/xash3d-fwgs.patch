@@ -732,6 +732,26 @@ index 8d471f1..d42a3fc 100644
  qboolean LZSS_IsCompressed( const byte *source, size_t input_len );
  uint LZSS_GetActualSize( const byte *source, size_t input_len );
  byte *LZSS_Compress( byte *pInput, int inputLength, uint *pOutputSize );
+diff --git a/engine/common/mod_bmodel.c b/engine/common/mod_bmodel.c
+index d1fe48e..2814ab0 100644
+--- a/engine/common/mod_bmodel.c
++++ b/engine/common/mod_bmodel.c
+@@ -4283,6 +4283,15 @@ static qboolean Mod_LoadBmodelLumps( model_t *mod, byte *mod_base, size_t buffer
+ 	Mod_LoadClipnodes( mod, bmod );
+ 
+ 	// preform some post-initalization
++	if( isworld )
++	{
++		// RetroPane kit 109: pm_trace.c's integer planes are for the last
++		// world: forgotten before this one's nodes exist (the ref fills them
++		// again when it cooks or reads this map)
++		extern void RP_TraceForget( void );
++
++		RP_TraceForget( );
++	}
+ 	Mod_MakeHull0( mod, bmod );
+ 	Mod_SetupSubmodels( mod, bmod );
+ 
 diff --git a/engine/common/net_buffer.c b/engine/common/net_buffer.c
 index 287ef3b..ca5d8dd 100644
 --- a/engine/common/net_buffer.c
@@ -912,10 +932,10 @@ index 64bc35e..1310e76 100644
  			numChanges++;
  	}
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
-index b1e8e57..831831d 100644
+index b1e8e57..4404a97 100644
 --- a/engine/common/pm_trace.c
 +++ b/engine/common/pm_trace.c
-@@ -102,6 +102,77 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
+@@ -102,6 +102,192 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
  	return &pm_boxhull;
  }
  
@@ -981,6 +1001,86 @@ index b1e8e57..831831d 100644
 +/* PlaneDiff's left side: the point's coordinate or its dot with the normal */
 +#define RP_PlaneLhs( point, plane ) ( (plane)->type < 3 ? (point)[(plane)->type] : DotProduct(( point ), (plane)->normal ))
 +
++/*
++RetroPane kit 109 (the owner: "go ahead, do the exact ones"; run 198, the
++500-piece storm: the point traces ~4.3 ms a frame, most of it the float dot
++of the world's sloped planes, two a node). The vendor way (GoldSrc, Xash):
++every node's side by a float dot product, a software call here. Ours: the
++world's point hull (hull 0) is the BSP's nodes with their numbers (Mod_MakeHull0),
++and kit 103's cooked map (ref_rp r_emit.c) holds each world node's plane in
++integers (normal 2.30, distance 16.16, rp_fixq's, toward zero); the side by
++a 64-bit integer dot of the point in 16.16, the float code only where the
++point is within 1/32 unit of the plane. Why exact: for |coordinates| < 32768
++the float dot's rounding is at most 3 x 2^-24 x 32768 x 1.74 ~ 0.0102 units,
++the integers' (the point's and the plane's truncation) under 0.0002, so
++outside the margin the integers and the floats give the same side; inside
++it the float code decides as before. The ref fills these on each cook or
++read of the world; a world load clears them first (mod_bmodel.c), so a
++table never meets another map's nodes.
++*/
++typedef struct { int32_t n[3], d, type; } rp_tplane_t;
++const void        *rp_trace_clip;   /* the world's hull 0 clipnodes the table is for */
++const uint16_t    *rp_trace_np;     /* engine node -> cooked plane, 0xFFFF none */
++const rp_tplane_t *rp_trace_pl;
++int                rp_trace_nnodes;
++unsigned           rp_trace_counts[2]; /* node sides by the integers, by the floats */
++
++void RP_TraceForget( void )
++{
++	rp_trace_clip = NULL;
++	rp_trace_np = NULL;
++	rp_trace_pl = NULL;
++	rp_trace_nnodes = 0;
++}
++
++/* the point in 16.16 when every |coordinate| < 32768 (exponent < 142), else 0 */
++static __attribute__(( noinline )) int RP_TracePoint( const float *p, int32_t q[3] )
++{
++	uint32_t u[3];
++
++	__builtin_memcpy( u, p, sizeof( u ));
++	__asm__( "" : "+r"( u[0] ), "+r"( u[1] ), "+r"( u[2] ));
++	for( int j = 0; j < 3; j++ )
++	{
++		uint32_t e = u[j] >> 23 & 0xFF;
++		int      sh = (int)e - 127 - 23 + 16;
++		uint32_t m;
++		int32_t  v;
++
++		if( e >= 142 )
++			return 0;
++		if( e == 0 || sh < -24 )
++		{
++			q[j] = 0; /* |p| < 2^-16: 0, within the margin */
++			continue;
++		}
++		m = ( u[j] & 0x007FFFFFu ) | 0x00800000u;
++		v = (int32_t)( sh >= 0 ? m << sh : m >> -sh );
++		q[j] = u[j] >> 31 ? -v : v;
++	}
++	return 1;
++}
++
++/* the side of node num's plane for a point in 16.16: 0 front (lhs >= dist),
++   1 back, -1 the integers can't say (the float code decides) */
++#define RP_TRACE_MARGIN ( (int64_t)1 << 41 ) /* 1/32 unit in 2^46 */
++static __attribute__(( noinline )) int RP_TraceSide( int num, const int32_t q[3] )
++{
++	uint32_t           np;
++	const rp_tplane_t *pl;
++	int64_t            v;
++
++	if( (unsigned)num >= (unsigned)rp_trace_nnodes || ( np = rp_trace_np[num] ) == 0xFFFFu )
++		return -1;
++	pl = &rp_trace_pl[np];
++	v = (int64_t)q[0] * pl->n[0] + (int64_t)q[1] * pl->n[1] + (int64_t)q[2] * pl->n[2] - ( (int64_t)pl->d << 30 );
++	if( v >= RP_TRACE_MARGIN )
++		return 0;
++	if( v <= -RP_TRACE_MARGIN )
++		return 1;
++	return -1;
++}
++
 +/* PlaneDiff( p, plane ) < 0, the subtraction only when the compare can't say */
 +static inline int RP_PlaneBack( const float *p, const mplane_t *plane )
 +{
@@ -990,10 +1090,57 @@ index b1e8e57..831831d 100644
 +	return side >= 0 ? side : RP_Lt0( lhs - plane->dist );
 +}
 +
++/* kit 109: PM_HullPointContents on the cooked integers (out of the SRAM's
++   hot code: a call from it), RP_TRACE_NOPOINT when the point is too far out */
++#define RP_TRACE_NOPOINT 0x7FFFFFFF
++static __attribute__(( noinline )) int RP_TraceContents( hull_t *hull, int num, const float *p )
++{
++	int32_t q[3];
++
++	if( !RP_TracePoint( p, q ))
++		return RP_TRACE_NOPOINT;
++	while( num >= 0 )
++	{
++		int side;
++
++		if( world.version == QBSP2_VERSION )
++		{
++			mplane_t *plane = &hull->planes[hull->clipnodes32[num].planenum];
++
++			side = plane->type < 3 ? -1 : RP_TraceSide( num, q );
++			if( side < 0 )
++				side = RP_PlaneBack( p, plane );
++			num = hull->clipnodes32[num].children[side];
++		}
++		else
++		{
++			mplane_t *plane = &hull->planes[hull->clipnodes16[num].planenum];
++
++			side = plane->type < 3 ? -1 : RP_TraceSide( num, q );
++			if( side < 0 )
++				side = RP_PlaneBack( p, plane );
++			num = hull->clipnodes16[num].children[side];
++		}
++	}
++	return num;
++}
++
  /*
  ==================
  PM_HullPointContents
-@@ -118,7 +189,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+@@ -113,12 +299,19 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+ 	if( !hull || !hull->planes )	// fantom bmodels?
+ 		return CONTENTS_NONE;
+ 
++	if( rp_trace_clip && ( hull->clipnodes16 == rp_trace_clip || hull->clipnodes32 == rp_trace_clip ))
++	{
++		int c = RP_TraceContents( hull, num, p );
++
++		if( c != RP_TRACE_NOPOINT )
++			return c;
++	}
+ 	if( world.version == QBSP2_VERSION )
+ 	{
  		while( num >= 0 )
  		{
  			mplane_t *plane = &hull->planes[hull->clipnodes32[num].planenum];
@@ -1002,7 +1149,7 @@ index b1e8e57..831831d 100644
  		}
  	}
  	else
-@@ -126,7 +197,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+@@ -126,7 +319,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
  		while( num >= 0 )
  		{
  			mplane_t *plane = &hull->planes[hull->clipnodes16[num].planenum];
@@ -1011,7 +1158,17 @@ index b1e8e57..831831d 100644
  		}
  	}
  	return num;
-@@ -239,23 +310,41 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+@@ -199,6 +392,9 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 	float		frac, midf;
+ 	int		side;
+ 	vec3_t		mid;
++	int32_t		q1[3], q2[3];
++	const int	rp_int = rp_trace_clip && ( hull->clipnodes16 == rp_trace_clip || hull->clipnodes32 == rp_trace_clip )
++		&& RP_TracePoint( p1, q1 ) && RP_TracePoint( p2, q2 );
+ loc0:
+ 	// check for empty
+ 	if( num < 0 )
+@@ -239,23 +435,56 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
  		plane = hull->planes + hull->clipnodes16[num].planenum;
  	}
  
@@ -1019,6 +1176,21 @@ index b1e8e57..831831d 100644
 -	t2 = PlaneDiff( p2, plane );
  
 -	if( t1 >= 0.0f && t2 >= 0.0f )
++	// RetroPane kit 109: a sloped plane's sides by the cooked integers
++	// (RP_TraceSide); a node they can't settle, or the line crosses, goes on
++	// to kit 61's floats below exactly as before
++	if( rp_int && plane->type >= 3 )
++	{
++		int a = RP_TraceSide( num, q1 ), b = a < 0 ? -1 : RP_TraceSide( num, q2 );
++
++		if( a >= 0 && a == b )
++		{
++			rp_trace_counts[0]++;
++			num = children[a];
++			goto loc0;
++		}
++		rp_trace_counts[1]++;
++	}
 +	// RetroPane (kit 61): the sides by compare first (RP_LtSide), the
 +	// differences only for a node the line crosses
 +	{
@@ -1058,7 +1230,7 @@ index b1e8e57..831831d 100644
  
  	if( side ) frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );
  	else frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );
-@@ -320,9 +409,23 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+@@ -320,9 +549,23 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
  	return false;
  }
  
@@ -1082,7 +1254,7 @@ index b1e8e57..831831d 100644
  
  	memset( &trace_total, 0, sizeof( trace_total ));
  	VectorCopy( end, trace_total.endpos );
-@@ -504,7 +607,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
+@@ -504,7 +747,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
  		if( trace_bbox.startsolid )
  			trace_bbox.fraction = 0.0f;
  

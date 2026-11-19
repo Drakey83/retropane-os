@@ -273,6 +273,15 @@ static void RP_EmitReport( void )
 						rp_probe_counts[0] / f, rp_probe_counts[1] / f, 10 );
 				rp_probe_counts[0] = rp_probe_counts[1] = 0;
 			}
+			{
+				/* kit 109: the traces' sloped nodes settled by the cooked integers */
+				extern unsigned rp_trace_counts[2];
+				extern int      rp_trace_nnodes;
+
+				fprintf( stderr, "rp-emit: kit 109's traces: %u sloped nodes a frame by the integers, %u by the floats (%s)%c",
+					rp_trace_counts[0] / f, rp_trace_counts[1] / f, rp_trace_nnodes ? "on" : "off: no cooked map", 10 );
+				rp_trace_counts[0] = rp_trace_counts[1] = 0;
+			}
 		}
 				rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
 	}
@@ -2126,8 +2135,44 @@ void RP_EmitWorldBuffer( const model_t *mod, const byte *buf, size_t len )
 		(uint32_t)( rp_time_us( ) - t0 ), (uint32_t)( len >> 10 ));
 }
 
+/*
+Kit 109: the engine's point traces (pm_trace.c RP_TraceSide) read the cooked
+planes for the world's hull 0, which is the BSP's nodes by number: a table
+engine node -> cooked plane (0xFFFF for nodes not in the world's tree, the
+brush entities'), 2 bytes a node, made on each cook or read.
+*/
+extern const void     *rp_trace_clip;
+extern const uint16_t *rp_trace_np;
+extern const void     *rp_trace_pl;
+extern int             rp_trace_nnodes;
+extern void            RP_TraceForget( void );
+static uint16_t       *rp_trace_table;
+
+static void RP_TraceTable( const model_t *mod )
+{
+	RP_TraceForget( );
+	free( rp_trace_table );
+	rp_trace_table = NULL;
+	if( !rp_ck_live || mod->numnodes <= 0 || ( !mod->hulls[0].clipnodes16 && !mod->hulls[0].clipnodes32 ))
+		return;
+	rp_trace_table = (uint16_t *)malloc( sizeof( uint16_t ) * (size_t)mod->numnodes );
+	if( !rp_trace_table )
+		return; /* the floats, as before */
+	memset( rp_trace_table, 0xFF, sizeof( uint16_t ) * (size_t)mod->numnodes );
+	for( int i = 0; i < rp_ck.nnodes; i++ )
+		if( rp_ck.nodes[i].orig < (uint32_t)mod->numnodes && rp_ck.nodes[i].plane < (uint32_t)rp_ck.nplanes )
+			rp_trace_table[rp_ck.nodes[i].orig] = rp_ck.nodes[i].plane;
+	rp_trace_np = rp_trace_table;
+	rp_trace_pl = rp_ck.planes;
+	rp_trace_nnodes = mod->numnodes;
+	rp_trace_clip = mod->hulls[0].clipnodes16 ? (const void *)mod->hulls[0].clipnodes16 : (const void *)mod->hulls[0].clipnodes32;
+}
+
 static void RP_CookFree( void )
 {
+	RP_TraceForget( ); /* the engine's traces stop reading the planes first */
+	free( rp_trace_table );
+	rp_trace_table = NULL;
 	free( rp_ck_block );
 	rp_ck_block = NULL;
 	rp_ck_live = 0;
@@ -2446,6 +2491,7 @@ static void RP_CookMake( const model_t *mod )
 	h.total = s.total;
 	rp_ck.serial = ++rp_ck_serial;
 	rp_ck_live = 1;
+	RP_TraceTable( mod ); /* kit 109: the engine's traces on the cooked planes */
 	fprintf( stderr, "rp-emit: the map cooked in %u us (%u of %d nodes, %u of %d planes; %u KiB kept in RAM)\n",
 		(uint32_t)( rp_time_us( ) - t0 ), h.nnodes, mod->numnodes, h.nplanes, mod->numplanes,
 		( s.planes + s.nodes + s.leafs + s.marks + s.faces + ( rp_ck.fbox ? s.fbox : 0 )) >> 10 );
@@ -2592,6 +2638,7 @@ static int RP_CookRead( const model_t *mod )
 	}
 	rp_ck.serial = ++rp_ck_serial;
 	rp_ck_live = 1;
+	RP_TraceTable( mod ); /* kit 109: the engine's traces on the cooked planes */
 	return 1;
 }
 
