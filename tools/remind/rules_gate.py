@@ -351,11 +351,18 @@ RELEASE_BRANCH = "refs/heads/retropane"
 RELEASE_TAG = re.compile(r"^(refs/tags/)?rp-v\d+\.\d+\.\d+$")
 
 
+REDIRECT = re.compile(r"(?<!\S)\d*(?:>&\d+|>>?\s*[^\s;&|]+|<\s*[^\s;&|]+)")
+
+
 def push_words(command):
     """The words after the command's push (to its end or the next `;`,
     `&` or `|`)."""
     m = PUSH.search(command)
-    rest = re.split(r"[;&|]", command[m.end():], maxsplit=1)[0]
+    # Redirections (`2>&1`, `> log`, `<in`) are the shell's, never a push's
+    # refspec: dropped before the cut at `&`, or `2>&1` left `2>` as a
+    # destination and refused a backup push (2026-11-19).
+    rest = REDIRECT.sub(" ", command[m.end():])
+    rest = re.split(r"[;&|]", rest, maxsplit=1)[0]
     return [w.strip("'\"") for w in rest.split()]
 
 
@@ -659,6 +666,9 @@ def self_test():
         (("a" * 40, True, ("a" * 40, "clean", "backup"), None), False),
         (("a" * 40, True, ("a" * 40, "clean"), ["main"]), True),
     ]
+    if push_dests(push_words("git push origin HEAD:backup/x 2>&1 | tail -4")) != ["backup/x"] or push_dests(push_words("git push origin fix/y > log.txt 2> err")) != ["fix/y"]:
+        bad += 1
+        print("WRONG push_words: a redirection read as a push destination")
     if push_dests(["origin", "HEAD:backup/x", "-u"]) != ["backup/x"] or push_dests(["origin", "fix/y"]) != ["fix/y"]:
         bad += 1
         print("WRONG push_dests")
