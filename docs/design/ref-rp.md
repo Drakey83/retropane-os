@@ -1458,6 +1458,24 @@ half (run 211, 8.1 ms): the pieces' collision traces ~2 ms (500 a frame,
 ~3 us each: the core physics), the bounce sounds' mix ~0.9, the game's
 per-piece update ~1.2 (the client's floats), the visibility tests ~0.5.
 
+**Kit 111 (the owner: "keep going on the storm").** Exact: the debris
+candidates ranked by whole-unit integer distances (the exact pick stays
+`RP_DebrisCap`'s); `-rpdebrishalf`'s per-piece facts kept in small arrays by
+pool number (what never changes in a piece's life asked once, the drawn
+mark a stamp, not a hash probe). Runs 215-218: storm with both switches
+25.5 / 26.0 (kit 110 25.4 / 25.9: the pieces' own record lines are the
+cost, ~3 KB a piece, not the bookkeeping's arithmetic), cascade 29.8 / 28.7
+(end picture byte for byte run 194's). Measured options, off:
+`-rpdebrisrate3sN` (unseen pieces every third frame, N debris sounds):
+storm 25.7 / 26.2; `-rptentsN` (at most N temporary entities alive, the
+engine's 500 otherwise; when full it frees its oldest low-priority one, as
+at 500): storm alone 26.0 / 26.5 at 250, 26.8 / 27.5 at 150 (runs
+219-220). What it means: at 150 the storm costs ~2.4 ms a frame over the
+cascade it runs on (mostly drawing the 35 nearest human gibs, bigger
+models than the cascade's debris), and **the storm cannot pass the
+cascade's own heavy half, 28.7**: the next lever for both is that heavy
+half itself.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
