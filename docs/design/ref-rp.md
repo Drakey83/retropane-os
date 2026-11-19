@@ -1742,6 +1742,21 @@ storm **25.1 / 25.3** (24.8 / 25.0); fight **24.6 / 27.7** (23.8 / 26.8),
 its picture 450 pixels from run 247's (the gun and a sprite's edge, as
 between earlier kits).
 
+**Kit 119.** `SV_SoundIndex` scanned the sound precache with `Q_stricmp`
+for every sound the server starts (most of run 257's `strcasecmp` and
+`tolower`, ~0.7%): a 512-slot cache by the lowercased name's FNV hash, each
+hit confirmed by one `Q_stricmp` (a precached name is listed once, so a
+confirmed index is the scan's), a miss or a stale slot the scan and then
+cached. Run 258 (2026-11-19): fight 24.6 / 27.7 (kit 118 24.6 / 27.7),
+`tolower` 48 -> 25 samples: under the runs' spread. Looked at and left:
+the chrome vectors per bone (`R_StudioSetupChrome`, 1.5%: kit 118's
+change took only its per-normal part; integers would cost about what the
+float square roots do, and not exactly); the physents' name copies (the
+game's movement code may read them); the client's bones (kit 81 already
+keeps the local matrices of every model with no blends or controllers:
+the gibs and shells; the soldiers animate). What it means: the exact
+levers left in the fight are each under ~1%.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

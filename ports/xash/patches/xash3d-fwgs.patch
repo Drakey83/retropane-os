@@ -2333,10 +2333,50 @@ index 37e79df..6adc335 100644
  	for( int i = 0; i < GI->max_edicts; i++ )
  		svgame.edicts[i].free = true; // mark all edicts as freed
 diff --git a/engine/server/sv_init.c b/engine/server/sv_init.c
-index 3df187a..f663890 100644
+index 3df187a..eb40ba9 100644
 --- a/engine/server/sv_init.c
 +++ b/engine/server/sv_init.c
-@@ -566,6 +566,7 @@ void SV_FreeOldEntities( void )
+@@ -164,10 +164,39 @@ int GAME_EXPORT SV_SoundIndex( const char *filename )
+ 	Q_strncpy( name, filename, sizeof( name ));
+ 	COM_FixSlashes( name );
+ 
++#if defined( __retropane__ )
++	// RetroPane kit 119 (run 257: every sound the server starts scanned
++	// the precache list with Q_stricmp, ~0.7% of a fight frame): a cache
++	// of name -> index by the lowercased name's hash, each hit confirmed
++	// by one Q_stricmp. A precached name is in the list once (it is only
++	// added when not found), so a confirmed index is the scan's answer; a
++	// miss or a stale slot (a new map) takes the scan below and is cached.
++	static struct
++	{
++		uint32_t hash;
++		int      index;
++	} rp_snd_cache[512];
++	uint32_t rp_h = 2166136261u;
++
++	for( const char *c = name; *c; c++ )
++		rp_h = ( rp_h ^ (uint32_t)Q_tolower( *c )) * 16777619u;
++	{
++		const int slot = (int)( rp_h & 511u ), at = rp_snd_cache[slot].index;
++
++		if( rp_snd_cache[slot].hash == rp_h && at > 0 && at < MAX_SOUNDS && !Q_stricmp( sv.sound_precache[at], name ))
++			return at;
++	}
++#endif
+ 	for( i = 1; i < MAX_SOUNDS && sv.sound_precache[i][0]; i++ )
+ 	{
+ 		if( !Q_stricmp( sv.sound_precache[i], name ))
++		{
++#if defined( __retropane__ )
++			rp_snd_cache[rp_h & 511u].hash = rp_h;
++			rp_snd_cache[rp_h & 511u].index = i;
++#endif
+ 			return i;
++		}
+ 	}
+ 
+ 	if( i == MAX_SOUNDS )
+@@ -566,6 +595,7 @@ void SV_FreeOldEntities( void )
  
  	// decrement svgame.numEntities if the highest number entities died
  	for( ; ( ent = SV_EdictNum( svgame.numEntities - 1 )) && ent->free; svgame.numEntities-- );
@@ -2344,7 +2384,7 @@ index 3df187a..f663890 100644
  }
  
  /*
-@@ -724,6 +725,7 @@ void SV_DeactivateServer( void )
+@@ -724,6 +754,7 @@ void SV_DeactivateServer( void )
  	svgame.globals->maxEntities = GI->max_edicts;
  	svgame.globals->maxClients = svs.maxclients;
  	svgame.numEntities = svs.maxclients + 1; // clients + world
@@ -2352,7 +2392,7 @@ index 3df187a..f663890 100644
  	svgame.globals->startspot = 0;
  	svgame.globals->mapname = 0;
  }
-@@ -837,6 +839,7 @@ static void SV_SetupClients( void )
+@@ -837,6 +868,7 @@ static void SV_SetupClients( void )
  	// init network stuff
  	NET_Config(( svs.maxclients > 1 ), true );
  	svgame.numEntities = svs.maxclients + 1; // clients + world
