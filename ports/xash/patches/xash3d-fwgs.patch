@@ -1194,6 +1194,24 @@ index 8d471f1..d42a3fc 100644
  qboolean LZSS_IsCompressed( const byte *source, size_t input_len );
  uint LZSS_GetActualSize( const byte *source, size_t input_len );
  byte *LZSS_Compress( byte *pInput, int inputLength, uint *pOutputSize );
+diff --git a/engine/common/host.c b/engine/common/host.c
+index 8b43cfc..b51080a 100644
+--- a/engine/common/host.c
++++ b/engine/common/host.c
+@@ -1131,6 +1131,13 @@ static void Host_InitCommon( int argc, char **argv, const char *progname, qboole
+ 	host.bugcomp = Host_CheckBugcomp();
+ 
+ 	Cmd_AddCommand( "memlist", Mem_Stats_f, "prints memory pool information" );
++#if defined( __retropane__ )
++	{
++		void RP_MemSumRegister( void );
++
++		RP_MemSumRegister( ); // R335
++	}
++#endif
+ 
+ #if !XASH_DEDICATED
+ 	Cmd_AddRestrictedCommand( "host_writeconfig", Host_WriteConfig, "save current configuration" );
 diff --git a/engine/common/mod_bmodel.c b/engine/common/mod_bmodel.c
 index d1fe48e..2814ab0 100644
 --- a/engine/common/mod_bmodel.c
@@ -1772,7 +1790,7 @@ index b1e8e57..4404a97 100644
  			VectorLerp( start, trace_bbox.fraction, end, trace_bbox.endpos );
  
 diff --git a/engine/common/zone.c b/engine/common/zone.c
-index a0d9c23..8b0e24a 100644
+index a0d9c23..e2e4ed3 100644
 --- a/engine/common/zone.c
 +++ b/engine/common/zone.c
 @@ -17,11 +17,16 @@ GNU General Public License for more details.
@@ -1914,6 +1932,91 @@ index a0d9c23..8b0e24a 100644
  void Mem_PrintStats( void )
  {
  	size_t count = 0, size = 0, realsize = 0;
+@@ -688,6 +773,84 @@ static void Mem_PrintList( size_t minallocationsize )
+ 	}
+ }
+ 
++#if defined( __retropane__ )
++/*
++RetroPane (R335): each pool of 256 KiB or more summed by the source line
++that asked for its blocks (the ten biggest lines, the compact small blocks
++as one line): where a map's memory goes when most of it is small blocks.
++*/
++static void RP_MemSum_f( void )
++{
++	enum { RP_SITES = 128 };
++	static struct
++	{
++		const char *file;
++		int         line, count;
++		size_t      bytes;
++	} site[RP_SITES];
++
++	for( size_t i = 0; i < poolcount; i++ )
++	{
++		mempool_t *pool = &poolchain[i];
++		size_t     small = 0, smalln = 0;
++		int        n = 0, other = 0;
++
++		if( !pool->filename || pool->totalsize < 256 * 1024 )
++			continue;
++		for( memheader_t *mem = pool->chain; mem; mem = mem->next )
++		{
++			int k;
++
++			for( k = 0; k < n; k++ )
++				if( site[k].file == mem->filename && site[k].line == mem->fileline )
++					break;
++			if( k == n )
++			{
++				if( n == RP_SITES )
++				{
++					other++;
++					continue;
++				}
++				site[n].file = mem->filename;
++				site[n].line = mem->fileline;
++				site[n].count = 0;
++				site[n].bytes = 0;
++				n++;
++			}
++			site[k].count++;
++			site[k].bytes += mem->size;
++		}
++		for( memheader_small_t *mem = pool->chain_small; mem; mem = mem->next )
++		{
++			small += mem->size;
++			smalln++;
++		}
++		Con_Printf( "rp-memsum: %s %s in %d lines\n", pool->name, Q_memprint( pool->totalsize ), n );
++		for( int shown = 0; shown < 10; shown++ )
++		{
++			int best = -1;
++
++			for( int k = 0; k < n; k++ )
++				if( site[k].count > 0 && ( best < 0 || site[k].bytes > site[best].bytes ))
++					best = k;
++			if( best < 0 )
++				break;
++			Con_Printf( "rp-memsum:   %10s in %5d blocks at %s:%d\n", Q_memprint( site[best].bytes ), site[best].count, site[best].file, site[best].line );
++			site[best].count = 0;
++		}
++		if( smalln )
++			Con_Printf( "rp-memsum:   %10s in %5u small blocks\n", Q_memprint( small ), (unsigned)smalln );
++		if( other )
++			Con_Printf( "rp-memsum:   %d blocks past the %d lines kept\n", other, RP_SITES );
++	}
++}
++
++void RP_MemSumRegister( void )
++{
++	Cmd_AddCommand( "rp_memsum", RP_MemSum_f, "RetroPane: each big pool summed by the line that asked for its blocks" );
++}
++#endif
++
+ /*
+ ===============
+ Mem_Stats_f
 diff --git a/engine/platform/platform.h b/engine/platform/platform.h
 index 4b1e40c..c2435b8 100644
 --- a/engine/platform/platform.h

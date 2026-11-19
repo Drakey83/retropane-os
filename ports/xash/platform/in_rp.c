@@ -212,7 +212,7 @@ static void RP_MemoryLog( void )
 	if( now < next )
 		return;
 	next = now + 5000000u;
-	Cbuf_AddText( "memlist 64\n" );
+	Cbuf_AddText( "memlist 256\nrp_memsum\n" ); /* R335: the pools by line too */
 }
 
 /*
