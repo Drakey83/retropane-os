@@ -1438,6 +1438,26 @@ needs ~10 ms more than all levers found so far. The storm is the engine's
 500-piece ceiling; the game's own cascade peaks at ~106 pieces, where the
 heavy half is at 28.8.
 
+**Kit 110, the storm's exact levers (the owner: "Keep on the storm").**
+Run 205's samples against the cascade's heavy half, function by function:
+(1) the storm's gibs (`hgibs.mdl`, 13 bones) missed kit 81's bone cache (8
+bones at most): now 16 (12 KB); (2) a temporary entity's bones are joined
+onto its transform only where its chosen body's vertices and normals use
+them, and their parents (found once a model and body from the model's own
+tables): the drawn bones the same bits, a gib piece 1-2 of 13 joined;
+vendor: every bone of every model; (3) `-rpdebrishalf`'s bookkeeping in
+integer frame counts, not soft double compares; (4) a debris piece that
+passes the visibility test is held as a candidate and only the nearest 2 x
+the cap by last frame's eye are put in the draw list (cl_tent.c
+`RP_DebrisFlush`), `RP_DebrisCap` picking its nearest from those as before
+(`-rpdebrislistall`: every piece, as before). Runs 207-214: storm **24.1 /
+24.3** (kit 109: 22.1 / 22.2), with `-rpdebrisboth8` **25.4 / 25.9**;
+cascade 29.8 / 28.8 (end picture byte for byte run 194's, runs 209 and
+212); fight 22.0 / 24.2. Left in the storm against the cascade's heavy
+half (run 211, 8.1 ms): the pieces' collision traces ~2 ms (500 a frame,
+~3 us each: the core physics), the bounce sounds' mix ~0.9, the game's
+per-piece update ~1.2 (the client's floats), the visibility tests ~0.5.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

@@ -292,6 +292,13 @@ static void RP_EmitReport( void )
 					fprintf( stderr, "rp-emit: debris sounds since the last report: %u played, %u skipped (-rpdebrissoundsN)%c", rp_tent_sound_counts[0], rp_tent_sound_counts[1], 10 );
 				rp_tent_half_counts[0] = rp_tent_half_counts[1] = 0;
 				rp_tent_sound_counts[0] = rp_tent_sound_counts[1] = 0;
+				{
+					extern unsigned rp_debris_list_counts[2];
+
+					if( rp_debris_list_counts[0] )
+						fprintf( stderr, "rp-emit: kit 110: debris candidates %u a frame, %u of them listed%c", rp_debris_list_counts[0] / f, rp_debris_list_counts[1] / f, 10 );
+					rp_debris_list_counts[0] = rp_debris_list_counts[1] = 0;
+				}
 			}
 		}
 				rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;

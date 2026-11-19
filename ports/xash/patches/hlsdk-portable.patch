@@ -1,8 +1,8 @@
 diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
-index 97ac1fb..72d314b 100644
+index 97ac1fb..4dfd07b 100644
 --- a/cl_dll/StudioModelRenderer.cpp
 +++ b/cl_dll/StudioModelRenderer.cpp
-@@ -810,6 +810,42 @@ void CStudioModelRenderer::StudioSetupBones( void )
+@@ -810,6 +810,44 @@ void CStudioModelRenderer::StudioSetupBones( void )
  		//Con_DPrintf( "%f %f\n", m_pCurrentEntity->prevframe, f );
  	}
  
@@ -15,7 +15,9 @@ index 97ac1fb..72d314b 100644
 +	// (debris: one model, one frame, many pieces). They are kept and
 +	// reused; only each entity's own transform is joined on. The same
 +	// bits: the kept matrices are the ones QuaternionMatrix made.
-+	enum { RP_BC_SLOTS = 16, RP_BC_BONES = 8 };
++	// Kit 110 (the 500-piece storm, run 205: its gibs, hgibs.mdl, have 13
++	// bones and missed the cache every piece): up to 16 bones (12 KB)
++	enum { RP_BC_SLOTS = 16, RP_BC_BONES = 16 };
 +	struct rp_bc_t
 +	{
 +		const model_t *mdl;
@@ -45,7 +47,7 @@ index 97ac1fb..72d314b 100644
  	panim = StudioGetAnim( m_pRenderModel, pseqdesc );
  	StudioCalcRotations( pos, q, pseqdesc, panim, f );
  
-@@ -919,19 +955,50 @@ void CStudioModelRenderer::StudioSetupBones( void )
+@@ -919,19 +957,108 @@ void CStudioModelRenderer::StudioSetupBones( void )
  			memcpy( q[i], q2[i], sizeof(q[i]) );
  		}
  	}
@@ -61,7 +63,7 @@ index 97ac1fb..72d314b 100644
 +	}
 +#endif
 +
- 
++
 +	// RetroPane kit 53 (run 51: ConcatTransforms 1.7% of the play): with
 +	// the hardware path (Xash's IsHardware is 1) a root's light transform is
 +	// its bone transform copied, and a child's both are its parent's times
@@ -70,6 +72,57 @@ index 97ac1fb..72d314b 100644
 +	// change) has its light transform copied, not worked again; exact.
 +	byte rp_same[MAXSTUDIOBONES];
 +	int rp_hw = IEngineStudio.IsHardware();
++#if XASH_RETROPANE
++	// Kit 110 (the 500-piece storm, run 205: ConcatTransforms +0.84 ms a
++	// frame, a gib model of 13 bones joined whole for each piece though its
++	// body shows one gib): for a temporary entity (index 0: debris, gibs,
++	// shells; no attachments read back, no hit boxes) only the bones its
++	// chosen body's vertices and normals use, and their parents, are joined
++	// onto its transform. The drawn bones get the same bits; the others are
++	// not read for it. Vendor: every bone, every model. The bones a (model,
++	// body) needs are found once from the model's own tables and kept.
++	uint32_t rp_need = 0xFFFFFFFFu;
++
++	if( m_pCurrentEntity->index == 0 && m_pStudioHeader->numbones <= 32 )
++	{
++		enum { RP_BN_SLOTS = 32 };
++		struct rp_bn_t { const model_t *mdl; int body; uint32_t need; };
++		static rp_bn_t rp_bn[RP_BN_SLOTS];
++		rp_bn_t *bn = &rp_bn[( (uintptr_t)m_pRenderModel >> 4 ^ (uintptr_t)m_pCurrentEntity->curstate.body * 7u ) % RP_BN_SLOTS];
++
++		if( bn->mdl != m_pRenderModel || bn->body != m_pCurrentEntity->curstate.body )
++		{
++			uint32_t need = 0;
++			mstudiobodyparts_t *bp = (mstudiobodyparts_t *)( (byte *)m_pStudioHeader + m_pStudioHeader->bodypartindex );
+ 
++			for( int b = 0; b < m_pStudioHeader->numbodyparts; b++, bp++ )
++			{
++				if( bp->nummodels <= 0 || bp->base <= 0 )
++				{
++					need = 0xFFFFFFFFu;
++					break;
++				}
++				int idx = ( m_pCurrentEntity->curstate.body / bp->base ) % bp->nummodels;
++				mstudiomodel_t *sm = (mstudiomodel_t *)( (byte *)m_pStudioHeader + bp->modelindex ) + idx;
++				const byte *vb = (const byte *)m_pStudioHeader + sm->vertinfoindex;
++				const byte *nb = (const byte *)m_pStudioHeader + sm->norminfoindex;
++
++				for( int k = 0; k < sm->numverts; k++ )
++					need |= vb[k] < 32 ? 1u << vb[k] : 0xFFFFFFFFu;
++				for( int k = 0; k < sm->numnorms; k++ )
++					need |= nb[k] < 32 ? 1u << nb[k] : 0xFFFFFFFFu;
++			}
++			// and every parent of a bone needed (a parent's number is lower)
++			for( int k = m_pStudioHeader->numbones - 1; k >= 0; k-- )
++				if(( need >> k & 1 ) && pbones[k].parent >= 0 && pbones[k].parent < 32 )
++					need |= 1u << pbones[k].parent;
++			bn->mdl = m_pRenderModel;
++			bn->body = m_pCurrentEntity->curstate.body;
++			bn->need = need;
++		}
++		rp_need = bn->need;
++	}
++#endif
  
  	for( i = 0; i < m_pStudioHeader->numbones; i++ )
  	{
@@ -89,6 +142,13 @@ index 97ac1fb..72d314b 100644
 +				memcpy( rp_slot->bm[i], bonematrix, sizeof( bonematrix ));
 +		}
 +#endif
++#if XASH_RETROPANE
++		if( !( rp_need >> i & 1 ))
++		{
++			rp_same[i] = 0; // kit 110: a bone its body does not use
++			continue;
++		}
++#endif
  
  		if( pbones[i].parent == -1 )
  		{
@@ -97,7 +157,7 @@ index 97ac1fb..72d314b 100644
  			{
  				ConcatTransforms( (*m_protationmatrix), bonematrix, (*m_pbonetransform)[i] );
  
-@@ -947,11 +1014,18 @@ void CStudioModelRenderer::StudioSetupBones( void )
+@@ -947,11 +1074,18 @@ void CStudioModelRenderer::StudioSetupBones( void )
  
  			// Apply client-side effects to the transformation matrix
  			StudioFxTransform( m_pCurrentEntity, (*m_pbonetransform)[i] );

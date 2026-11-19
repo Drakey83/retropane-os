@@ -110,7 +110,7 @@ index 39e4f9c..bbb2eaf 100644
  	Cmd_AddCommand ("fullupdate", NULL, "re-init HUD on start demo recording" );
  	Cmd_AddCommand ("give", NULL, "give specified item or weapon" );
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
-index 95c85f7..5c45d8a 100644
+index 95c85f7..456c995 100644
 --- a/engine/client/cl_tent.c
 +++ b/engine/client/cl_tent.c
 @@ -37,7 +37,20 @@ TEMPENTS MANAGEMENT
@@ -135,7 +135,7 @@ index 95c85f7..5c45d8a 100644
  
  static model_t *cl_sprite_muzzleflash[MAX_MUZZLEFLASH];	// muzzle flashes
  static model_t *cl_sprite_ricochet = NULL;
-@@ -178,17 +191,86 @@ static void CL_ClearTempEnts( void )
+@@ -178,17 +191,87 @@ static void CL_ClearTempEnts( void )
  {
  	if( !cl_tempents ) return;
  
@@ -189,6 +189,7 @@ index 95c85f7..5c45d8a 100644
 +#if defined( __retropane__ )
 +/* -rpdebrishalf: each piece's last move (cl.time), 0 when it is new */
 +static double rp_tent_last[RP_TENT_CHUNK * RP_TENT_CHUNKS];
++static uint32_t rp_tent_moved[RP_TENT_CHUNK * RP_TENT_CHUNKS]; /* the frame of the last move, 0 new */
 +unsigned rp_tent_sound_counts[2]; /* debris sounds played, skipped (-rpdebrissoundsN) */
 +
 +/* -rpdebrishalf (the ref fills it, r_main.c RP_DebrisCap): the debris pieces drawn the last frame, a hash
@@ -228,7 +229,7 @@ index 95c85f7..5c45d8a 100644
  /*
  ================
  CL_InitTempents
-@@ -197,7 +279,10 @@ CL_InitTempents
+@@ -197,7 +280,10 @@ CL_InitTempents
  */
  void CL_InitTempEnts( void )
  {
@@ -240,7 +241,7 @@ index 95c85f7..5c45d8a 100644
  	CL_ClearTempEnts();
  
  	// load tempent sprites (glowshell, muzzleflashes etc)
-@@ -212,8 +297,10 @@ CL_FreeTempEnts
+@@ -212,8 +298,10 @@ CL_FreeTempEnts
  */
  void CL_FreeTempEnts( void )
  {
@@ -253,17 +254,17 @@ index 95c85f7..5c45d8a 100644
  	cl_tempents = NULL;
  }
  
-@@ -226,6 +313,9 @@ set default values
+@@ -226,6 +314,9 @@ set default values
  */
  static void CL_PrepareTEnt( TEMPENTITY *pTemp, model_t *pmodel )
  {
 +#if defined( __retropane__ )
-+	rp_tent_last[CL_TentIndex( pTemp )] = 0.0; // a new piece: one frame's step first (-rpdebrishalf)
++	rp_tent_moved[CL_TentIndex( pTemp )] = 0; // a new piece: one frame's step first (-rpdebrishalf)
 +#endif
  	int	frameCount = 0;
  	int	modelIndex = 0;
  	int	modelHandle = pTemp->entity.trivial_accept;
-@@ -338,7 +428,39 @@ static void CL_TempEntPlaySound( TEMPENTITY *pTemp, float damp )
+@@ -338,7 +429,39 @@ static void CL_TempEntPlaySound( TEMPENTITY *pTemp, float damp )
  		else pitch = PITCH_NORM;
  
  		sound_t handle = S_RegisterSound( soundname );
@@ -304,7 +305,113 @@ index 95c85f7..5c45d8a 100644
  	}
  }
  
-@@ -386,12 +508,126 @@ temp-entities will be added on a user-side
+@@ -349,6 +472,94 @@ CL_TEntAddEntity
+ add entity to renderlist
+ ==============
+ */
++#if defined( __retropane__ )
++/*
++Kit 110 (the 500-piece storm, run 208: ~250 pieces a frame added to the draw
++list, ~1 ms in CL_AddVisibleEntity, R_AddEntity and the renderer's cap,
++only for r_main.c RP_DebrisCap to drop all but the 35 nearest): a debris
++piece (a studio model drawn normally) that passes the visibility test is
++held as a candidate; after the game's update the nearest 2 x the cap (by
++last frame's eye, which the ref leaves in rp_debris_eye) go to the draw
++list, and RP_DebrisCap picks its nearest from those as before. Any piece in
++the true nearest set is within the twice-as-many nearest by an eye one frame
++old unless the eye jumps between frames past that margin; the rest of the
++draw list is untouched. Vendor: every visible temporary entity listed.
++*/
++int      rp_debris_cap_n = -1;  /* the ref's cap this frame, -1 off (-rpdebrisall) */
++float    rp_debris_eye[3];      /* last frame's eye, from the ref */
++unsigned rp_debris_list_counts[2]; /* pieces held as candidates, of them listed */
++static struct { cl_entity_t *e; uint32_t d; } rp_cand[RP_TENT_CHUNK * RP_TENT_CHUNKS];
++static int rp_ncand, rp_cand_on;
++
++/* -rpdebrislistall: every visible piece listed, as before kit 110 (read once) */
++static int RP_CandOn( void )
++{
++	static int on = -1;
++
++	if( on < 0 )
++		on = !Sys_CheckParm( "-rpdebrislistall" );
++	return on;
++}
++
++static __attribute__(( noinline )) int RP_DebrisCandidate( cl_entity_t *e )
++{
++	vec3_t d;
++	float  q;
++
++	if( !rp_cand_on || rp_debris_cap_n < 0 || e->index || e->model->type != mod_studio
++		|| e->curstate.rendermode != kRenderNormal || rp_ncand >= (int)( sizeof( rp_cand ) / sizeof( rp_cand[0] )))
++		return 0;
++	VectorSubtract( e->origin, rp_debris_eye, d );
++	q = DotProduct( d, d );
++	rp_cand[rp_ncand].e = e;
++	memcpy( &rp_cand[rp_ncand].d, &q, 4 ); /* >= 0: the bits order as the values */
++	rp_ncand++;
++	return 1;
++}
++
++/* the nearest 2 x cap candidates to the draw list (quickselect on the bits) */
++static __attribute__(( noinline )) void RP_DebrisFlush( void )
++{
++	int keep = rp_debris_cap_n * 2, n = rp_ncand;
++
++	rp_debris_list_counts[0] += n;
++	if( n > keep && keep > 0 )
++	{
++		int lo = 0, hi = n - 1, want = keep - 1;
++
++		while( lo < hi )
++		{
++			uint32_t pv = rp_cand[( lo + hi ) >> 1].d;
++			int      i = lo, j = hi;
++
++			while( i <= j )
++			{
++				while( rp_cand[i].d < pv ) i++;
++				while( rp_cand[j].d > pv ) j--;
++				if( i <= j )
++				{
++					cl_entity_t *xe = rp_cand[i].e; uint32_t xd = rp_cand[i].d;
++
++					rp_cand[i] = rp_cand[j];
++					rp_cand[j].e = xe; rp_cand[j].d = xd;
++					i++; j--;
++				}
++			}
++			if( want <= j ) hi = j;
++			else if( want >= i ) lo = i;
++			else break;
++		}
++		n = keep; /* the first keep are the nearest (ties at the edge: either) */
++	}
++	else if( keep <= 0 )
++		n = 0;
++	for( int i = 0; i < n; i++ )
++		CL_AddVisibleEntity( rp_cand[i].e, ET_TEMPENTITY );
++	rp_debris_list_counts[1] += n;
++	rp_ncand = 0;
++}
++#endif
++
+ static int CL_TempEntAddEntity( cl_entity_t *pEntity )
+ {
+ 	vec3_t mins, maxs;
+@@ -369,6 +580,10 @@ static int CL_TempEntAddEntity( cl_entity_t *pEntity )
+ 		VectorCopy( pEntity->angles, pEntity->latched.prevangles );
+ 		VectorCopy( pEntity->origin, pEntity->latched.prevorigin );
+ 
++#if defined( __retropane__ )
++		if( RP_DebrisCandidate( pEntity ))
++			return 1; /* listed after the update if among the nearest */
++#endif
+ 		// add to list
+ 		CL_AddVisibleEntity( pEntity, ET_TEMPENTITY );
+ 
+@@ -386,12 +601,137 @@ temp-entities will be added on a user-side
  setup client callback
  ==============
  */
@@ -348,9 +455,11 @@ index 95c85f7..5c45d8a 100644
 +
 +		next = t->next;
 +		t->next = NULL;
-+		if( rp_tent_last[idx] <= 0.0 || rp_tent_last[idx] > cl.time )
++		/* kit 110: frames counted in integers (run 205: the double
++		   compares here were ~0.2 ms a frame for 500 pieces) */
++		if( !rp_tent_moved[idx] )
 +			rp_tent_last[idx] = cl.oldtime; /* new: one frame's step */
-+		if( RP_TentHalfOk( t ) && (( frame + (unsigned)idx ) & 1 ) && rp_tent_last[idx] >= cl.oldtime )
++		if( rp_tent_moved[idx] && rp_tent_moved[idx] + 1u == frame && (( frame + (unsigned)idx ) & 1 ) && RP_TentHalfOk( t ))
 +		{
 +			/* held: not seen, its turn next frame */
 +			if( heldtail ) heldtail->next = t; else held = t;
@@ -370,6 +479,7 @@ index 95c85f7..5c45d8a 100644
 +		if( tail[g] ) tail[g]->next = t; else grp[g] = t;
 +		tail[g] = t;
 +		rp_tent_last[idx] = cl.time;
++		rp_tent_moved[idx] = frame;
 +		rp_tent_half_counts[0]++;
 +	}
 +	for( int g = 0; g < ng; g++ )
@@ -415,12 +525,20 @@ index 95c85f7..5c45d8a 100644
 +	}
 +	if( half )
 +	{
++		rp_cand_on = RP_CandOn( );
++		rp_ncand = 0;
 +		RP_TentUpdateHalf( gravity );
++		RP_DebrisFlush( );
 +		return;
 +	}
 +#endif
++#if defined( __retropane__ )
++	rp_cand_on = RP_CandOn( );
++	rp_ncand = 0;
++#endif
  	clgame.dllFuncs.pfnTempEntUpdate( ft, cl.time, gravity, &cl_free_tents, &cl_active_tents, CL_TempEntAddEntity, CL_TempEntPlaySound );
 +#if defined( __retropane__ )
++	RP_DebrisFlush( );
 +	{
 +		extern unsigned int rp_prof[10];
 +
@@ -431,7 +549,7 @@ index 95c85f7..5c45d8a 100644
  }
  
  /*
-@@ -440,7 +676,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
+@@ -440,7 +780,7 @@ TEMPENTITY *CL_TempEntAlloc( const vec3_t org, model_t *pmodel )
  	static float cl_lasttimewarn;
  	TEMPENTITY	*pTemp;
  
@@ -440,7 +558,7 @@ index 95c85f7..5c45d8a 100644
  	{
  		if( cl_lasttimewarn < host.realtime )
  		{
-@@ -475,14 +711,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
+@@ -475,14 +815,14 @@ TEMPENTITY *CL_TempEntAllocHigh( const vec3_t org, model_t *pmodel )
  {
  	TEMPENTITY	*pTemp;
  
@@ -457,7 +575,7 @@ index 95c85f7..5c45d8a 100644
  	{
  		// didn't find anything? The tent list is either full of high-priority tents
  		// or all tents in the list are still due to live for > 10 seconds.
-@@ -2431,6 +2667,13 @@ DLIGHT MANAGEMENT
+@@ -2431,6 +2771,13 @@ DLIGHT MANAGEMENT
  */
  static dlight_t cl_dlights[MAX_DLIGHTS];
  static dlight_t cl_elights[MAX_ELIGHTS];
@@ -471,7 +589,7 @@ index 95c85f7..5c45d8a 100644
  
  /*
  ================
-@@ -2439,6 +2682,7 @@ CL_ClearDlights
+@@ -2439,6 +2786,7 @@ CL_ClearDlights
  */
  static void CL_ClearDlights( void )
  {
@@ -479,7 +597,7 @@ index 95c85f7..5c45d8a 100644
  	memset( cl_dlights, 0, sizeof( cl_dlights ));
  	memset( cl_elights, 0, sizeof( cl_elights ));
  }
-@@ -2454,6 +2698,8 @@ dlight_t *CL_AllocDlight( int key )
+@@ -2454,6 +2802,8 @@ dlight_t *CL_AllocDlight( int key )
  	dlight_t	*dl;
  	int	i;
  
@@ -488,7 +606,7 @@ index 95c85f7..5c45d8a 100644
  	// first look for an exact key match
  	if( key )
  	{
-@@ -2499,6 +2745,8 @@ dlight_t *CL_AllocElight( int key )
+@@ -2499,6 +2849,8 @@ dlight_t *CL_AllocElight( int key )
  	dlight_t	*dl;
  	int	i;
  
@@ -497,7 +615,7 @@ index 95c85f7..5c45d8a 100644
  	// first look for an exact key match
  	if( key )
  	{
-@@ -2541,6 +2789,7 @@ CL_DecayLights
+@@ -2541,6 +2893,7 @@ CL_DecayLights
  */
  void CL_DecayLights( void )
  {
@@ -505,7 +623,7 @@ index 95c85f7..5c45d8a 100644
  	const float time = cl.time;
  	const float dt = cl.time - cl.oldtime;
  
-@@ -2839,6 +3088,7 @@ void CL_TestLights( void )
+@@ -2839,6 +3192,7 @@ void CL_TestLights( void )
  
  	int numLights = bound( 1, cl_testlights.value, MAX_DLIGHTS );
  	AngleVectors( cl.viewangles, forward, right, NULL );
@@ -513,7 +631,7 @@ index 95c85f7..5c45d8a 100644
  
  	for( int i = 0; i < numLights; i++ )
  	{
-@@ -3054,6 +3304,10 @@ void CL_ClearStaticEntities( void )
+@@ -3054,6 +3408,10 @@ void CL_ClearStaticEntities( void )
  	// clear out efrags in case the level hasn't been reloaded
  	for( int i = 0; i < cl.worldmodel->numleafs; i++ )
  		cl.worldmodel->leafs[i+1].efrags = NULL;
@@ -5278,7 +5396,7 @@ index 1a7efd6..49158b8 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..0b39bdc 100644
+index 2c644f6..dc43f5b 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
@@ -5368,7 +5486,7 @@ index 2c644f6..0b39bdc 100644
  		qsort( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities, sizeof( cl_entity_t * ), (void *)R_TransEntityCompare );
  	}
  
-@@ -501,6 +574,207 @@ static void R_SetupFrame( void )
+@@ -501,6 +574,216 @@ static void R_SetupFrame( void )
  R_DrawEntitiesOnList
  =============
  */
@@ -5468,6 +5586,15 @@ index 2c644f6..0b39bdc 100644
 +				}
 +			}
 +		}
++	}
++	{
++		/* kit 110: the engine lists only the nearest 2 x cap pieces by this
++		   eye next frame (cl_tent.c RP_DebrisFlush) */
++		extern int   rp_debris_cap_n;
++		extern float rp_debris_eye[3];
++
++		rp_debris_cap_n = rp_debris_cap;
++		VectorCopy( RI.rvp.vieworigin, rp_debris_eye );
 +	}
 +	if( rp_debris_cap < 0 )
 +	{
@@ -5576,7 +5703,7 @@ index 2c644f6..0b39bdc 100644
  static void R_DrawEntitiesOnList( void )
  {
  	// extern int d_aflatcolor;
-@@ -510,6 +784,22 @@ static void R_DrawEntitiesOnList( void )
+@@ -510,6 +793,22 @@ static void R_DrawEntitiesOnList( void )
  	// RI.currententity = CL_GetEntityByIndex(0);
  	d_pdrawspans = R_PolysetFillSpans8;
  	GL_SetRenderMode( kRenderNormal );
@@ -5599,7 +5726,7 @@ index 2c644f6..0b39bdc 100644
  	// first draw solid entities
  	for( int i = 0; i < tr.draw_list->num_solid_entities && !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ); i++ )
  	{
-@@ -959,7 +1249,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
+@@ -959,7 +1258,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
  
  
  	insubmodel = false;
@@ -5609,7 +5736,7 @@ index 2c644f6..0b39bdc 100644
  	alphaspans = false;
  }
  
-@@ -1010,7 +1301,8 @@ static void R_EdgeDrawing( void )
+@@ -1010,7 +1310,8 @@ static void R_EdgeDrawing( void )
  	R_DrawBEntitiesOnList();
  
  	// display all edges
@@ -5619,7 +5746,7 @@ index 2c644f6..0b39bdc 100644
  }
  
  /*
-@@ -1113,6 +1405,9 @@ R_BeginFrame
+@@ -1113,6 +1414,9 @@ R_BeginFrame
  */
  void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
@@ -5629,7 +5756,7 @@ index 2c644f6..0b39bdc 100644
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1519,8 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1528,8 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -5638,7 +5765,7 @@ index 2c644f6..0b39bdc 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1667,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1676,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  
