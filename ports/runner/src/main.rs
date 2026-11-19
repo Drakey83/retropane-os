@@ -176,6 +176,9 @@ mod image {
     /// then by the chain, both pictures hashed and compared (the chain's
     /// own clear and scene start against the CPU's).
     const CHAIN_CHECK_WORD: &[u8] = b"-rpchaincheck";
+    /// Kit 113: the TA after each render, as before (the TA and the 3D
+    /// stage at work on two frames at once is the default).
+    const NO_OVERLAP_WORD: &[u8] = b"-rpnooverlap";
     const CHAIN_CHECK_FRAMES: u32 = 32;
     const WALLOC_TO: u32 = 0xA9A0_0000;
     /// The program's command line as built in: its name alone. What a
@@ -1793,7 +1796,11 @@ mod image {
             None
         } else {
             let was = rp_hal_pxa27x::clocks::sdram_auto_power_down(false);
-            let _ = writeln!(uart, "runner: the SDRAM's automatic power-down off while the program runs (it was {})", if was { "on" } else { "off" });
+            let _ = writeln!(
+                uart,
+                "runner: the SDRAM's automatic power-down off while the program runs (it was {})",
+                if was { "on" } else { "off" }
+            );
             Some(was)
         };
         if let Some(v) = voice {
@@ -1840,10 +1847,18 @@ mod image {
             None => (samples, None),
         };
         // ADR-0040 step 7g6's probe of the strip header's bits.
-        for (word, mode) in [(&b"-rpta17"[..], 1u32), (&b"-rpta21"[..], 2), (&b"-rpta1721"[..], 3)] {
+        for (word, mode) in [
+            (&b"-rpta17"[..], 1u32),
+            (&b"-rpta21"[..], 2),
+            (&b"-rpta1721"[..], 3),
+        ] {
             if args[..arg_count].iter().any(|a| a.to_bytes() == word) {
                 super::gfx::TA_PROBE.with(|m| *m = mode);
-                let _ = writeln!(uart, "runner: the TA probe: strip header bits {}", ["", "17", "21", "17 and 21"][mode as usize]);
+                let _ = writeln!(
+                    uart,
+                    "runner: the TA probe: strip header bits {}",
+                    ["", "17", "21", "17 and 21"][mode as usize]
+                );
             }
         }
         // Step 4f: the DMA chain, if asked for.
@@ -1878,6 +1893,11 @@ mod image {
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
                 .with_chain(chain)
+                .with_overlap(
+                    !args[..arg_count]
+                        .iter()
+                        .any(|a| a.to_bytes() == NO_OVERLAP_WORD),
+                )
                 .with_chain_check(
                     if args[..arg_count]
                         .iter()

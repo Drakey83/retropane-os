@@ -23,6 +23,8 @@
 //! | `0x0FC000` | the parameter memory manager's block (16 KiB) |
 //! | `0x100000` | the TA's tail buffer (64 KiB) |
 //! | `0x120000` | the TA's region array |
+//! | `0x140000` | kit 113: the second scene's tail buffer (64 KiB) |
+//! | `0x150000` | kit 113: the second scene's region array |
 //! | `0x200000` | the TA's parameter memory (5 MiB, below the manager's 8 MiB reach) |
 //! | `0x800000` | the program's texture memory (7 MiB) |
 
@@ -57,7 +59,11 @@ pub static TA_PROBE: rt::Global<u32> = rt::Global::new(0);
 /// A float word as 16.16 fixed point, rounded, saturated.
 fn fix16(w: u32) -> u32 {
     let s = f32::from_bits(w) * 65536.0;
-    (if s >= 0.0 { (s + 0.5) as i32 } else { (s - 0.5) as i32 }) as u32
+    (if s >= 0.0 {
+        (s + 0.5) as i32
+    } else {
+        (s - 0.5) as i32
+    }) as u32
 }
 
 const W: u32 = 480;
@@ -70,6 +76,13 @@ const TAIL_BYTES: u32 = 0x1_0000;
 const TA_REGIONS: u32 = 0x0012_0000;
 const PM: u32 = 0x0020_0000;
 const PM_SIZE: u32 = 0x0050_0000;
+/// Kit 113: the second scene's tail buffer and region array (the TA takes
+/// the next frame into these while the 3D stage draws the last from the
+/// first; the parameter memory and its manager are shared).
+const TAIL_B: u32 = 0x0014_0000;
+const REGIONS_B: u32 = 0x0015_0000;
+const _: () = assert!(TAIL_B.is_multiple_of(0x2_0000) && TAIL_B + TAIL_BYTES <= REGIONS_B);
+const _: () = assert!(REGIONS_B + REGION_BYTES <= PM && CHK_REGIONS + REGION_BYTES <= TAIL_B);
 const _: () = assert!((PM + PM_SIZE) as usize <= m3::PM_REACH);
 /// The program's texture memory.
 const TEX_AT: u32 = 0x0080_0000;
@@ -785,6 +798,13 @@ struct Counts {
     check_same: u32,
     check_differ: u32,
     check_failed: u32,
+    /// Kit 113: renders a frame's start had to wait for, and their whole
+    /// time from start to seen done (the chip's own render time); the
+    /// chained frames' start-late bound summed ([`Chain::last_gap_us`]);
+    /// the pump's looks at frames in flight.
+    rwaits: u32,
+    rwait_us: u32,
+    gap_us: u32,
 }
 
 /// The screen while the program has it.
@@ -838,6 +858,19 @@ struct Open {
     bar_t0: u32,
     bar_frames: u32,
     bar_hangs: u32,
+    /// Kit 113 (ref-rp.md): the TA takes frame N + 1 while the 3D stage
+    /// draws frame N, the two scenes in two tail buffers and region
+    /// arrays ([`TAIL_B`]); `-rpnooverlap` the old way (each frame's TA
+    /// after the last render).
+    overlap: bool,
+    /// The scene the next chain goes into (true: the second), the one the
+    /// chain in flight went into, the one the render in flight (or the
+    /// next started) draws, and a scene the TA finished waiting for the
+    /// render before it to end.
+    next_b: bool,
+    armed_b: bool,
+    render_b: bool,
+    pending: Option<bool>,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -868,6 +901,8 @@ pub struct Chip {
     /// hashed, then the chain's, compared; kit 63's check that the chain's
     /// own clear and scene start draw what the CPU's do).
     chain_check: u32,
+    /// Kit 113's overlap asked for (off with `-rpnooverlap`).
+    overlap: bool,
 }
 
 impl Chip {
@@ -899,6 +934,9 @@ impl Chip {
                 check_same: 0,
                 check_differ: 0,
                 check_failed: 0,
+                rwaits: 0,
+                rwait_us: 0,
+                gap_us: 0,
             },
             since: 0,
             frame: 0,
@@ -910,7 +948,16 @@ impl Chip {
             probe: None,
             chain: None,
             chain_check: 0,
+            overlap: true,
         }
+    }
+
+    /// Kit 113: the TA and the 3D stage at work on two frames at once
+    /// (`false`: `-rpnooverlap`).
+    #[must_use]
+    pub const fn with_overlap(mut self, on: bool) -> Self {
+        self.overlap = on;
+        self
     }
 
     /// `-rpchaincheck`: the next `frames` frames fed both ways, compared.
@@ -941,7 +988,15 @@ impl Chip {
         let t0 = rt::ticks();
         let s = ch.settle(regs);
         self.counts.settle_us += us_since(t0);
-        Self::settled(&mut self.counts, self.log, o, regs, s, false);
+        Self::settled(
+            &mut self.counts,
+            self.log,
+            o,
+            regs,
+            s,
+            false,
+            ch.last_gap_us,
+        );
     }
 
     /// What a settle or a pump found, acted on.
@@ -952,13 +1007,20 @@ impl Chip {
         regs: &mut Mmio,
         s: Settled,
         pumped: bool,
+        gap: u32,
     ) {
         match s {
             Settled::Idle => {}
             Settled::Done(us) => {
                 c.chain_us += us;
+                c.gap_us += gap;
                 c.pumped += u32::from(pumped);
-                o.start_render(regs);
+                if o.overlap {
+                    o.pending = Some(o.armed_b);
+                    o.start_pending(regs);
+                } else {
+                    o.start_render(regs);
+                }
             }
             Settled::Failed { dma } => {
                 c.ta_hangs += 1;
@@ -1050,6 +1112,19 @@ impl Chip {
                 c.descriptors / n,
                 c.pumped,
                 c.unfit
+            ));
+        }
+        if c.chained > 0 {
+            let looks = self
+                .chain
+                .as_mut()
+                .map_or(0, |ch| core::mem::take(&mut ch.looks));
+            let (rw, rw_t) = tenths(c.rwait_us, c.rwaits);
+            let (gap, gap_t) = tenths(c.gap_us, c.chained);
+            (self.log)(format_args!(
+                "rp-gfx: kit 113: a render waited for {rw}.{rw_t} ms from its start ({} frames waited); the TA's done seen at most {gap}.{gap_t} ms late (the render's start); {} looks a frame",
+                c.rwaits,
+                looks / c.chained.max(1)
             ));
         }
         if c.check_same + c.check_differ + c.check_failed > 0 {
@@ -1445,6 +1520,47 @@ impl Open {
         cpu::drain_write_buffer();
     }
 
+    /// Kit 113: the TA's layout for scene `b` (the second's own tail
+    /// buffer and region array).
+    fn ta_lay(&self, b: bool) -> ta::Layout {
+        if b {
+            ta::Layout {
+                tail: TAIL_B,
+                regions: REGIONS_B,
+                ..self.lay.ta
+            }
+        } else {
+            self.lay.ta
+        }
+    }
+
+    /// Kit 113: a look, never a wait: the render in flight seen done (its
+    /// bit cleared) or none in flight.
+    fn render_done_now(&mut self, regs: &mut Mmio) -> bool {
+        if self.rendering.is_none() {
+            return true;
+        }
+        if regs.read32(MBX + reg::STATUS) & m3::RENDER_DONE == 0 {
+            return false;
+        }
+        self.rendering = None;
+        regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
+        regs.write32(MBX + reg::ENABLE, self.en);
+        true
+    }
+
+    /// Kit 113: the scene the TA finished drawn as soon as the render
+    /// before it has ended (a look, never a wait).
+    fn start_pending(&mut self, regs: &mut Mmio) {
+        if let Some(b) = self.pending
+            && self.render_done_now(regs)
+        {
+            self.pending = None;
+            self.render_b = b;
+            self.start_render(regs);
+        }
+    }
+
     /// Starts the 3D stage on the TA's region array, into the screen.
     fn start_render(&mut self, regs: &mut Mmio) {
         if self.marking {
@@ -1454,6 +1570,9 @@ impl Open {
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en | m3::RENDER_DONE);
         let mut from = self.lay.from;
+        if self.render_b {
+            from.regions = REGIONS_B;
+        }
         if self.checker_on {
             let t0 = rt::ticks();
             self.copy_checker();
@@ -1636,6 +1755,15 @@ impl Screen for Chip {
             bar_t0: rt::ticks(),
             bar_frames: 0,
             bar_hangs: 0,
+            overlap: self.overlap
+                && self.chain.is_some()
+                && self.probe.is_none()
+                && !self.ladder_on
+                && self.chain_check == 0,
+            next_b: false,
+            armed_b: false,
+            render_b: false,
+            pending: None,
         });
         if self.bar
             && let Some(o) = self.open.as_mut()
@@ -1692,8 +1820,32 @@ impl Screen for Chip {
         };
         let c = &mut self.counts;
         let t0 = rt::ticks();
-        let waited = o.wait_render(regs);
-        c.waited_us += us_since(t0);
+        // Kit 113: with the overlap the render waited for is the one two
+        // frames back (its scene is the one this frame's TA reuses), and
+        // only while the last frame's scene is still waiting behind it.
+        let waited = if !o.overlap {
+            o.wait_render(regs)
+        } else if o.pending.is_some() {
+            let r = o.wait_render(regs);
+            if r.is_ok() {
+                o.start_pending(regs);
+            } else {
+                o.pending = None;
+            }
+            r
+        } else {
+            Ok(0)
+        };
+        let w = us_since(t0);
+        c.waited_us += w;
+        // Kit 113: a wait of more than a few looks means the render was
+        // still going: its whole time is the chip's render time.
+        if let Ok(r) = waited
+            && w >= 50
+        {
+            c.rwaits += 1;
+            c.rwait_us += r;
+        }
         if o.bar {
             o.bar_frames += 1;
             o.bar_hangs += u32::from(waited.is_err());
@@ -1712,6 +1864,9 @@ impl Screen for Chip {
             // The background alone through the TA and the core, its
             // result not counted.
             o.warm_owed = false;
+            // kit 113: the first scene's memory, the next chain the second's
+            o.render_b = false;
+            o.next_b = o.overlap;
             let _ = ta::clear(o.vram, &o.lay.ta);
             cpu::drain_write_buffer();
             let mut f = ta::Feed::start(regs, &o.ready, &o.lay.ta, CLOCK, TA_LIMIT_US);
@@ -1771,8 +1926,11 @@ impl Screen for Chip {
                 return Ok(());
             }
             // kit 63: the TA's memory cleared by the chain itself
-            match ch.start(regs, &o.lay.ta, &bg, parts) {
+            let into = o.overlap && o.next_b;
+            match ch.start(regs, &o.ta_lay(into), &bg, parts) {
                 Ok(true) => {
+                    o.armed_b = into;
+                    o.next_b = o.overlap && !into;
                     c.frames += 1;
                     c.chained += 1;
                     c.words += (bg.len() + parts.iter().map(|p| p.len()).sum::<usize>()) as u32;
@@ -1791,6 +1949,14 @@ impl Screen for Chip {
                     return Err(Errno::Io);
                 }
             }
+        }
+        if o.overlap {
+            // Kit 113: a frame the chain can't hold goes by the CPU into
+            // the first scene once every render has ended; the next
+            // chain into the second.
+            let _ = o.wait_render(regs);
+            o.render_b = false;
+            o.next_b = true;
         }
         let _ = ta::clear(o.vram, &o.lay.ta);
         cpu::drain_write_buffer();
@@ -1859,7 +2025,11 @@ impl Screen for Chip {
                                     if k == 2 && probe & 2 != 0 {
                                         continue;
                                     }
-                                    buf[n] = if k == 4 || probe & 1 == 0 { w } else { fix16(w) };
+                                    buf[n] = if k == 4 || probe & 1 == 0 {
+                                        w
+                                    } else {
+                                        fix16(w)
+                                    };
                                     n += 1;
                                 }
                                 if !f.put_words(&buf[..n]) {
@@ -1969,7 +2139,10 @@ impl Screen for Chip {
         };
         if ch.busy() {
             let s = ch.pump(regs);
-            Self::settled(&mut self.counts, self.log, o, regs, s, true);
+            Self::settled(&mut self.counts, self.log, o, regs, s, true, ch.last_gap_us);
+        }
+        if o.pending.is_some() {
+            o.start_pending(regs);
         }
     }
 
@@ -1978,7 +2151,13 @@ impl Screen for Chip {
         let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
             return Err(Errno::BadHandle);
         };
-        o.wait_render(regs).map(|_| ())
+        // Kit 113: a scene waiting behind the render drawn too.
+        o.wait_render(regs)?;
+        if o.pending.is_some() {
+            o.start_pending(regs);
+            o.wait_render(regs)?;
+        }
+        Ok(())
     }
 
     fn close(&mut self) -> Result<(), Errno> {
@@ -1991,9 +2170,21 @@ impl Screen for Chip {
         crate::cpu::put_back(self.log);
         if let Some(ch) = self.chain.as_mut() {
             let s = ch.settle(regs);
-            Self::settled(&mut self.counts, self.log, &mut o, regs, s, false);
+            Self::settled(
+                &mut self.counts,
+                self.log,
+                &mut o,
+                regs,
+                s,
+                false,
+                ch.last_gap_us,
+            );
         }
         let _ = o.wait_render(regs);
+        if o.pending.is_some() {
+            o.start_pending(regs);
+            let _ = o.wait_render(regs);
+        }
         if o.stepped {
             // Windows Mobile's clock and bus timing back (ADR-0035 rule 2),
             // the underrun flag checked after (rule 8).

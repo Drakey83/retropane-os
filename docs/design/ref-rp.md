@@ -1521,6 +1521,30 @@ both times, the end picture 7 pixels from run 225's; the owner: "Looked
 fine". (Run 229 was built on c1a0 by mistake: the cascade's camera stood
 outside that level, a black screen but for the HUD; not the drawing.)
 
+**Kit 113, the TA and the 3D stage on two frames at once (the owner: "Yes,
+go after it", the calm half's 4.8 ms wait).** Measured first (run 232,
+kit 113's timers in the chained path): a calm-half render takes **21-23
+ms** from its start, the TA's done is seen at most 0.8 ms late (the 1 kHz
+tick's pump, kit 69), and the TA takes ~6 ms before it; the two ran one
+after the other (each frame's chain armed only after the last render),
+~29 ms of chip time in a 31.6 ms frame. Vendor: PowerVR's design keeps
+the TA and the 3D stage on different scenes at once; whether Dell's GLES
+does is not read (its scene routine `0x0225e5c4` is the place). Hint on
+this chip: the parameter memory manager set up again between scenes hung
+every other scene "as if something in the core toggles each scene"
+(docs/hw/2700g.md, run 5). Ours: two scenes' tail buffers and region
+arrays (`0x100000`/`0x120000` and `0x140000`/`0x150000`), one parameter
+memory and one manager set up once; frame N + 1's chain goes into the
+other scene while frame N draws, its render started by the pump the
+moment both the TA and the last render are done; a frame waits only for
+the render two frames back. Why it wins: the chip's time a frame becomes
+the longer of the TA and the render, not their sum, with nothing drawn
+differently. `-rpnooverlap`: the old way. Runs 233-235 (2026-11-19):
+cascade **36.1 / 30.9** (kit 112 31.6 / 29.7), the end picture **0
+pixels** from run 230's; storm 24.7 / 24.9 (24.7 / 24.9: the CPU's);
+fight 22.3 / 25.0 (22.2 / 24.6), its picture 0 pixels from run 228's;
+no TA or render hang. Both cascade halves are past 30 fps.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

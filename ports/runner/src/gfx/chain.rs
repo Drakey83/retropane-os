@@ -23,7 +23,7 @@ use rp_drv_mbx3d::ta;
 use rp_hal_api::{DmaEngine, RegisterBus};
 use rp_hal_pxa27x::dma::{CHAIN_MOST, Dma, chain_descriptor};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
-use rp_port::gfx::{FAN, NO_Z, STATE, STATE2, STATE2_WORDS, STATE_WORDS, STRIP, corner_words_in};
+use rp_port::gfx::{FAN, NO_Z, STATE, STATE_WORDS, STATE2, STATE2_WORDS, STRIP, corner_words_in};
 
 use super::us_since;
 
@@ -74,6 +74,9 @@ pub const CHAIN_BYTES: usize = 192 * 1024;
 #[derive(Clone, Copy)]
 struct Flight {
     t0: u32,
+    /// The last look that found it not done (ticks): the TA's done fell
+    /// between it and the look that saw it.
+    looked: u32,
     dma_done: bool,
     en: u32,
     grid: u32,
@@ -103,6 +106,11 @@ pub struct Chain {
     ends: usize,
     /// Descriptors the last frame took.
     pub last_descriptors: u32,
+    /// The last frame seen done: microseconds from the look before the
+    /// one that saw it (the most its render can have started late).
+    pub last_gap_us: u32,
+    /// Looks at the frame in flight (the pump's and the settle's).
+    pub looks: u32,
 }
 
 impl Chain {
@@ -133,6 +141,8 @@ impl Chain {
             n: 0,
             at: 0,
             ends: 0,
+            last_gap_us: 0,
+            looks: 0,
             last_descriptors: 0,
         })
     }
@@ -234,7 +244,11 @@ impl Chain {
                 let src = base + 4 * k as u32;
                 if w == STATE || w == STATE2 {
                     // kit 112: a two-texture block's corners carry u1, v1
-                    let sw = if w == STATE2 { STATE2_WORDS } else { STATE_WORDS };
+                    let sw = if w == STATE2 {
+                        STATE2_WORDS
+                    } else {
+                        STATE_WORDS
+                    };
                     two = w == STATE2;
                     if !self.to_window(src, 4 * (1 + sw) as u32) {
                         return false;
@@ -313,6 +327,7 @@ impl Chain {
                 regs,
                 Flight {
                     t0,
+                    looked: t0,
                     dma_done: true,
                     en,
                     grid,
@@ -322,6 +337,7 @@ impl Chain {
         }
         self.flight = Some(Flight {
             t0,
+            looked: t0,
             dma_done: false,
             en,
             grid,
@@ -357,6 +373,7 @@ impl Chain {
         let Some(mut f) = self.flight else {
             return Settled::Idle;
         };
+        self.looks += 1;
         if !self.look_dma(&mut f) {
             self.flight = None;
             Self::finish(regs, f);
@@ -367,6 +384,10 @@ impl Chain {
             return if us_since(f.t0) > CHAIN_LIMIT_US {
                 self.settle(regs)
             } else {
+                self.flight = Some(Flight {
+                    looked: rt::ticks(),
+                    ..f
+                });
                 Settled::Idle
             };
         }
@@ -374,11 +395,16 @@ impl Chain {
             return if us_since(f.t0) > super::TA_LIMIT_US {
                 self.settle(regs)
             } else {
+                self.flight = Some(Flight {
+                    looked: rt::ticks(),
+                    ..f
+                });
                 Settled::Idle
             };
         }
         self.flight = None;
         Self::finish(regs, f);
+        self.last_gap_us = us_since(f.looked);
         Settled::Done(us_since(f.t0))
     }
 
@@ -410,6 +436,8 @@ impl Chain {
             };
         Self::finish(regs, f);
         if done {
+            // a spin: the render starts as the TA says done
+            self.last_gap_us = 0;
             Settled::Done(us_since(f.t0))
         } else {
             Settled::Failed { dma: !dma_ok }

@@ -204,6 +204,10 @@ watching.
   222-225): TSP bits 19-17 = 2, 9-word corners, unit 1's MODULATE
   `0x8E086E10` (Dell's unit-1 table, bit 27 = take the previous unit's
   colour); a texture times a lightmap in one pass (docs/hw/2700g.md).
+- **3D: the TA and the 3D stage at once** (Half-Life kit 113, X51v,
+  2026-11-19): the TA takes scene N + 1 into a second tail buffer and
+  region array while the 3D stage renders scene N; one parameter memory
+  and manager shared; pictures exact, no hang (docs/hw/2700g.md).
 - **2D commands by DMA** (`rp-gpubench` run FD, X51v, 2026-10-22): DMA
   into the command window (`0x0FFF5000`) works; 352 words cost the CPU 2
   us to arm against 43-60 us to write; batches must fit the FIFO's room.
