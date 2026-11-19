@@ -1380,6 +1380,26 @@ cap's gain is the meshes and bones it leaves out; drawing every piece
 plainly and fast needs a cheaper shape for the far ones (a flat stand-in
 of a few triangles, no bones), not cheaper light. Off by default.
 
+**Kit 108, the owner's ruling (2026-11-18, watching run 193: "Looked
+fine", "i dont really notice a difference"): the 35 nearest debris pieces
+drawn by default**; `-rpdebrisall` draws every piece, `-rpdebrisN` another
+cap. The nearest 35 are now picked by Hoare's quickselect over the
+distances' float bits (integer compares; checked against a full sort in
+200,000 random cases), replacing a cap x n selection in soft floats. Runs
+194-195 and 199: cascade **29.8 / 28.9** (end picture byte for byte run
+194's), fight **22.0 / 24.2** (kit 107: 29.9 / 23.8 and 21.8 / 24.0).
+
+**The 500-piece storm (the owner: "build the 500 debris stress test"):
+`-rpstorm`** adds to the cascade 40 gib pieces a frame (4 s each, the
+engine's `R_BreakModel`, model `hgibs.mdl`) around the zapper, so the
+temporary entities stay at the engine's limit (500) for the scored run;
+~289 pieces a frame reach the draw list. Runs 196-198 (calm / heavy
+halves): every piece drawn **7.8 / 7.8 fps**; the cap of 35 **21.4 / 21.4**,
+with quickselect **21.8 / 21.9**. Left in the capped storm (run 196's
+samples): the pieces' collision traces (~5 ms, `PM_RecursiveHullCheck`
+and its float dots), the bounce sounds' mix (~3 ms), the client's
+per-piece update (~1-2 ms).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
