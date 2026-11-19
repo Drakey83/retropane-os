@@ -23,7 +23,9 @@ use rp_drv_mbx3d::ta;
 use rp_hal_api::{DmaEngine, RegisterBus};
 use rp_hal_pxa27x::dma::{CHAIN_MOST, Dma, chain_descriptor};
 use rp_hal_pxa27x::{Mmio, cpu, rt};
-use rp_port::gfx::{FAN, NO_Z, STATE, STATE_WORDS, STATE2, STATE2_WORDS, STRIP, corner_words_in};
+use rp_port::gfx::{
+    CULL, FAN, NO_Z, STATE, STATE_WORDS, STATE2, STATE2_WORDS, STRIP, corner_words_in,
+};
 
 use super::us_since;
 
@@ -59,6 +61,11 @@ const T_GRID: usize = 4;
 /// The no-z strip and fan headers (`NO_Z`, ADR-0040 step 7g7).
 const T_STRIP_NO_Z: usize = 5;
 const T_FAN_NO_Z: usize = 6;
+/// Kit 116: the headers with a cull field (1 or 2), each of the four above
+/// (strip, fan, each with and without z): `T_CULL + 4 (cull - 1) + 2 fan +
+/// no_z`, slots 7 to 14.
+const T_CULL: usize = 7;
+const _: () = assert!(T_CULL + 8 <= TABLE);
 /// Bytes of a descriptor's run into the TA window, at most (whole words).
 const MOST: u32 = CHAIN_MOST & !3;
 /// A chain not done in this long is stopped (a frame's ~20,000 words
@@ -126,6 +133,13 @@ impl Chain {
         words[T_FAN] = FAN;
         words[T_STRIP_NO_Z] = STRIP | NO_Z;
         words[T_FAN_NO_Z] = FAN | NO_Z;
+        for c in 1..=2u32 {
+            for (f, prim) in [STRIP, FAN].into_iter().enumerate() {
+                for (z, nz) in [0, NO_Z].into_iter().enumerate() {
+                    words[T_CULL + 4 * (c as usize - 1) + 2 * f + z] = prim | nz | c << 18;
+                }
+            }
+        }
         words[T_ONE] = 1;
         words[T_END] = rp_drv_mbx3d::END;
         words[ZERO..DESC].fill(0);
@@ -256,8 +270,15 @@ impl Chain {
                     k += 1 + sw;
                 } else {
                     let n = (w & 0xFF) as usize;
-                    let fan = w & !NO_Z & 0xFFFF_FF00 == FAN;
+                    let fan = w & !NO_Z & !CULL & 0xFFFF_FF00 == FAN;
+                    let cull = (w & CULL) >> 18;
                     let head = match (fan, w & NO_Z != 0) {
+                        _ if cull != 0 => {
+                            T_CULL
+                                + 4 * (cull as usize - 1)
+                                + 2 * usize::from(fan)
+                                + usize::from(w & NO_Z != 0)
+                        }
                         (true, false) => T_FAN,
                         (true, true) => T_FAN_NO_Z,
                         (false, false) => T_STRIP,

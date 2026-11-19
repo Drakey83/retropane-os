@@ -58,12 +58,19 @@ pub const CORNER_WORDS: usize = 7;
 pub const NO_Z: u32 = 1 << 21;
 /// Words in a corner of a [`NO_Z`] strip or fan.
 pub const CORNER_WORDS_NO_Z: usize = 6;
+/// A strip's or fan's header bits 19-18 (Half-Life kit 116, a probe): 1 or
+/// 2, the TA asked to cull one winding (Dell's D3D driver sends `1`,
+/// `0x40000`, on every strip; its GLES driver clears them and culls on the
+/// CPU: `local/re/7g6-gles-findings.md`). 3 is refused. Sent to the TA
+/// with the header.
+pub const CULL: u32 = 3 << 18;
 
-/// Whether `w` is a strip's or a fan's header (either corner layout).
+/// Whether `w` is a strip's or a fan's header (either corner layout, a
+/// cull field of 0, 1 or 2).
 #[must_use]
 pub const fn is_prim(w: u32) -> bool {
-    let k = w & !NO_Z & 0xFFFF_FF00;
-    k == STRIP || k == FAN
+    let k = w & !NO_Z & !CULL & 0xFFFF_FF00;
+    (k == STRIP || k == FAN) && w & CULL != CULL
 }
 
 /// Words in each corner of the strip or fan whose header is `w`.
@@ -348,6 +355,23 @@ mod tests {
             0,
             0,
         ]
+    }
+
+    #[test]
+    fn a_cull_field_of_one_or_two_is_sent_with_the_header_and_three_refused() {
+        for c in [1u32, 2] {
+            let mut words = state(G.tex_at).to_vec();
+            words.push(FAN | NO_Z | c << 18 | 3);
+            words.extend(0..3 * CORNER_WORDS_NO_Z as u32);
+            let (r, out) = run(&words);
+            let n = r.expect("accepted");
+            assert_eq!((n.strips, n.corners), (1, 3));
+            assert_eq!(out[8], Piece::Word(FAN | NO_Z | c << 18));
+        }
+        let mut words = state(G.tex_at).to_vec();
+        words.push(STRIP | CULL | 3);
+        words.extend(0..3 * CORNER_WORDS as u32);
+        assert!(run(&words).0.is_err(), "a cull field of 3 is no header");
     }
 
     #[test]

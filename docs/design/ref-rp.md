@@ -1594,6 +1594,29 @@ biggest block left in the fight is ref_rp's own model path
 (`RP_StudioCmdSend`, `RP_ProjectS`, `RP_StudioCmdLit`,
 `RP_StudioVertsFixed`, `RP_LitFill`: ~11% of the play, integers already).
 
+**Kit 116, the model path: the TA asked to cull (the owner: "Model path
+first"), a probe, off by default.** Run 241's samples inside
+`RP_StudioCmdSend`: no hot spot, the per-triangle sort (a 64-bit facing
+test, the off-screen test, the lazy fills) spread across it, ~34 cycles a
+triangle for ~5,000 model triangles a fight frame (~2,500 culled). Vendor:
+Dell's GLES culls on the CPU as we do; its D3D driver sends primitive bits
+19-18 = 1 (`0x40000`) on every strip (local/re/7g6-gles-findings.md: a
+lead for a hardware cull field). Ours, the probe: `-rphwcull1` / `-rphwcull2`
+send each command with no corner behind the near plane whole with that
+field and no CPU facing test; the port layer takes a cull field of 1 or 2
+(`rp_port::gfx::CULL`, 3 refused, a host test), the DMA chain has its
+headers. The emulator (60 frames of the fight, the release rp-v0.33.0):
+the switch on and off alike log a TA hang every frame (the emulator's
+model, not the field); 571 commands a frame sent whole, ~30,000 words a
+frame against ~11,300. Run 242 (2026-11-19, field 1): fight **21.3 /
+23.8** (kit 115 23.6 / 26.6), the TA done 12.3 ms after the arm (~8
+before), the end picture 860 pixels from run 241's with no model drawn
+inside out: field 1 either culls the winding we cull or is ignored (depth
+hides the far side); field 2 (run 243) not run, the X51v off the loader
+after run 242. What it means: sending the commands whole costs the bus
+and the TA more than the CPU's sort saves, so the TA's culling loses here
+whatever field 2 shows; the CPU's sort stays.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

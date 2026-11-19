@@ -208,6 +208,9 @@ watching.
   2026-11-19): the TA takes scene N + 1 into a second tail buffer and
   region array while the 3D stage renders scene N; one parameter memory
   and manager shared; pictures exact, no hang (docs/hw/2700g.md).
+- **3D: primitive bits 19-18 = 1 taken** (Half-Life kit 116, X51v,
+  2026-11-19): strips and fans draw, no hang, the picture unchanged; a cull
+  field not yet shown (field 2 not run) (docs/hw/2700g.md).
 - **2D commands by DMA** (`rp-gpubench` run FD, X51v, 2026-10-22): DMA
   into the command window (`0x0FFF5000`) works; 352 words cost the CPU 2
   us to arm against 43-60 us to write; batches must fit the FIFO's room.

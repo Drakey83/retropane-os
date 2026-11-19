@@ -72,6 +72,11 @@ extern unsigned rp_ln_counts[2]; /* kit 90: light nodes met, surfaces tried (ref
    corner here carries as the same word as z, the sky's own depth word
    apart). RP_GFX_NO_Z by default, 0 with -rpz7 (the control). */
 static uint32_t rp_noz = RP_GFX_NO_Z;
+/* Kit 116 (a probe, off by default): `-rphwcull1` / `-rphwcull2` send a
+   model command with no corner behind the near plane whole, its header's
+   bits 19-18 that value (Dell's D3D driver's cull field, a lead:
+   local/re/7g6-gles-findings.md), with no facing test on the CPU */
+static uint32_t rp_hwcull;
 /* kit 103 (ADR-0040 step 7c): the cooked map, live when rp_ck_live */
 static rp_cooked_t rp_ck;
 static int         rp_ck_live;
@@ -129,6 +134,7 @@ static struct
 	uint32_t pics, pics_skipped, masked; /* the 2D layer's quads, tiles not drawn (no room); R303's see-through faces */
 	uint32_t mask_texels, mask_keys; /* R321: see-through faces' texels uploaded, the key among them */
 	uint32_t beams_fixed, beams_culled, beams_off; /* kit 78: beams walked in 16.16, out of the visible set, off the screen */
+	uint32_t hwcull; /* kit 116: model commands sent whole for the TA to cull */
 	uint32_t fx_fixed, fx_cut, fx_off, fx_behind; /* kit 114: fx_behind, wholly behind the near plane, dropped in integers; kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
@@ -165,6 +171,10 @@ void RP_EmitInit( void )
 	rp_mip = gEngfuncs.Cvar_Get( "rp_mip", "-1", 0, "ref_rp: -1 each face's mip level from its nearest corner (the software renderer's); 0-3 every face at that level (R297's proof)" );
 	if( gEngfuncs.Sys_CheckParm( "-rpz7" ))
 		rp_noz = 0; /* the control: seven-word corners */
+	if( gEngfuncs.Sys_CheckParm( "-rphwcull1" ))
+		rp_hwcull = 1u << 18;
+	if( gEngfuncs.Sys_CheckParm( "-rphwcull2" ))
+		rp_hwcull = 2u << 18;
 	if( gEngfuncs.Sys_CheckParm( "-rpnocook" ))
 		rp_cook_on = 0; /* kit 103's control: kit 102's walk, no cooked map */
 	if( gEngfuncs.Sys_CheckParm( "-rpnofacecull" ))
@@ -308,8 +318,8 @@ static void RP_EmitReport( void )
 			rp_mip_force, rp_count.mipswitch / f, RP_AtlasFill(), rp_count.oldplace / f, rp_count.unjams, rp_count.coarser / f, rp_count.deferred / f,
 			rp_count.dlit / f, rp_count.dlit_kib / f );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: culling (rp_cull %d): %u model triangles a frame not sent (facing away or off the screen)\n",
-			rp_cull_on, rp_count.culled / f );
+		fprintf( stderr, "rp-emit: culling (rp_cull %d): %u model triangles a frame not sent (facing away or off the screen); kit 116: %u commands a frame sent whole for the TA to cull (field %u)\n",
+			rp_cull_on, rp_count.culled / f, rp_count.hwcull / f, rp_hwcull >> 18 );
 	if( rp_emit_on == 2 && rp_chip > 0 && rp_holes->value != 0.0f )
 		RP_HoleCheck();
 	if( rp_emit_on == 2 )
@@ -5137,10 +5147,14 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 	const int32_t( *cst )[2] = (const int32_t( * )[2] )rp_scst;
 	uint16_t *idx = rp_sidx;
 	int       m;
+	/* kit 116: the TA asked to cull (the probe), so the CPU's sort only
+	   for a command with a corner behind the near plane */
+	uint32_t  hw = rp_hwcull && rp_cull_on == 1 && !behind && !tr.fFlipViewModel ? rp_hwcull : 0;
+	int       sort = behind || ( rp_cull_on && !hw );
 
 	/* kit 68: a path that sends every corner (or rp_lit 2's check) fills
 	   them all now; the sort below fills only the corners it sends */
-	if( rp_lit_cap || !( behind || rp_cull_on ))
+	if( rp_lit_cap || !sort )
 		RP_LitFillAll( n, c, rp_scst );
 
 	if( rp_lit_cap == 1 )
@@ -5180,7 +5194,9 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 		rp_lit_cap = 0;
 	}
 
-	if( behind || rp_cull_on )
+	if( hw )
+		rp_count.hwcull++;
+	if( sort )
 	{
 		/* each triangle sorted (R299's near plane, the culling): the ones
 		   kept in runs, a triangle across the near plane cut */
@@ -5220,7 +5236,7 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 			m = n - at < 255 ? n - at : 255;
 			for( int k = 0; k < m; k++ )
 				idx[k] = (uint16_t)( at + k );
-			RP_StudioWords( RP_GFX_STRIP( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m );
+			RP_StudioWords( RP_GFX_STRIP( 0 ) | hw, (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m );
 		}
 		rp_count.strips++;
 	}
@@ -5233,7 +5249,7 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 			idx[0] = 0;
 			for( int k = 0; k < m; k++ )
 				idx[1 + k] = (uint16_t)( at + k );
-			RP_StudioWords( RP_GFX_FAN( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m + 1 );
+			RP_StudioWords( RP_GFX_FAN( 0 ) | hw, (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx, m + 1 );
 		}
 		rp_count.fans++;
 	}
@@ -5256,7 +5272,7 @@ static void RP_StudioCmdSend( int fan, int n, int behind )
 			int p = m - at < 255 ? m - at : 254;
 
 			/* pieces of an even count of triangles keep the pattern */
-			RP_StudioWords( RP_GFX_STRIP( 0 ), (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx + at, p );
+			RP_StudioWords( RP_GFX_STRIP( 0 ) | hw, (const uint32_t( * )[RP_VERTEX_WORDS] )c, idx + at, p );
 		}
 		rp_count.fans++;
 	}
