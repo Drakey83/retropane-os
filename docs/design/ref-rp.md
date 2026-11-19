@@ -1708,6 +1708,22 @@ put back at the end. What it means: worth ~0.6 fps on the fight, on one
 unit; whether it holds on every X51v is the any-Axim question (the
 self-test per device), the owner's.
 
+**Option C sized: distant models simplified (the owner: "Try c").**
+Measured before any design: a counter around `R_StudioDrawPoints` (the
+client's renderer calls it a body part at a time; `R_StudioRenderFinal` is
+not on its path, run 253 counted nothing) gave each part's triangles and
+time by its model's distance from the eye. Run 254 (2026-11-19, the fight;
+the counter itself cost ~2%: 23.3 / 26.3), per frame: the view model 1.1 /
+1.5 ms; under 256 units 3.7 / 3.0 ms (20-21 parts: the soldiers close by,
+shells, gibs); 256-512 1.9 / 3.2 ms; 512-1024 0.4 / 0.2 ms; 1024-2048 0.6 /
+0 ms; ~7.7 ms of model drawing a frame. A soldier is ~45 pixels tall at
+512 units, so a simpler model goes unseen only past ~512, which holds
+0.2-1.0 ms: halving it saves ~0.1-0.5 ms (~1%); from 256 units ~3-4%,
+where the change shows. The client's bones are untouched by fewer
+triangles. What it means: C is not worth its build and its look change;
+the counter is removed. Of the big options, A is built, B and D measured
+(B slower in the fight; D +2.5%, R334), C sized out.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
