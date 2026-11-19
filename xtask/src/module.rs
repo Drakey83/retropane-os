@@ -325,7 +325,8 @@ fn linker(
         &tables_asm(&spec.exports),
     )?;
     let script = dir.join(format!("{}.ld", spec.name));
-    std::fs::write(&script, link_script(base, &spec.hot)).map_err(|e| format!("{}: {e}", script.display()))?;
+    std::fs::write(&script, link_script(base, &spec.hot))
+        .map_err(|e| format!("{}: {e}", script.display()))?;
     let mut cmd = Command::new(tc.tool("ld.lld"));
     cmd.arg("-o")
         .arg(elf)
@@ -667,9 +668,13 @@ mod tests {
         assert!(!s.contains(".rp_hot"));
         let h = link_script(0xA912_3000, &["R_Foo".into(), "_Z3barv".into()]);
         let hot = h.find(".rp_hot").expect("the hot code");
-        assert!(h.find(".rp_header").expect("header") < hot && hot < h.find(".text :").expect("code"));
-        assert!(h.contains("*(.text.R_Foo)
-        *(.text._Z3barv)"));
+        assert!(
+            h.find(".rp_header").expect("header") < hot && hot < h.find(".text :").expect("code")
+        );
+        assert!(h.contains(
+            "*(.text.R_Foo)
+        *(.text._Z3barv)"
+        ));
         assert_eq!(h.matches("ALIGN(0x10000)").count(), 2);
         let header = s.find(".rp_header").expect("the header");
         assert!(s.contains(". = 0xA9123000;"));

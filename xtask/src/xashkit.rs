@@ -432,7 +432,9 @@ pub fn sram_ranges(elf: &Path) -> Result<Option<(Vec<u8>, String)>, String> {
             continue;
         }
         if from % 0x1_0000 != 0 || to % 0x1_0000 != 0 {
-            return Err(format!("{m}: its hot code {from:08x}-{to:08x} is not whole 64 KiB pages"));
+            return Err(format!(
+                "{m}: its hot code {from:08x}-{to:08x} is not whole 64 KiB pages"
+            ));
         }
         total += to - from;
         bytes.extend_from_slice(&from.to_le_bytes());
@@ -440,12 +442,18 @@ pub fn sram_ranges(elf: &Path) -> Result<Option<(Vec<u8>, String)>, String> {
         said.push(format!("{m} {} KiB at {from:08x}", (to - from) / 1024));
     }
     if total > 256 * 1024 {
-        return Err(format!("the hot code comes to {} KiB, past the SRAM's 256", total / 1024));
+        return Err(format!(
+            "the hot code comes to {} KiB, past the SRAM's 256",
+            total / 1024
+        ));
     }
     if bytes.is_empty() {
         return Ok(None);
     }
-    Ok(Some((bytes, format!("on-chip SRAM: {} into sram.bin", said.join(", ")))))
+    Ok(Some((
+        bytes,
+        format!("on-chip SRAM: {} into sram.bin", said.join(", ")),
+    )))
 }
 
 /// Lays the kit out in `target/xash-kit`: `runner` (the linked image) as
@@ -539,8 +547,10 @@ engine c
         let (bytes, said) = super::pick_ranges(list, &t, 1).unwrap();
         // a (640 bytes of lines) fits 1 KiB, b (1 KiB) doesn't after it, c does.
         let words: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| u32::from_le_bytes(*w))
             .collect();
         assert_eq!(words, [0xA8E0_0010, 600, 0xA8E1_0000, 64]);
         assert!(said.contains("2 functions"), "{said}");

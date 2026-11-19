@@ -385,7 +385,14 @@ mod target {
     /// `CPAR` put back as found. Interrupts masked by the caller.
     #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
     pub fn coprocessor_survey() -> CoSurvey {
-        let mut s = CoSurvey { cpar_was: 0, cpar_settable: 0, answered: 0, c0: [0; 14], fpsid: None, cp7: [None; 256] };
+        let mut s = CoSurvey {
+            cpar_was: 0,
+            cpar_settable: 0,
+            answered: 0,
+            c0: [0; 14],
+            fpsid: None,
+            cp7: [None; 256],
+        };
         let cpwait = || {
             // SAFETY: CPWAIT (Intel's sequence: read CP15, use it, branch),
             // no side effects.
@@ -395,12 +402,16 @@ mod target {
         };
         let set = |v: u32| {
             // SAFETY: CPAR only gates coprocessor access (put back below).
-            unsafe { core::arch::asm!("mcr p15, 0, {v}, c15, c1, 0", v = in(reg) v, options(nostack, nomem)) };
+            unsafe {
+                core::arch::asm!("mcr p15, 0, {v}, c15, c1, 0", v = in(reg) v, options(nostack, nomem))
+            };
         };
         let get = || {
             let v: u32;
             // SAFETY: a read of CPAR.
-            unsafe { core::arch::asm!("mrc p15, 0, {v}, c15, c1, 0", v = out(reg) v, options(nostack, nomem)) };
+            unsafe {
+                core::arch::asm!("mrc p15, 0, {v}, c15, c1, 0", v = out(reg) v, options(nostack, nomem))
+            };
             v
         };
         s.cpar_was = get();
@@ -498,7 +509,10 @@ mod target {
             // filled, and emptied again below.
             unsafe {
                 if l1.add(first + i).read_volatile() == 0 {
-                    l1.add(first + i).write_volatile(crate::mmu::section(virt + ((i as u32) << 20), crate::mmu::Memory::Device));
+                    l1.add(first + i).write_volatile(crate::mmu::section(
+                        virt + ((i as u32) << 20),
+                        crate::mmu::Memory::Device,
+                    ));
                     added[i] = true;
                 }
             }
@@ -722,7 +736,9 @@ mod target {
                 || !at.is_multiple_of(PAGE)
                 || !len.is_multiple_of(PAGE)
                 || !crate::mmu::SDRAM.contains(&at)
-                || at.checked_add(len).is_none_or(|e| e > crate::mmu::SDRAM.end)
+                || at
+                    .checked_add(len)
+                    .is_none_or(|e| e > crate::mmu::SDRAM.end)
             {
                 return Err("a range is not whole 64 KiB pages of SDRAM");
             }
@@ -1060,11 +1076,10 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessor_survey, coprocessors, CoSurvey, hot_code_off_sram, put_msc1, set_cs3_sram,
-    with_device_window, hot_code_on_sram, move_l1_table, move_l1_table_at, msc1,
-    msc2, set_cs2_half, set_cs3_timing,
+    CoSurvey, coprocessor_survey, coprocessors, hot_code_off_sram, hot_code_on_sram, move_l1_table,
+    move_l1_table_at, msc1, msc2, put_msc1, set_cs2_half, set_cs3_sram, set_cs3_timing,
     set_cs3_vlio, set_cs4_vlio, set_section_memory, snapshot, take_sram, take_sram_words,
-    with_window,
+    with_device_window, with_window,
 };
 
 #[cfg(test)]

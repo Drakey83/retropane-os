@@ -69,7 +69,11 @@ pub const fn is_prim(w: u32) -> bool {
 /// Words in each corner of the strip or fan whose header is `w`.
 #[must_use]
 pub const fn corner_words(w: u32) -> usize {
-    if w & NO_Z != 0 { CORNER_WORDS_NO_Z } else { CORNER_WORDS }
+    if w & NO_Z != 0 {
+        CORNER_WORDS_NO_Z
+    } else {
+        CORNER_WORDS
+    }
 }
 
 /// Words in each corner of the strip or fan whose header is `w`, after a
@@ -204,7 +208,11 @@ pub fn send_runs<T>(
     while at < words.len() {
         let w = words[at];
         if w == STATE || w == STATE2 {
-            let sw = if w == STATE2 { STATE2_WORDS } else { STATE_WORDS };
+            let sw = if w == STATE2 {
+                STATE2_WORDS
+            } else {
+                STATE_WORDS
+            };
             let Some(block) = words.get(at..=at + sw) else {
                 break;
             };
@@ -259,7 +267,11 @@ fn walk(
     while at < words.len() {
         let w = words[at];
         if w == STATE || w == STATE2 {
-            let sw = if w == STATE2 { STATE2_WORDS } else { STATE_WORDS };
+            let sw = if w == STATE2 {
+                STATE2_WORDS
+            } else {
+                STATE_WORDS
+            };
             let Some(block) = words.get(at + 1..=at + sw) else {
                 return refuse(at, Why::Short);
             };
@@ -351,7 +363,15 @@ mod tests {
         assert_eq!(out[9 + 3 * CORNER_WORDS_NO_Z], Piece::End);
         assert_eq!(out[10 + 3 * CORNER_WORDS_NO_Z], Piece::Word(STRIP));
         let mut runs = Vec::new();
-        send_runs(&words, &mut runs, |r, ws| { r.push(ws.to_vec()); true }, |_| true);
+        send_runs(
+            &words,
+            &mut runs,
+            |r, ws| {
+                r.push(ws.to_vec());
+                true
+            },
+            |_| true,
+        );
         assert_eq!(runs[1], vec![STRIP | NO_Z]);
         assert_eq!(runs[2].len(), 3 * CORNER_WORDS_NO_Z);
     }

@@ -928,32 +928,44 @@ mod image {
         if was {
             rt::irq_enable();
         }
-        say!("hw: CPAR {:08x}, all asked {:08x}; MRC answered by {:014b} (CP13..CP0)", s.cpar_was, s.cpar_settable, s.answered);
+        say!(
+            "hw: CPAR {:08x}, all asked {:08x}; MRC answered by {:014b} (CP13..CP0)",
+            s.cpar_was,
+            s.cpar_settable,
+            s.answered
+        );
         for n in 0..14 {
             if s.answered & 1 << n != 0 {
                 say!("hw: CP{n} c0 {:08x}", s.c0[n]);
             }
         }
         match s.fpsid {
-            Some(v) => { say!("hw: FPU: FPSID {v:08x}"); }
-            None => { say!("hw: FPU: none (FPSID read trapped)"); }
+            Some(v) => {
+                say!("hw: FPU: FPSID {v:08x}");
+            }
+            None => {
+                say!("hw: FPU: none (FPSID read trapped)");
+            }
         }
         // CP7: every CRn x CRm that answers, a line a CRn (traps as '-')
         for n in 0..16 {
             let _ = write!(log, "hw: CP7 c{n}:");
             for m in 0..16 {
                 match s.cp7[16 * n + m] {
-                    Some(v) => { let _ = write!(log, " {v:x}"); }
-                    None => { let _ = write!(log, " -"); }
+                    Some(v) => {
+                        let _ = write!(log, " {v:x}");
+                    }
+                    None => {
+                        let _ = write!(log, " -");
+                    }
                 }
             }
             say!("");
         }
         const BASE: usize = 0x0FFE_0000;
         const WORDS: usize = 0x1_0000 / 4;
-        let rd = |a: usize| -> u32 {
-            rt::try_read(rp_hal_pxa27x::devmap::va(a)).unwrap_or(0xDEAD_DEAD)
-        };
+        let rd =
+            |a: usize| -> u32 { rt::try_read(rp_hal_pxa27x::devmap::va(a)).unwrap_or(0xDEAD_DEAD) };
         // This run (the owner, 2026-11-18: crashes): CP7 and the PXA270's
         // buses only; the 2700G passes (A hung the bus in SRAM mode, run
         // probe-0077) wait.
@@ -985,9 +997,13 @@ mod image {
             let o = rt::try_read(rp_hal_pxa27x::devmap::va(0x40A0_0010)).unwrap_or(0);
             let b = rt::try_read(rp_hal_pxa27x::devmap::va(0x41A0_0004)).unwrap_or(0);
             let c = rt::try_read(rp_hal_pxa27x::devmap::va(0x4300_0000)).unwrap_or(0);
-            say!("hw: count {k}: 41a00000 {a:08x}, OSCR0 {o:08x}, 41a00004 {b:08x}, 43000000 {c:08x}");
+            say!(
+                "hw: count {k}: 41a00000 {a:08x}, OSCR0 {o:08x}, 41a00004 {b:08x}, 43000000 {c:08x}"
+            );
         }
-        say!("hw: pass C from {from:08x} to 5fffffff, a line a MiB (non-zero / zero / abort pages)");
+        say!(
+            "hw: pass C from {from:08x} to 5fffffff, a line a MiB (non-zero / zero / abort pages)"
+        );
         // The internal memory's clock on first (CKEN 20, as take_sram
         // does): 0x58000000 (its controller) aborted with it off.
         let sram_clock = diag::take_sram().is_some();
@@ -997,7 +1013,11 @@ mod image {
             while mib < 0x6000_0000 {
                 say!("hw: C {mib:08x}...");
                 let (mut nz, mut z, mut ab, mut first) = (0, 0, 0, 0u32);
-                let end = if mib == 0x4C00_0000 { mib + 0x1000 } else { mib + 0x10_0000 };
+                let end = if mib == 0x4C00_0000 {
+                    mib + 0x1000
+                } else {
+                    mib + 0x10_0000
+                };
                 for page in (mib..end).step_by(0x1000) {
                     match rt::try_read(rp_hal_pxa27x::devmap::va(page)) {
                         Some(0) => z += 1,
@@ -1015,12 +1035,15 @@ mod image {
                 mib += 0x10_0000;
             }
         };
-        let mapped = diag::with_device_window(0x4C10_0000, ((0x6000_0000u32 - 0x4C10_0000) >> 20), &mut scan);
+        let mapped = diag::with_device_window(
+            0x4C10_0000,
+            ((0x6000_0000u32 - 0x4C10_0000) >> 20),
+            &mut scan,
+        );
         if !mapped {
             say!("hw: the device window was refused (not the bring-up map)");
         }
         say!("hw: pass C done");
-
     }
 
     /// [`super::MINI_ONLY`]: the first MiB of the RAM pool as the window,

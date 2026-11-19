@@ -472,7 +472,11 @@ mod target {
     /// test run's `-rpnoapd`, put back at its end).
     pub fn sdram_auto_power_down(on: bool) -> bool {
         let now = rd(MDREFR);
-        let v = if on { now | super::MDREFR_APD } else { now & !super::MDREFR_APD };
+        let v = if on {
+            now | super::MDREFR_APD
+        } else {
+            now & !super::MDREFR_APD
+        };
         if v != now {
             // SAFETY: the memory controller's refresh register, device
             // memory in both maps; only APD changes, which the PXA27x

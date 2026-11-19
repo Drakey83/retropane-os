@@ -663,10 +663,14 @@ fn hot_list(root: &Path, module: &str) -> Result<Vec<String>, String> {
     if std::env::var("RETROPANE_XASH_SRAM").is_ok_and(|v| v.trim() == "0") {
         return Ok(Vec::new());
     }
-    let text = std::fs::read_to_string(root.join(SRAM_LIST))
-        .map_err(|e| format!("{SRAM_LIST}: {e}"))?;
+    let text =
+        std::fs::read_to_string(root.join(SRAM_LIST)).map_err(|e| format!("{SRAM_LIST}: {e}"))?;
     let mut out: Vec<String> = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+    for line in text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
         match line.split_once(' ') {
             Some((m, name)) if m == module => {
                 if !out.iter().any(|n| n == name) {
