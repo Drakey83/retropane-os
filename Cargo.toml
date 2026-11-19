@@ -170,6 +170,11 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.rp-probe]
 opt-level = "s"
+# The hand-over report runs once and prints a few lines (cold): built for
+# size, 26,712 -> 25,196 B loaded (2026-11-19, R332: 88 B over its budget
+# after the runtime's tick hook and sampler check).
+[profile.release.package.rp-handover]
+opt-level = "s"
 # Driver hosts are cold code: calls and button presses (ADR-0005 rule 8).
 [profile.release.package.rp-display-host]
 opt-level = "s"
