@@ -1214,6 +1214,48 @@ index d1fe48e..2814ab0 100644
  	Mod_MakeHull0( mod, bmod );
  	Mod_SetupSubmodels( mod, bmod );
  
+diff --git a/engine/common/mod_studio.c b/engine/common/mod_studio.c
+index b6d2327..9043988 100644
+--- a/engine/common/mod_studio.c
++++ b/engine/common/mod_studio.c
+@@ -354,10 +354,23 @@ static void Mod_SetStudioHullPlane( int planenum, int bone, int axis, float offs
+ 	pl->normal[1] = studio_bones[bone][1][axis];
+ 	pl->normal[2] = studio_bones[bone][2][axis];
+ 
++#if defined( __retropane__ )
++	{
++		// RetroPane kit 115: the distance, C's ((p0 + p1) + p2) + offset in
++		// floats, by the fused dot (rp_fdot.h): the same float.
++		// DotProductFabs stays C's (its fabs sums in doubles)
++		const vec3_t o = { studio_bones[bone][0][3], studio_bones[bone][1][3], studio_bones[bone][2][3] };
++
++		pl->dist = rp_fdot3_asm( pl->normal, o ) + offset;
++		if( planenum & 1 ) pl->dist -= DotProductFabs( pl->normal, size );
++		else pl->dist += DotProductFabs( pl->normal, size );
++	}
++#else
+ 	pl->dist = (pl->normal[0] * studio_bones[bone][0][3]) + (pl->normal[1] * studio_bones[bone][1][3]) + (pl->normal[2] * studio_bones[bone][2][3]) + offset;
+ 
+ 	if( planenum & 1 ) pl->dist -= DotProductFabs( pl->normal, size );
+ 	else pl->dist += DotProductFabs( pl->normal, size );
++#endif
+ 
+ }
+ 
+@@ -711,6 +724,13 @@ static void SV_StudioSetupBones( model_t *pModel,	float frame, int sequence, con
+ 	}
+ 
+ 	Matrix3x4_CreateFromEntity( studio_transform, angles, origin, 1.0f );
++#if defined( __retropane__ )
++	{
++		extern unsigned int rp_concat_n[3];
++
++		rp_concat_n[1] += numbones; // kit 115: the server's bones
++	}
++#endif
+ 
+ 	for( j = numbones - 1; j >= 0; j-- )
+ 	{
 diff --git a/engine/common/net_buffer.c b/engine/common/net_buffer.c
 index 287ef3b..ca5d8dd 100644
 --- a/engine/common/net_buffer.c
@@ -2533,6 +2575,54 @@ index b490cfa..890f096 100644
  	if( chdir( path ) < 0 )
  	{
  		Sys_Error( "Changing directory to %s failed: %s\n", path, strerror( errno ));
+diff --git a/public/matrixlib.c b/public/matrixlib.c
+index d758049..6db4015 100644
+--- a/public/matrixlib.c
++++ b/public/matrixlib.c
+@@ -25,8 +25,43 @@ GNU General Public License for more details.
+ 
+ ========================================================================
+ */
++#if defined( __retropane__ )
++// RetroPane kit 115: the calls each caller makes, a frame's worth at a time
++// (ports/xash/ref_rp/r_emit.c prints and clears them): [0] every concat,
++// [1] the server's hitbox bones (mod_studio.c), [2] the renderer's bones
++unsigned int rp_concat_n[3];
++#endif
++
+ void Matrix3x4_ConcatTransforms( matrix3x4 out, const matrix3x4 in1, const matrix3x4 in2 )
+ {
++#if defined( __retropane__ )
++	// RetroPane kit 115 (run 238: this concat 2.6% of a fight frame, 63
++	// software-float calls each): every entry is C's ((p0 + p1) + p2) [+ t],
++	// which rp_fdot3_asm makes bit for bit in one call (rp_fdot.h): twelve
++	// dots and three adds, the same floats. in2's columns gathered first.
++	float col[4][3];
++
++	rp_concat_n[0]++;
++	for( int j = 0; j < 4; j++ )
++	{
++		col[j][0] = in2[0][j];
++		col[j][1] = in2[1][j];
++		col[j][2] = in2[2][j];
++	}
++	for( int i = 0; i < 3; i++ )
++	{
++		float r0 = rp_fdot3_asm( in1[i], col[0] );
++		float r1 = rp_fdot3_asm( in1[i], col[1] );
++		float r2 = rp_fdot3_asm( in1[i], col[2] );
++		float r3 = rp_fdot3_asm( in1[i], col[3] ) + in1[i][3];
++
++		out[i][0] = r0;
++		out[i][1] = r1;
++		out[i][2] = r2;
++		out[i][3] = r3;
++	}
++	return;
++#endif
+ 	out[0][0] = in1[0][0] * in2[0][0] + in1[0][1] * in2[1][0] + in1[0][2] * in2[2][0];
+ 	out[0][1] = in1[0][0] * in2[0][1] + in1[0][1] * in2[1][1] + in1[0][2] * in2[2][1];
+ 	out[0][2] = in1[0][0] * in2[0][2] + in1[0][1] * in2[1][2] + in1[0][2] * in2[2][2];
 diff --git a/public/xash3d_mathlib.h b/public/xash3d_mathlib.h
 index afbc183..e509d67 100644
 --- a/public/xash3d_mathlib.h

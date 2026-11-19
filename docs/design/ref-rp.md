@@ -1574,6 +1574,26 @@ the renderer's bone setup. Next: count its callers (the server's hitbox
 bones in `mod_studio.c` the likely one, the fight's bullets tracing the
 soldiers' hitboxes).
 
+**Kit 115, the concat's callers counted (the owner: "Yes, kit 115").** The
+engine's `Matrix3x4_ConcatTransforms` as twelve calls of kit 65's fused dot
+and three adds (bit for bit C's, `rp_fdot3_asm`), the hitbox planes'
+float distances by the same dot (their `DotProductFabs` stays C's: its
+`fabs` sums in doubles), and the concats counted. Runs 239-241
+(2026-11-19): cascade 36.5 / 31.4 (kit 114 36.6 / 31.4), the end picture
+**0 pixels** from run 236's; storm 24.9 / 25.2 (24.9 / 25.2); fight 23.6 /
+26.6 (23.4 / 26.5), 238 pixels from run 238's (the frame at a different
+game time). The counts: **122-158 concats a fight frame, none the
+server's hitbox bones** (the cascade 12-45): the engine renderer's own
+(temporary entities' bones: gibs and shells; each model's world
+transform). The concat's samples 244 -> 212: a fused dot costs about what
+its separate calls did (~60 cycles), so the bit-exact way saves little.
+What it means: the concat's next step is the client's kit 51 way (bones
+in 2.28 / 16.16 integers, within 1e-6) for the engine's temporary
+entities, a ruling for the owner since it is not bit for bit; the
+biggest block left in the fight is ref_rp's own model path
+(`RP_StudioCmdSend`, `RP_ProjectS`, `RP_StudioCmdLit`,
+`RP_StudioVertsFixed`, `RP_LitFill`: ~11% of the play, integers already).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

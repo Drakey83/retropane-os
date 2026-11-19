@@ -340,6 +340,15 @@ static void RP_EmitReport( void )
 				fprintf( stderr, "rp-emit: option C's light grid a frame: %u points made, %u reused\n", rp_grid_counts[0] / f, rp_grid_counts[1] / f );
 			rp_grid_counts[0] = rp_grid_counts[1] = 0;
 		}
+		{
+			/* kit 115: the matrix concats a frame and the server's hitbox
+			   bones among them (public/matrixlib.c, mod_studio.c) */
+			extern unsigned int rp_concat_n[3];
+
+			fprintf( stderr, "rp-emit: kit 115's matrix concats a frame: %u in all, %u of them the server's hitbox bones\n",
+				rp_concat_n[0] / f, rp_concat_n[1] / f );
+			rp_concat_n[0] = rp_concat_n[1] = rp_concat_n[2] = 0;
+		}
 		rp_pre_counts[0] = rp_pre_counts[1] = 0;
 		for( int i = 0; i < 10; i++ )
 			rp_prof[i] = 0;
