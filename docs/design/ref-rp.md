@@ -1476,6 +1476,24 @@ models than the cascade's debris), and **the storm cannot pass the
 cascade's own heavy half, 28.7**: the next lever for both is that heavy
 half itself.
 
+**The heavy half (the owner: "Yes, heavy half"): the frame waits on the
+2700G.** Run 218's log: in the calm half the CPU waits **6.4 ms a frame**
+for the last render before it can feed the next (heavy half 1.3-2.4 ms),
+and the 1 kHz samples see the CPU busy ~32.8 ms a heavy frame against the
+34.7 measured. Run 221 (diagnostic, `+rp_lm 0`: the world as one CPU-lit
+pass, R297's choice 2 A, the popping the owner ruled out): cascade **35.0
+/ 30.5 fps**, the wait 0.2 ms. So R297 B's second pass (the lightmaps
+multiplied over the textures) is the calm half's limit and part of the
+heavy half's: the chip draws the world twice. What the design names for
+this ("What would overturn this": "the second unit made to work (C then
+likely wins for the world)"): texture and lightmap in one pass on the
+second texture unit; test M (2026-10-22, docs/hw/2700g.md) made the TA
+accept two-unit objects (TSP bit 16) but the 3D stage hung on each, its
+set-up for unit 1 open. Next, for the owner to pick: that set-up read from
+Dell's driver and tried on the X51v (hangs recover at the next image's
+start), the 2700G's clock past 108.33 (R295), or the render timed in the
+chained path first to size each.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
