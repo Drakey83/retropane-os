@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include "common.h"
 #include "client.h"
+#include "cl_tent.h"
 #include "input.h"
 #include "platform/platform.h"
 #include <retropane.h>
@@ -619,6 +620,36 @@ static void RP_End( void )
 			static uint32_t frames;
 
 			RP_ScoreAs( "rp-cascade" );
+			/*
+			-rpstorm (the owner, 2026-11-18: "build the 500 debris stress
+			test"): on top of the cascade's own debris, every frame a
+			burst of 40 metal gib pieces (4 s of life) is thrown around the
+			zapper, in view, by the engine's own R_BreakModel (the call
+			TE_BREAKMODEL makes), so the temporary entities stay at the
+			engine's limit (max_tents, 500) for the whole scored run: the
+			worst a scene can throw at the debris path. The model is the
+			first gib model the map has loaded (named once in the log).
+			*/
+			if( Sys_CheckParm( "-rpstorm" ))
+			{
+				static int gib = -1;
+
+				if( gib < 0 )
+				{
+					gib = 0;
+					for( int m = 1; m < MAX_MODELS && !gib; m++ )
+						if( cl.models[m] && cl.models[m]->type == mod_studio && Q_stristr( cl.models[m]->name, "gibs" ))
+							gib = m;
+					fprintf( stderr, "rp-storm: 40 pieces a frame of model %d (%s), 4 s each: the temporary entities held at the limit (%d)\n",
+						gib, gib ? cl.models[gib]->name : "none loaded", GI->max_tents );
+				}
+				if( gib )
+				{
+					const vec3_t pos = { 1664.0f, 624.0f, -40.0f }, size = { 256.0f, 256.0f, 128.0f }, dir = { 0.0f, 0.0f, 60.0f };
+
+					R_BreakModel( pos, size, dir, 200.0f, 4.0f, 40, gib, BREAK_METAL );
+				}
+			}
 			/* step 4 said again at the heavy half's start: the sampled
 			   run's "play" is then frames 251-500 alone (the runner marks
 			   the samples at each step line) */

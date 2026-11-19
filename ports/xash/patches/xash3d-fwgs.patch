@@ -4860,7 +4860,7 @@ index 1a7efd6..49158b8 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..ae46f32 100644
+index 2c644f6..52938e1 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
@@ -4950,13 +4950,14 @@ index 2c644f6..ae46f32 100644
  		qsort( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities, sizeof( cl_entity_t * ), (void *)R_TransEntityCompare );
  	}
  
-@@ -501,6 +574,154 @@ static void R_SetupFrame( void )
+@@ -501,6 +574,184 @@ static void R_SetupFrame( void )
  R_DrawEntitiesOnList
  =============
  */
 +#if defined( __retropane__ )
 +/*
-+RetroPane, an option for the owner (7e, "then options"; off unless asked):
++RetroPane, an option for the owner (7e, "then options"), on by default at
++35 since kit 108 (his ruling after watching run 193; -rpdebrisall: every piece):
 +`-rpdebrisN` (e.g. -rpdebris55) draws at most N debris pieces a frame (studio temp entities,
 +index 0), the N nearest the eye; the others still exist and move (their
 +physics is the game's), they are only not lit or drawn this frame. A
@@ -5005,11 +5006,15 @@ index 2c644f6..ae46f32 100644
 +
 +static __attribute__(( noinline )) void RP_DebrisCap( void )
 +{
-+	static float  d2[MAX_VISIBLE_PACKET * 4];
++	/* kit 108: squared distances kept as their float's bits: for numbers
++	   >= 0 the bits order as the values do, so every compare below is an
++	   integer one (run 196: the float compares of the old selection were
++	   ~1.5 ms a frame with 500 pieces alive) */
++	static uint32_t d2[MAX_VISIBLE_PACKET * 4];
 +	cl_entity_t **lists[2] = { tr.draw_list->solid_entities, tr.draw_list->trans_entities };
 +	uint         *counts[2] = { &tr.draw_list->num_solid_entities, &tr.draw_list->num_trans_entities };
 +	int           n = 0;
-+	float         cut;
++	uint32_t      cut;
 +
 +	{
 +		/* `-rpdebrisN` (one word: the runner's command line holds 31),
@@ -5019,6 +5024,11 @@ index 2c644f6..ae46f32 100644
 +		if( !read )
 +		{
 +			read = 1;
++			/* kit 108: the owner's ruling (2026-11-18, after watching
++			   run 193: "Looked fine", "i dont really notice a
++			   difference"): the 35 nearest by default; -rpdebrisall
++			   draws every piece, -rpdebrisN another cap */
++			rp_debris_cap = gEngfuncs.Sys_CheckParm( "-rpdebrisall" ) ? -1 : 35;
 +			for( int k = 0; k <= 256; k++ )
 +			{
 +				char w[24];
@@ -5049,27 +5059,47 @@ index 2c644f6..ae46f32 100644
 +				vec3_t d;
 +
 +				VectorSubtract( e->origin, RI.rvp.vieworigin, d );
-+				d2[n++] = DotProduct( d, d );
++				float q = DotProduct( d, d );
++
++				memcpy( &d2[n++], &q, 4 );
 +			}
 +		}
 +	rp_debris_counts[0] += n;
 +	if( n <= rp_debris_cap )
 +		return;
-+	/* the cap-th nearest distance: a selection over the few pieces */
++	/* the cap-th nearest distance: Hoare's quickselect over the bits
++	   (linear on average; the old selection was cap x n) */
++	if( rp_debris_cap == 0 )
++		cut = 0; /* nothing kept: kept_near stops at 0 below */
++	else
 +	{
-+		static float s[MAX_VISIBLE_PACKET * 4];
++		static uint32_t s[MAX_VISIBLE_PACKET * 4];
++		int             lo = 0, hi = n - 1, want = rp_debris_cap - 1;
 +
-+		memcpy( s, d2, sizeof( float ) * n );
-+		for( int k = 0; k <= rp_debris_cap && k < n; k++ )
++		memcpy( s, d2, sizeof( uint32_t ) * n );
++		while( lo < hi )
 +		{
-+			int m = k;
++			uint32_t pv = s[( lo + hi ) >> 1];
++			int      i = lo, j = hi;
 +
-+			for( int j = k + 1; j < n; j++ )
-+				if( s[j] < s[m] )
-+					m = j;
-+			float x = s[k]; s[k] = s[m]; s[m] = x;
++			while( i <= j )
++			{
++				while( s[i] < pv ) i++;
++				while( s[j] > pv ) j--;
++				if( i <= j )
++				{
++					uint32_t x = s[i]; s[i] = s[j]; s[j] = x;
++					i++; j--;
++				}
++			}
++			if( want <= j )
++				hi = j;
++			else if( want >= i )
++				lo = i;
++			else
++				break;
 +		}
-+		cut = rp_debris_cap > 0 ? s[rp_debris_cap - 1] : -1.0f;
++		cut = s[want];
 +	}
 +	n = 0;
 +	for( int l = 0; l < 2; l++ )
@@ -5105,12 +5135,12 @@ index 2c644f6..ae46f32 100644
  static void R_DrawEntitiesOnList( void )
  {
  	// extern int d_aflatcolor;
-@@ -510,6 +731,22 @@ static void R_DrawEntitiesOnList( void )
+@@ -510,6 +761,22 @@ static void R_DrawEntitiesOnList( void )
  	// RI.currententity = CL_GetEntityByIndex(0);
  	d_pdrawspans = R_PolysetFillSpans8;
  	GL_SetRenderMode( kRenderNormal );
 +#if defined( __retropane__ )
-+	RP_DebrisCap( ); /* an option for the owner: off unless -rpdebrisN */
++	RP_DebrisCap( ); /* kit 108: the 35 nearest debris pieces (-rpdebrisall: all) */
 +	{
 +		/* kit 89: the lighting stage for every studio model first
 +		   (ref_light.c RP_LightPrepass); the time as R_StudioSetupTimings
@@ -5128,7 +5158,7 @@ index 2c644f6..ae46f32 100644
  	// first draw solid entities
  	for( int i = 0; i < tr.draw_list->num_solid_entities && !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ); i++ )
  	{
-@@ -959,7 +1196,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
+@@ -959,7 +1226,8 @@ void R_DrawBrushModel( cl_entity_t *pent )
  
  
  	insubmodel = false;
@@ -5138,7 +5168,7 @@ index 2c644f6..ae46f32 100644
  	alphaspans = false;
  }
  
-@@ -1010,7 +1248,8 @@ static void R_EdgeDrawing( void )
+@@ -1010,7 +1278,8 @@ static void R_EdgeDrawing( void )
  	R_DrawBEntitiesOnList();
  
  	// display all edges
@@ -5148,7 +5178,7 @@ index 2c644f6..ae46f32 100644
  }
  
  /*
-@@ -1113,6 +1352,9 @@ R_BeginFrame
+@@ -1113,6 +1382,9 @@ R_BeginFrame
  */
  void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
@@ -5158,7 +5188,7 @@ index 2c644f6..ae46f32 100644
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1466,8 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1496,8 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -5167,7 +5197,7 @@ index 2c644f6..ae46f32 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1614,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1644,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  
