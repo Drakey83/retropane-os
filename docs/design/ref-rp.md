@@ -1639,6 +1639,30 @@ the physics and traces hold no exact lever worth a device run; the
 server's tick below 20 Hz is the one big setting (~5% at 15 Hz), and it
 is the owner's.
 
+**The big options sized (the owner, 2026-11-19: "Size the big options").**
+Run 244 (the fight, `-rpsampleon 1`, 23.6 / 26.7 fps): **the I-cache takes
+17% of the play's cycles** (166 and 171 per mille; the cascade's 116-146
+in run 168), buffers full 4%, 7 data-cache misses a thousand cycles. Of the
+stall samples 45% are in the SRAM code itself (a refill from SRAM is
+cheaper, not free), the rest flat (the top 40 functions outside it 28% of
+the stalls in 88 KiB); the runner's own hot code (`rp_snd_played`,
+`rp_snd_write`, `rp_gfx_frame_parts`, `rp_time_us`: ~2.3 KiB) is not on the
+SRAM at all, ~6% of the stalls. 72% of the fight's time samples are in
+the SRAM code (the cascade 75%; ranked from run 118's cascade). The
+options, the fight's average 25.0 fps (45 needs ~44% less time a frame):
+
+| Option | What changes | Estimate | Whose |
+|---|---|---|---|
+| A. The SRAM list ranked on the fight and the cascade together, the runner's hot code given SRAM too | nothing seen or heard | ~2-4% (+0.5-1 fps) | ours (exact) |
+| B. The server tick at 15 Hz (20 now, kit 106) | monsters and physics updated less often | ~5% (+1.3 fps) | the owner's |
+| C. Distant models with fewer triangles, made when the map is cooked | far models simpler | ~4-6% | the owner's (look) |
+| D. The CPU past 624 MHz (run 88: 682.5 MHz ran clean, the cascade no faster, bus-bound) | above Intel's rating: every X51v, not one unit | unknown for the fight; one run | the owner's |
+
+Together A-C come to ~12-15% (the fight ~28-29 fps). What it means: no
+option or set of them brings the fight near 45; the fight's frame is
+spread over the whole game (renderer 41%, server 22%, client 17.5%, sound
+7.6%).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
