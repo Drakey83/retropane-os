@@ -1679,6 +1679,23 @@ runs' spread; more SRAM coverage of the marginal functions buys little
 (run 244: the stalls are in the SRAM code too). The exact levers sized
 here are spent; B, C and D are the owner's.
 
+**Option B measured: the server at 15 Hz (the owner: "Try B (15 Hz)").**
+Runs 248-249 with `+sv_fps 15` repeated kit 117 to the tenth (fight 23.8 /
+26.8, cascade 36.5 / 31.2): the engine raises `sv_fps` below its host floor
+`MIN_FPS` (20) back to 20, so they ran at 20 Hz (and show the runs repeat).
+The floor for `sv_fps` alone is now 10 (`sv_main.c`; the default stays 20,
+kit 106; the host's own limits unchanged). Runs 250-251 (2026-11-19, a real
+15 Hz): fight **23.2 / 25.7** (20 Hz: 23.8 / 26.8), its end picture 6,423
+pixels from run 247's (a different game state); cascade **37.9 / 32.0**
+(36.5 / 31.2); no new warning in either log. The fight's samples: the
+client's prediction grew (`PM_PlayerTraceExt` 58 -> 83, `CL_PredictMovement`
+67 -> 82, `PM_RecursiveHullCheck` 260 -> 290: ~66 ms between the server's
+acknowledgements, more commands re-predicted every frame) while the
+server's physics fell out of the top. What it means: 15 Hz trades the
+server's work for the client's re-prediction; the fight, where the player
+moves and the server has the most to do, comes out ~3% slower, the
+cascade ~3% faster. The default stays 20 Hz.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

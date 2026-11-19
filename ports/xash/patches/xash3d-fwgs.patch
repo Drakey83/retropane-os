@@ -2361,7 +2361,7 @@ index 3df187a..f663890 100644
  }
  
 diff --git a/engine/server/sv_main.c b/engine/server/sv_main.c
-index 985e438..1da88a6 100644
+index 985e438..762f8d3 100644
 --- a/engine/server/sv_main.c
 +++ b/engine/server/sv_main.c
 @@ -19,6 +19,10 @@ GNU General Public License for more details.
@@ -2388,7 +2388,21 @@ index 985e438..1da88a6 100644
  
  // gore-related cvars
  static CVAR_DEFINE_AUTO( violence_hblood, "1", 0, "draw human blood" );
-@@ -955,6 +963,7 @@ void SV_Init( void )
+@@ -254,8 +262,11 @@ static void SV_CheckCmdTimes( void )
+ 
+ 	if( sv_fps.value != 0.0f )
+ 	{
+-		if( sv_fps.value < MIN_FPS )
+-			Cvar_SetValue( "sv_fps", MIN_FPS );
++		// RetroPane (option B, the owner 2026-11-19: "Try B (15 Hz)"): the
++		// server's tick may go down to 10 Hz to be measured (the engine's
++		// floor is the host's MIN_FPS, 20); the default stays 20 (kit 106)
++		if( sv_fps.value < 10.0f )
++			Cvar_SetValue( "sv_fps", 10.0f );
+ 
+ 		if( sv_fps.value > MAX_FPS_HARD )
+ 			Cvar_SetValue( "sv_fps", MAX_FPS_HARD );
+@@ -955,6 +966,7 @@ void SV_Init( void )
  	Cvar_RegisterVariable( &sv_hostmap );
  	Cvar_DirectSet( &sv_hostmap, GI->startmap );
  	Cvar_RegisterVariable( &sv_password );
