@@ -758,6 +758,43 @@ static void RP_End( void )
 				why = "the fight's|500 frames are done";
 		}
 	}
+	/* -rpplay (the owner, 2026-11-19: "put into a scene with some guns and
+	   be able to play it"): the fight's map and place with every weapon
+	   and god mode, then the player's own hands (no script, no frame
+	   limit, real time: the scenes' fixed step is not set), the
+	   ammunition topped up every 20 s; the run ends at -rpend or by the
+	   menu's quit */
+	if( state == 1 && RP_Parm( "-rpplay" ))
+	{
+		static double game0 = -1.0, topped;
+		static int    stage;
+		double        ms;
+
+		if( game0 < 0.0 && CL_Active( ))
+			game0 = cl.time;
+		ms = game0 < 0.0 ? 0.0 : ( cl.time - game0 ) * 1000.0;
+		if( stage == 0 && ms > 2000.0 )
+		{
+			stage = 1;
+			Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\nrp_setpos 450 400 -1730 10 -60\n" );
+		}
+		else if( stage == 1 && ms > 4000.0 )
+		{
+			stage = 2;
+			topped = ms;
+			Cbuf_AddText( "weapon_9mmAR\n" );
+			fprintf( stderr, "rp-play: the player's own from %u ms of game time\n", (unsigned)ms );
+		}
+		else if( stage == 2 )
+		{
+			RP_ScoreAs( "rp-play" );
+			if( ms - topped > 20000.0 )
+			{
+				topped = ms;
+				Cbuf_AddText( "impulse 101\n" );
+			}
+		}
+	}
 	/* R321's check (-rpcam x,y,z,pitch,yaw): the player put at one spot
 	   facing one way, held there (noclip), so the end frame shows it */
 	{
