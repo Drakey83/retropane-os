@@ -1663,6 +1663,22 @@ option or set of them brings the fight near 45; the fight's frame is
 spread over the whole game (renderer 41%, server 22%, client 17.5%, sound
 7.6%).
 
+**Kit 117, option A (the owner: "Build A (exact)").** The SRAM list
+(`ports/xash/sram-hot.txt`) ranked by samples a byte from the cascade's
+play (run 239) and the fight's (run 241) weighed equally, where it was the
+cascade's alone (run 118), the same budgets (185 KiB of the engine's, 58 of
+the client's after the float and division sections): by name it covers
+80.3% of the cascade's play samples (74.9% before) and 81.4% of the
+fight's (72.1%). The runner's own hot code is left off: the SRAM goes in
+whole 64 KiB pages a module, all four taken, for ~1% of the cycles. Runs
+245-247 (2026-11-19): cascade 36.5 / 31.2 (kit 115 36.5 / 31.4), the end
+picture **0 pixels** from run 239's; storm 24.8 / 25.0 (24.9 / 25.2);
+fight **23.8 / 26.8** (23.6 / 26.6), 78.7% of its play samples in the SRAM
+code (72.3%). What it means: ~+0.2 fps on the fight, at the edge of the
+runs' spread; more SRAM coverage of the marginal functions buys little
+(run 244: the stalls are in the SRAM code too). The exact levers sized
+here are spent; B, C and D are the owner's.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
