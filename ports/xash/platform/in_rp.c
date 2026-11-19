@@ -22,6 +22,30 @@ GNU General Public License for more details.
 #include "rp_hl_keys.h"
 #include <stdio.h>
 
+/* Kit 118: a switch on the command line, looked up once (the test scenes'
+   driver below asks every frame; Sys_CheckParm compares every word of the
+   line, ~0.5% of a fight frame in run 247). The line never changes while
+   the program runs, so the answer kept is the answer; keyed on the string
+   literal's address (each call site passes its own). */
+static int RP_Parm( const char *word )
+{
+	static struct
+	{
+		const char *word;
+		int         on;
+	} memo[24];
+	static int n;
+
+	for( int i = 0; i < n; i++ )
+		if( memo[i].word == word )
+			return memo[i].on;
+	if( n == (int)( sizeof( memo ) / sizeof( memo[0] )))
+		return Sys_CheckParm( word );
+	memo[n].word = word;
+	memo[n].on = Sys_CheckParm( word );
+	return memo[n++].on;
+}
+
 /*
 The OS hands over what the X51v has, already turned for landscape and the
 stylus already filtered and in screen pixels (rp_input_poll). Here each
@@ -180,7 +204,7 @@ static void RP_MemoryLog( void )
 	uint64_t        now;
 
 	if( asked < 0 )
-		asked = Sys_CheckParm( "-rpmemlist" ) ? 1 : 0;
+		asked = RP_Parm( "-rpmemlist" ) ? 1 : 0;
 	if( !asked )
 		return;
 
@@ -448,7 +472,7 @@ static void RP_Walk( uint64_t played_us )
 		/* kit 74's check (-rpfx): the MP5 held firing, so every frame has
 		   the effects R320 draws (muzzle flashes, tracers, impact sparks:
 		   sprites, beams, particles); not for the timed walk */
-		if( Sys_CheckParm( "-rpfx" ))
+		if( RP_Parm( "-rpfx" ))
 			Cbuf_AddText( "give weapon_egon\ngive ammo_gaussclip\ngive ammo_gaussclip\nwait\nweapon_egon\nwait\nwait\n+attack\n" );
 		VectorCopy( cl.simorg, last );
 		stuck_check = ms + 1000;
@@ -456,7 +480,7 @@ static void RP_Walk( uint64_t played_us )
 	}
 	/* -rpfx: the gluon gun's ammunition topped up every 4 s, so it never
 	   stops firing (its beam and sprites in every frame, the end shot too) */
-	if( ms >= fx_next && Sys_CheckParm( "-rpfx" ))
+	if( ms >= fx_next && RP_Parm( "-rpfx" ))
 	{
 		fx_next = ms + 4000;
 		Cbuf_AddText( "give ammo_gaussclip\n" );
@@ -543,7 +567,7 @@ static void RP_End( void )
 		/* the fixed step and the seed from the first frame, before the
 		   map loads: its scientists and doors move from its first
 		   frame, in game time */
-		if( Sys_CheckParm( "-rpwalk" ) || Sys_CheckParm( "-rpcascade" ) || Sys_CheckParm( "-rpfight" ))
+		if( RP_Parm( "-rpwalk" ) || RP_Parm( "-rpcascade" ) || RP_Parm( "-rpfight" ))
 		{
 			COM_SetRandomSeed( 0x5EED );
 			Cvar_Set( "host_framerate", RP_WALK_STEP );
@@ -574,7 +598,7 @@ static void RP_End( void )
 			fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds. It does|not end by itself:|soft reset to stop.\n" );
 	}
 
-	if( state == 1 && Sys_CheckParm( "-rpwalk" ))
+	if( state == 1 && RP_Parm( "-rpwalk" ))
 	{
 		RP_Walk( now - played_from );
 		RP_WalkScore();
@@ -590,7 +614,7 @@ static void RP_End( void )
 	Every run plays the same frames; scored from the firing, window by
 	window as the walk ("rp-cascade: frames ...").
 	*/
-	if( state == 1 && Sys_CheckParm( "-rpcascade" ))
+	if( state == 1 && RP_Parm( "-rpcascade" ))
 	{
 		static double game0 = -1.0;
 		static int    stage;
@@ -612,7 +636,7 @@ static void RP_End( void )
 			fprintf( stderr, "rp-cascade: fired (fire probe_arm_mm) at %u ms of game time\n", (unsigned)ms );
 			Cbuf_AddText( "fire probe_arm_mm\n" );
 			/* -rpcalm: the sampled play is the calm frames 1-250 alone */
-			if( Sys_CheckParm( "-rpcalm" ))
+			if( RP_Parm( "-rpcalm" ))
 				fprintf( stderr, "rp-step: 4/5 The cascade's|calm frames: 1|to 250.\n" );
 		}
 		else if( stage == 2 )
@@ -630,7 +654,7 @@ static void RP_End( void )
 			worst a scene can throw at the debris path. The model is the
 			first gib model the map has loaded (named once in the log).
 			*/
-			if( Sys_CheckParm( "-rpstorm" ))
+			if( RP_Parm( "-rpstorm" ))
 			{
 				static int gib = -1;
 
@@ -653,7 +677,7 @@ static void RP_End( void )
 			/* step 4 said again at the heavy half's start: the sampled
 			   run's "play" is then frames 251-500 alone (the runner marks
 			   the samples at each step line) */
-			if( frames + 1u == RP_WALK_WINDOW && !Sys_CheckParm( "-rpcalm" ))
+			if( frames + 1u == RP_WALK_WINDOW && !RP_Parm( "-rpcalm" ))
 				fprintf( stderr, "rp-step: 4/5 The cascade's|heavy half: frames|251 to 500.\n" );
 			/* ref_rp's counts reported at frames 250 and 480: the second
 			   covers the heavy half alone (the run quits at 500, before a later one) */
@@ -671,13 +695,13 @@ static void RP_End( void )
 			   (the 2700G's and the software's) show the same moment */
 			if( ++frames >= 2u * RP_WALK_WINDOW )
 				why = "the cascade's|500 frames are done";
-			else if( frames >= RP_WALK_WINDOW && Sys_CheckParm( "-rpcalm" ))
+			else if( frames >= RP_WALK_WINDOW && RP_Parm( "-rpcalm" ))
 				why = "the cascade's|calm frames are done";
 			/* -rpcascademid (the owner, 2026-11-18: "Mid-cascade shots"):
 			   the run ends at frame 300, the debris falling, so the end
 			   picture shows the debris's shading (options A and B judged
 			   against the plain kit at the same game frame) */
-			else if( frames >= RP_WALK_WINDOW + 50u && Sys_CheckParm( "-rpcascademid" ))
+			else if( frames >= RP_WALK_WINDOW + 50u && RP_Parm( "-rpcascademid" ))
 				why = "the cascade's|frame 300: a|picture mid-cascade";
 		}
 	}
@@ -691,7 +715,7 @@ static void RP_End( void )
 	aliens fight; scored from the first shot, frames 1-250 and 251-500
 	("rp-fight: frames ..."), ending at frame 500.
 	*/
-	if( state == 1 && Sys_CheckParm( "-rpfight" ))
+	if( state == 1 && RP_Parm( "-rpfight" ))
 	{
 		static double game0 = -1.0;
 		static int    stage;
@@ -745,7 +769,7 @@ static void RP_End( void )
 		   the suit given once the map plays */
 		static int suit_done;
 
-		if( state == 1 && !suit_done && now - played_from > 2000000u && Sys_CheckParm( "-rpsuit" ))
+		if( state == 1 && !suit_done && now - played_from > 2000000u && RP_Parm( "-rpsuit" ))
 		{
 			suit_done = 1;
 			Cbuf_AddText( "sv_cheats 1\ngive item_suit\n" );
@@ -773,7 +797,7 @@ static void RP_End( void )
 
 	state = 2;
 	fprintf( stderr, "rp-step: 5/5 Ending by itself:|%s.|The engine shuts|down, then back to|the loader.\n", why );
-	if( Sys_CheckParm( "-rpendshot" ) && Cvar_VariableValue( "rp_gpu" ) == 1.0f )
+	if( RP_Parm( "-rpendshot" ) && Cvar_VariableValue( "rp_gpu" ) == 1.0f )
 	{
 		Cvar_SetValue( "rp_both", 1.0f );
 		asked = now;

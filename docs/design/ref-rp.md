@@ -1724,6 +1724,24 @@ triangles. What it means: C is not worth its build and its look change;
 the counter is removed. Of the big options, A is built, B and D measured
 (B slower in the fight; D +2.5%, R334), C sized out.
 
+**Kit 118 (the owner: "keep pushing Half-Life fps").** Run 247's samples
+again, three levers kit 117 left: (1) a local light (a muzzle flash) sent
+the whole model part to the floats, chrome included (`R_StudioSetupChrome`
+1.5%), though chrome's texels do not depend on the light: they now stay
+on kit 4d's integer path (`rp_chrome_part`: the lit path's conditions but
+for the local light), the texels every flash-free frame already uses; (2)
+the test scenes' driver (`in_rp.c`) asked `Sys_CheckParm` every frame, a
+case-insensitive compare of all 31 words each (`strcasecmp` + `tolower`
+~0.7%): each switch is read once (`RP_Parm`, exact: the line never
+changes); (3) `R_SetUpWorldTransform` (0.9%, `AngleVectors` and a float
+concat before every model and sprite) depends only on the view's vectors
+and origin: the last call's matrices are kept while those 12 floats are
+bit for bit the same (exact). Runs 255-257 (2026-11-19): cascade **36.7 /
+31.7** (kit 117 36.5 / 31.2), the end picture **0 pixels** from run 245's;
+storm **25.1 / 25.3** (24.8 / 25.0); fight **24.6 / 27.7** (23.8 / 26.8),
+its picture 450 pixels from run 247's (the gun and a sprite's edge, as
+between earlier kits).
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

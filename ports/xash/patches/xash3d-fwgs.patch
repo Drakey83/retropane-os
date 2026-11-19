@@ -6129,7 +6129,7 @@ index 3d0f609..e7299f0 100644
  	VectorMA( org, frame->down * scale, v_up, point );
  	VectorMA( point, frame->left * scale, v_right, point );
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..88fd471 100644
+index 03790d8..c53d34b 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
 @@ -618,6 +618,10 @@ StudioFxTransform
@@ -6293,7 +6293,7 @@ index 03790d8..88fd471 100644
  		if(( el->key & 0xFFF ) == ent->index )
  		{
  			int att = ( el->key >> 12 ) & 0xF;
-@@ -1675,6 +1766,159 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
+@@ -1675,6 +1766,163 @@ static int R_StudioMeshCompare( const sortedmesh_t *a, const sortedmesh_t *b )
  	return 0;
  }
  
@@ -6304,6 +6304,10 @@ index 03790d8..88fd471 100644
 +static int  rp_chrome_st[RP_STUDIO_VERTS][2];
 +static int  rp_chrome_age[MAXSTUDIOBONES];
 +static int  rp_lit_part;
++// kit 118: the chrome texels in integers whenever the part could be lit in
++// integers but for a local light (a muzzle flash): chrome does not depend
++// on the light, so a flash no longer sends its texels to the floats
++static int  rp_chrome_part;
 +
 +/*
 +===============
@@ -6424,7 +6428,7 @@ index 03790d8..88fd471 100644
 +			{
 +				// R_StudioDrawChromeMesh's texels: the normal's against the
 +				// bone's chrome vectors (in integers when lit so)
-+				if( rp_lit_part && (unsigned)ni < RP_STUDIO_VERTS )
++				if( rp_chrome_part && (unsigned)ni < RP_STUDIO_VERTS )
 +				{
 +					v[k].s = rp_chrome_st[ni][0];
 +					v[k].t = rp_chrome_st[ni][1];
@@ -6453,7 +6457,7 @@ index 03790d8..88fd471 100644
  /*
  ===============
  R_StudioDrawNormalMesh
-@@ -1686,6 +1930,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1686,6 +1934,13 @@ static void R_StudioDrawNormalMesh( short *ptricmds, vec3_t *pstudionorms, float
  {
  	int   i;
  
@@ -6467,7 +6471,7 @@ index 03790d8..88fd471 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1719,6 +1970,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+@@ -1719,6 +1974,13 @@ static void R_StudioDrawFloatMesh( short *ptricmds, vec3_t *pstudionorms )
  {
  	int   i;
  
@@ -6481,7 +6485,7 @@ index 03790d8..88fd471 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1754,6 +2012,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
+@@ -1754,6 +2016,15 @@ static void R_StudioDrawChromeMesh( short *ptricmds, vec3_t *pstudionorms, float
  	qboolean glowShell = ( scale > 0.0f ) ? true : false;
  	vec3_t   vert;
  
@@ -6497,7 +6501,7 @@ index 03790d8..88fd471 100644
  	while(( i = *( ptricmds++ )))
  	{
  		if( i < 0 )
-@@ -1812,6 +2079,10 @@ static void R_StudioDrawPoints( void )
+@@ -1812,6 +2083,10 @@ static void R_StudioDrawPoints( void )
  	mstudiomesh_t    *pmesh;
  	short            *pskinref;
  	float            lv_tmp;
@@ -6508,7 +6512,7 @@ index 03790d8..88fd471 100644
  
  	if( !m_pStudioHeader )
  		return;
-@@ -1850,13 +2121,39 @@ static void R_StudioDrawPoints( void )
+@@ -1850,13 +2125,40 @@ static void R_StudioDrawPoints( void )
  	}
  	else
  	{
@@ -6540,8 +6544,9 @@ index 03790d8..88fd471 100644
 +	// made them so itself)
 +	if( !rp_fix )
 +		RP_StudioVerts();
-+	rp_lit_part = rp_fix && !g_studio.numlocallights && m_pSubModel->numnorms <= RP_STUDIO_VERTS
++	rp_chrome_part = rp_fix && m_pSubModel->numnorms <= RP_STUDIO_VERTS
 +		&& RI.currententity->curstate.rendermode != kRenderTransAdd;
++	rp_lit_part = rp_chrome_part && !g_studio.numlocallights;
 +	if( rp_lit_part )
 +	{
 +		RP_StudioLightBegin( g_studio.lightcolor, g_studio.ambientlight, g_studio.shadelight );
@@ -6551,7 +6556,7 @@ index 03790d8..88fd471 100644
  	// generate shared normals for properly scaling glowing shell
  	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
  	{
-@@ -1868,7 +2165,7 @@ static void R_StudioDrawPoints( void )
+@@ -1868,7 +2170,7 @@ static void R_StudioDrawPoints( void )
  
  	for( j = k = 0; j < m_pSubModel->nummesh; j++ )
  	{
@@ -6560,7 +6565,7 @@ index 03790d8..88fd471 100644
  
  		// fill in sortedmesh info
  		g_studio.meshes[j].flags = g_nFaceFlags;
-@@ -1886,10 +2183,42 @@ static void R_StudioDrawPoints( void )
+@@ -1886,17 +2188,66 @@ static void R_StudioDrawPoints( void )
  				VectorSet( g_studio.lightvalues[k], tr.blend, tr.blend, tr.blend );
  			}
  		}
@@ -6603,7 +6608,32 @@ index 03790d8..88fd471 100644
  				if( FBitSet( m_pStudioHeader->flags, STUDIO_HAS_BONEWEIGHTS ))
  					R_StudioLighting( &lv_tmp, -1, g_nFaceFlags, g_studio.norms[k] );
  				else
-@@ -1920,7 +2249,7 @@ static void R_StudioDrawPoints( void )
+ 					R_StudioLighting( &lv_tmp, *pnormbone, g_nFaceFlags, (float *)pstudionorms );
+ 
+ 				if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
+-					R_StudioSetupChrome( g_studio.chrome[k], *pnormbone, (float *)pstudionorms );
++				{
++					if( rp_chrome_part )
++					{
++						// kit 118: as the lit path's chrome (above)
++						if( rp_chrome_age[*pnormbone] != g_studio.framecount )
++						{
++							vec2_t first;
++
++							g_studio.chromeage[*pnormbone] = 0;
++							R_StudioSetupChrome( first, *pnormbone, (float *)pstudionorms );
++							RP_StudioChromeBone( *pnormbone, g_studio.chromeright[*pnormbone], g_studio.chromeup[*pnormbone] );
++							rp_chrome_age[*pnormbone] = g_studio.framecount;
++						}
++						RP_StudioChromeFixed( *pnormbone, (float *)pstudionorms, rp_chrome_st[k] );
++					}
++					else
++						R_StudioSetupChrome( g_studio.chrome[k], *pnormbone, (float *)pstudionorms );
++				}
+ 				VectorScale( g_studio.lightcolor, lv_tmp, g_studio.lightvalues[k] );
+ 			}
+ 		}
+@@ -1920,7 +2271,7 @@ static void R_StudioDrawPoints( void )
  		pmesh = g_studio.meshes[j].mesh;
  		ptricmds = (short *)((byte *)m_pStudioHeader + pmesh->triindex );
  
@@ -6612,7 +6642,7 @@ index 03790d8..88fd471 100644
  
  		s = 1.0f / (float)ptexture[pskinref[pmesh->skinref]].width;
  		t = 1.0f / (float)ptexture[pskinref[pmesh->skinref]].height;
-@@ -1947,14 +2276,16 @@ static void R_StudioDrawPoints( void )
+@@ -1947,14 +2298,16 @@ static void R_StudioDrawPoints( void )
  
  		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
  
@@ -6809,6 +6839,38 @@ index e47e115..41478c1 100644
  				   r_drawsurf.surfwidth * r_drawsurf.surfheight * 2 );
  		CACHESPOT( surface )[miplevel] = cache;
  		cache->owner = &CACHESPOT( surface )[miplevel];
+diff --git a/ref/soft/r_trialias.c b/ref/soft/r_trialias.c
+index e2edb3d..d6dcea0 100644
+--- a/ref/soft/r_trialias.c
++++ b/ref/soft/r_trialias.c
+@@ -60,6 +60,27 @@ void R_SetUpWorldTransform( void )
+ //
+ 
+ 	s_ziscale = (float)0x8000 * (float)0x10000;
++	{
++		// RetroPane kit 118 (run 247: this 0.9% of a fight frame, called
++		// for every model and sprite): the matrices made here depend only
++		// on the view (its right, up and forward vectors and its origin)
++		// and are written nowhere else (statics of this file), so while
++		// those 12 floats are bit for bit the last call's, the last
++		// call's matrices are the answer (s_ziscale is set above every
++		// time: the view model changes it)
++		static float last[12];
++		static int   have;
++		float        now[12];
++
++		memcpy( now + 0, RI.vright, sizeof( vec3_t ));
++		memcpy( now + 3, RI.vup, sizeof( vec3_t ));
++		memcpy( now + 6, RI.vforward, sizeof( vec3_t ));
++		memcpy( now + 9, RI.rvp.vieworigin, sizeof( vec3_t ));
++		if( have && !memcmp( now, last, sizeof( now )))
++			return;
++		memcpy( last, now, sizeof( now ));
++		have = 1;
++	}
+ 	angles[ROLL] = 0;
+ 	angles[PITCH] = 0;
+ 	angles[YAW] = 0;
 diff --git a/ref/soft/r_triapi.c b/ref/soft/r_triapi.c
 index a4a90ea..12acf2d 100644
 --- a/ref/soft/r_triapi.c
