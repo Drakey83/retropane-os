@@ -1619,6 +1619,26 @@ field is ignored here or means something else). What it means: the chip
 does not cull for us, and sending the commands whole costs the bus and
 the TA more than the CPU's sort; the CPU's sort stays.
 
+**The fight's physics and traces surveyed (the owner: "Physics and
+traces"), no kit.** Run 241's samples by part: the renderer 41%, the
+server side ~22% (the engine's `SV_`/`PM_` and traces 17.7%, the game's
+server code 4.3%), the client and its prediction 17.5%, the sound 7.6%,
+the rest 12%. What is already done there: the server ticks at 20 Hz
+(kit 106, the owner's ruling); `SV_Physics`' edict walk prefetched (kits
+61, 66, 67, 71); hull 0's plane sides in integers (kit 109). What is
+left, each under ~1.5% and none exact: `PM_RecursiveHullCheck` (2.8%,
+mostly the server's monster moves; a node walk of cache misses);
+`SV_WaterLinks` (1.0%: each point-contents query reads every linked
+edict's `solid`, which the game writes directly, so no list of water
+brushes can be kept exactly); client prediction's copies (`CL_RunUsercmd`,
+`CL_PredictMovement`: ~1.6%, mostly `local_state_t`'s 64 weapon records,
+which `HUD_TxferPredictionData` copies back every frame even with
+`cl_lw 0`, so skipping them is not provably the same game). The player's
+own predicted move is cheap (`PM_PlayerMove` 3 samples). What it means:
+the physics and traces hold no exact lever worth a device run; the
+server's tick below 20 Hz is the one big setting (~5% at 15 Hz), and it
+is the owner's.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
