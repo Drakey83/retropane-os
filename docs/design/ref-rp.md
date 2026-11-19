@@ -1359,6 +1359,27 @@ vanishes. That vanishing is against the owner's standing rule that
 nothing vanishes (a missing feature draws plainly), so the next variant
 draws the far pieces plainly (unlit) instead of leaving them out.
 
+**Option (a), drawn plainly (the owner: "Yes, build it"), measured and
+not kept: `-rpdebrisplainN`.** The N nearest pieces lit and drawn as now,
+the rest kept on the screen: their light one sample a 64-unit cell (the
+cell's first far piece samples it the game's way; vendor: every model
+sampled at its origin every frame; modern: light probes; ours: probes made
+only where far pieces are, this frame only), no entity lights, one flat
+shade a mesh (the game's own `STUDIO_NF_FLATSHADE`). Run 190 (frame 300,
+`local/half-life/debrisplain/`): 1,312 pixels differ from all lit (the
+cap: 2,121), the far clump still there, a little flatter. **But slower:
+runs 191-192 (full cascade) 35 lit 29.8 / 22.6, 55 lit 29.8 / 22.7,
+against all lit 29.9 / 23.8.** Why (run 191's samples, heavy minus calm a
+frame): the far pieces' cost is their meshes (`RP_StudioCmdSend` +0.98,
+`RP_StudioCmdLit` +1.03, `RP_StudioVertsFixed` +0.61 ms) and the client's
+bones (`ConcatTransforms` +0.48), which a flat shade does not touch; the
+cells paired only 71 far pieces into 43 samples, and a far piece's sample
+skips option A's every-other-frame light, so the lighting got no cheaper
+(`R_EntityDynamicLight` +0.59, `RP_ProbeLight` +0.34). What it means: the
+cap's gain is the meshes and bones it leaves out; drawing every piece
+plainly and fast needs a cheaper shape for the far ones (a flat stand-in
+of a few triangles, no bones), not cheaper light. Off by default.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,

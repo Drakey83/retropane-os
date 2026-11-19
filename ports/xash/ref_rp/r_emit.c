@@ -265,6 +265,14 @@ static void RP_EmitReport( void )
 			if( rp_debris_counts[0] )
 				fprintf( stderr, "rp-emit: debris pieces a frame %u, %u of them not drawn (-rpdebrisN)%c", rp_debris_counts[0] / f, rp_debris_counts[1] / f, 10 );
 			rp_debris_counts[0] = rp_debris_counts[1] = 0;
+			{
+				extern unsigned rp_probe_counts[2];
+
+				if( rp_probe_counts[0] )
+					fprintf( stderr, "rp-emit: far pieces drawn plainly a frame %u, their cells sampled %u (-rpdebrisplainN)%c",
+						rp_probe_counts[0] / f, rp_probe_counts[1] / f, 10 );
+				rp_probe_counts[0] = rp_probe_counts[1] = 0;
+			}
 		}
 				rp_vn_counts[0] = rp_vn_counts[1] = rp_vn_counts[2] = rp_vn_counts[3] = 0;
 	}
