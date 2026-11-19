@@ -1612,10 +1612,12 @@ frame against ~11,300. Run 242 (2026-11-19, field 1): fight **21.3 /
 23.8** (kit 115 23.6 / 26.6), the TA done 12.3 ms after the arm (~8
 before), the end picture 860 pixels from run 241's with no model drawn
 inside out: field 1 either culls the winding we cull or is ignored (depth
-hides the far side); field 2 (run 243) not run, the X51v off the loader
-after run 242. What it means: sending the commands whole costs the bus
-and the TA more than the CPU's sort saves, so the TA's culling loses here
-whatever field 2 shows; the CPU's sort stays.
+hides the far side). Run 243 (field 2, after the owner restarted the
+loader): 21.3 / 23.8 again, its picture 452 pixels from run 241's and 547
+from run 242's: **neither field culls**, so the D3D lead is closed (the
+field is ignored here or means something else). What it means: the chip
+does not cull for us, and sending the commands whole costs the bus and
+the TA more than the CPU's sort; the CPU's sort stays.
 
 ## What ref_rp is
 
