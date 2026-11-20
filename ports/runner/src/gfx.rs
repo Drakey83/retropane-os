@@ -704,13 +704,13 @@ const CURVES: [(&str, [u8; 17]); 4] = [
         [0, 48, 73, 91, 103, 114, 124, 134, 144, 155, 166, 178, 191, 207, 223, 239, 255],
     ),
 ];
-const CURVE_US: u32 = 20_000_000;
+const CURVE_US: u32 = 60_000_000;
 /// The gamma table's use bit in `GSCTRL` (Windows Mobile leaves it set).
 const GSCTRL_GAMMA: u32 = 1 << 26;
 
-/// R340's escalation: chains failed in a row before the CPU feeds the TA,
-/// and the CPU's feeds failed in a row before the clock goes back to
-/// Windows Mobile's (ADR-0035 rule 6).
+/// R340's escalation: chains failed in a row before the 2700G's clock goes
+/// back to Windows Mobile's (ADR-0035 rule 6), and the CPU's own feeds
+/// (frames too large for the chain) failed in a row before the same.
 const CHAIN_FAILS_OFF: u32 = 2;
 const CPU_FAILS_CLOCK: u32 = 3;
 /// R340: hangs said one by one (then only in the five-second counts).
@@ -980,8 +980,6 @@ pub struct Chip {
     rung: Option<clock::Rung>,
     /// R295's diagnostic ladder asked for (`-rpladder`), and where it is.
     ladder_on: bool,
-    /// R340: the chain given up on for the run (the TA fed by the CPU).
-    chain_off: bool,
     /// R343: the curves stepped through (`-rpcurves`; the bar on with it).
     curves: bool,
     /// The frame-rate bar asked for (`-rpfpsbar`).
@@ -1043,7 +1041,6 @@ impl Chip {
             frame: 0,
             rung: None,
             ladder_on: false,
-            chain_off: false,
             curves: false,
             ladder: None,
             bar: false,
@@ -2106,19 +2103,32 @@ impl Screen for Chip {
             self.report();
             return r;
         }
-        // R340's escalation: chains that keep failing after the core's
-        // reset leave the TA to the CPU's feed for the rest of the run
-        // (which also says whether the TA or the DMA is the one stuck)
-        if !self.chain_off && c.chain_fails_row >= CHAIN_FAILS_OFF {
-            self.chain_off = true;
+        // R340's escalation (run 276: after the core's reset the next chain
+        // stuck writing the 2700G's own memory, and the CPU's feed then
+        // spun in the slowed bus until the run limit): chains that keep
+        // failing take the 2700G back to Windows Mobile's clock (ADR-0035
+        // rule 6) and the core reset there; the CPU never feeds a chip that
+        // stopped taking writes
+        if c.chain_fails_row >= CHAIN_FAILS_OFF && o.cur.is_some() {
+            let a = clock::put_back(regs, rt::delay_us, set_cs3);
+            o.cur = None;
+            let back = o.recover(regs);
             (self.log)(format_args!(
-                "rp-gfx: R340: {} chains in a row did not finish after the core's reset: the TA fed by the CPU from frame {} on",
-                c.chain_fails_row, self.frame
+                "rp-gfx: R340: {} chains in a row did not finish after the core's reset: the 2700G's clock put back to Windows Mobile's ({}) from frame {}, the core reset there {}; the underrun flag {}",
+                c.chain_fails_row,
+                match a {
+                    Some(a) if a.unwritten == 0 => "locked",
+                    Some(_) => "a memory-controller write never held",
+                    None => "the PLL did not lock",
+                },
+                self.frame,
+                if back { "ready" } else { "NOT ready" },
+                if underrun_take(regs) { "set" } else { "clear" }
             ));
+            c.chain_fails_row = 0;
         }
         // Step 4f: the frame as one DMA chain, the CPU let go at once.
         if self.ladder.is_none()
-            && !self.chain_off
             && let Some(ch) = self.chain.as_mut()
         {
             let t1 = rt::ticks();
