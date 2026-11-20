@@ -114,6 +114,11 @@ pub trait Link {
     fn start(&mut self) -> bool;
     /// Switches it off.
     fn stop(&mut self);
+    /// Whether taking it found it on and switched it off (R301: a crashed
+    /// run's link, reset at take): that switch-off counts for the guard.
+    fn found_on(&self) -> bool {
+        false
+    }
 }
 
 impl<B: RegisterBus> Link for PxaI2s<B> {
@@ -123,6 +128,10 @@ impl<B: RegisterBus> Link for PxaI2s<B> {
 
     fn stop(&mut self) {
         PxaI2s::stop(self);
+    }
+
+    fn found_on(&self) -> bool {
+        PxaI2s::found_on(self)
     }
 }
 
@@ -189,13 +198,17 @@ pub struct Audio<B, I, L> {
 impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
     /// Takes the board, the I2S link and the codec's I2C bus; audio is down
     /// (nothing switched). `level` is the output level, 0-100.
-    pub fn new(board: B, link: L, bus: I, level: u32) -> Self {
+    pub fn new(mut board: B, link: L, bus: I, level: u32) -> Self {
+        // R301: a link found on was switched off when it was taken, so the
+        // first switch-on waits out the guard (a crash never silences the
+        // next run; a clean start waits nothing)
+        let stopped_at = link.found_on().then(|| board.now_ms());
         Self {
             board,
             link,
             codec: Codec::Down(bus),
             level: level.min(100),
-            stopped_at: None,
+            stopped_at,
             jack_dirty: false,
             jack_pending: None,
             amp: false,

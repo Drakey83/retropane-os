@@ -168,14 +168,28 @@ impl Rate {
 /// The controller.
 pub struct PxaI2s<B> {
     regs: B,
+    /// Whether [`Self::new`] found the link switched on (a run that ended
+    /// without stopping it: a crash) and so switched it off with its reset.
+    found_on: bool,
 }
 
 impl<B: RegisterBus> PxaI2s<B> {
     /// Takes the controller's registers (its clock enabled), reset and off.
+    /// When it was found on (R301: a crashed run leaves it playing), the
+    /// reset is a switch-off, and the X51v ignores a switch-on within
+    /// ~645 ms of one: [`Self::found_on`] says so, for the caller's guard.
     pub fn new(mut regs: B) -> Self {
+        let found_on = regs.read32(reg::SACR0) & SACR0_ENB != 0;
         regs.write32(reg::SACR0, SACR0_RST);
         regs.write32(reg::SACR0, 0);
-        Self { regs }
+        Self { regs, found_on }
+    }
+
+    /// Whether [`Self::new`] found the link on, so its reset was a
+    /// switch-off the restart guard must count (R301).
+    #[must_use]
+    pub fn found_on(&self) -> bool {
+        self.found_on
     }
 
     /// Starts playback at `rate`: clocks out, FIFO draining. `false` if
@@ -304,6 +318,22 @@ mod tests {
         i2s.regs.script_reads(reg::SACR0, &[SACR0_ENB]);
         assert!(i2s.start_divider(0xFFD));
         assert!(i2s.regs.writes().contains(&(reg::SADIV, 0x7D)));
+    }
+
+    #[test]
+    fn a_link_left_on_is_found_and_reset() {
+        // R301: a crashed run left I2S playing; taking it must say so
+        // (its reset is a switch-off) and still leave it reset and off.
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::SACR0, &[SACR0_ENB | SACR0_BCKD]);
+        let i2s = PxaI2s::new(bus);
+        assert!(i2s.found_on());
+        let w = i2s.regs.writes();
+        assert_eq!(w[..2], [(reg::SACR0, SACR0_RST), (reg::SACR0, 0)]);
+        // A link found off: nothing to wait for.
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::SACR0, &[0]);
+        assert!(!PxaI2s::new(bus).found_on());
     }
 
     #[test]

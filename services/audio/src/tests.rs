@@ -33,6 +33,8 @@ struct World {
     writes: usize,
     link_on: bool,
     link_off_at: Option<u64>,
+    /// The link was found on when taken and reset then (R301).
+    found_on: bool,
     plugged: bool,
     edge: bool,
     /// When the codec's rate was set (its set-up), and the jack last read.
@@ -99,6 +101,9 @@ impl Link for FakeLink {
         }
         w.link_on = false;
         w.ev.push(Ev::LinkOff);
+    }
+    fn found_on(&self) -> bool {
+        self.0.borrow().found_on
     }
 }
 
@@ -379,6 +384,28 @@ fn a_route_failing_after_the_amplifier_takes_it_back_off() {
     let ev = w.borrow().ev.clone();
     assert!(pos(&ev, &Ev::Amp(true)) < pos(&ev, &Ev::Amp(false)));
     assert_eq!(ev.last(), Some(&Ev::Power(false)));
+}
+
+#[test]
+fn a_link_left_on_by_a_crash_never_silences_the_next_run() {
+    // R301 (runs 43, 52 B, 268): the crashed run left I2S on; taking it
+    // reset it (a switch-off at 0 us), and the first switch-on came within
+    // the X51v's ~645 ms: refused, the game silent. Counted, it waits.
+    let w = world(false);
+    {
+        let mut v = w.borrow_mut();
+        v.found_on = true;
+        v.link_off_at = Some(0);
+        v.us = 10_000;
+    }
+    let mut a = audio(&w);
+    let p = a.up().expect("the first switch-on waits out the guard");
+    assert!(p.waited_ms > 0);
+    assert!(w.borrow().ev.contains(&Ev::LinkOn(true)));
+    // A link found off waits nothing.
+    let w = world(false);
+    let mut a = audio(&w);
+    assert_eq!(a.up().unwrap().waited_ms, 0);
 }
 
 #[test]
