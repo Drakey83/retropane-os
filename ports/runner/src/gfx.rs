@@ -781,26 +781,26 @@ const CURVES: [(&str, u32, [u8; 17]); 4] = [
         [0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255],
     ),
     (
-        "BL60",
-        60,
-        [0, 20, 39, 57, 75, 93, 110, 126, 142, 158, 173, 187, 202, 216, 229, 242, 255],
+        "M60",
+        100,
+        [0, 41, 68, 90, 108, 124, 139, 153, 167, 179, 191, 203, 214, 225, 235, 245, 255],
     ),
     (
-        "BL60S",
-        60,
-        [0, 12, 26, 43, 62, 82, 102, 122, 142, 161, 180, 197, 212, 226, 238, 247, 255],
+        "M50",
+        100,
+        [0, 56, 85, 107, 125, 140, 154, 167, 179, 190, 201, 211, 220, 229, 238, 247, 255],
     ),
     (
-        "BL45S",
-        45,
-        [0, 13, 30, 48, 68, 89, 110, 131, 150, 169, 186, 202, 217, 229, 240, 248, 255],
+        "M40",
+        100,
+        [0, 76, 106, 127, 144, 158, 170, 182, 192, 202, 211, 219, 227, 234, 242, 248, 255],
     ),
 ];
 
-/// R343: the look a game gets without the picker: BL60, the owner's pick
-/// (run 289, 2026-11-20: "bl60 looked the best the other were barely
-/// visable").
-const LOOK_DEFAULT: usize = 1;
+/// R343: the look a game gets without the picker: M50 (the owner after
+/// run 289: BL60 best of its set yet "almost no mid tones", "it needs to
+/// be brighter in the midtones"), until his pick from the M looks.
+const LOOK_DEFAULT: usize = 2;
 
 /// R341/R343: the backlight while a game plays and its registers as found
 /// (`CR`, `PCR`, `DCR`, put back at the close): each look of [`CURVES`]
