@@ -1997,6 +1997,13 @@ mod image {
                 .with_bar(bar)
                 .with_curves(curves)
                 .with_rebuild_at(seconds_after(&args[..arg_count], b"-rprebuild"))
+                .with_report_every(
+                    if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpplay") {
+                        15_000_000
+                    } else {
+                        5_000_000
+                    },
+                )
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
                 .with_chain(chain)

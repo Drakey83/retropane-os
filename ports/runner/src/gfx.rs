@@ -1158,6 +1158,9 @@ pub struct Chip {
     /// seconds after the screen opened, on a healthy chip, so the cure is
     /// proven (the emulator, the X51v) without waiting for a stall.
     rebuild_at: Option<u32>,
+    /// How often the counts are said (5 s; free play 15 s: run 279's 15
+    /// minutes filled the card log's 256 KiB at 11.5).
+    report_us: u32,
     /// R344: when the last rebuild ran, and the gap before the next may
     /// ([`REBUILD_GAP_US`]); `None` once a chain finished after it.
     rebuilt_at: Option<(u32, u32)>,
@@ -1216,7 +1219,15 @@ impl Chip {
             overlap: true,
             rebuild_at: None,
             rebuilt_at: None,
+            report_us: 5_000_000,
         }
+    }
+
+    /// The counts said every `us` (free play's long runs: 15 s).
+    #[must_use]
+    pub const fn with_report_every(mut self, us: u32) -> Self {
+        self.report_us = us;
+        self
     }
 
     /// R344's test: a rebuild forced `s` seconds after the open.
@@ -1394,7 +1405,7 @@ impl Chip {
 
     /// The counts as one line every five seconds, then counted again.
     fn report(&mut self) {
-        if us_since(self.since) < 5_000_000 {
+        if us_since(self.since) < self.report_us {
             return;
         }
         let c = self.counts;
