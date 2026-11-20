@@ -79,6 +79,29 @@ fn pm_snap(m: Moment, regs: &mut Mmio, o: &Open, flags: u32, log: fn(Arguments<'
     PM_WATCH.with(|s| *s = Some(w));
 }
 
+/// R340's fits check: the parameter memory's pages (the ring's, 0x201 to
+/// 0x6FF: `TA_PM`'s 5 MiB less the manager's header page) and the room
+/// kept spare.
+const PM_PAGES: u32 = (PM_SIZE >> 12) - 1;
+const PM_MARGIN: u32 = 64;
+/// The ring's first page.
+const PM_FIRST: u32 = (PM >> 12) + 1;
+
+/// R340 (run 286): the TA's page cursor, entry 0 of the manager's block
+/// (16-bit links: the next page the TA takes). One word read.
+fn pm_cursor(o: &Open) -> Option<u32> {
+    load32_volatile(o.vram, o.lay.pm.table as usize).map(|w| w & 0xFFFF)
+}
+
+/// Pages from cursor `a` to cursor `b` round the ring.
+fn ring_dist(a: u32, b: u32) -> u32 {
+    let (a, b) = (a.wrapping_sub(PM_FIRST), b.wrapping_sub(PM_FIRST));
+    if a >= PM_PAGES || b >= PM_PAGES {
+        return 0;
+    }
+    (b + PM_PAGES - a) % PM_PAGES
+}
+
 /// R340: snapshots of a game's steady frames, not the loading screens'.
 const PM_SNAP_FROM: u32 = 300;
 pub use chain::{CHAIN_BYTES, Chain};
@@ -1203,6 +1226,12 @@ struct Counts {
     /// chip not answering): the full rebuild at the next frame, the pump
     /// leaving the chip alone until then.
     rebuild_owed: bool,
+    /// R340's fits check since the last report: the most pages a scene
+    /// took, the most two scenes held at once, and frames held back (the
+    /// next scene's TA after the render) for room.
+    pages_most: u32,
+    live_most: u32,
+    held_for_room: u32,
 }
 
 /// The screen while the program has it.
@@ -1284,6 +1313,12 @@ struct Open {
     pm_frame: u32,
     pm_log: fn(Arguments<'_>),
     pm_opened: u32,
+    /// R340's fits check: the TA's page cursor when the chain in flight
+    /// was armed, the pages each scene (A, B) took, and a recent scene's
+    /// most (decaying).
+    arm_cursor: Option<u32>,
+    scene_pages: [u32; 2],
+    pages_recent: u32,
     /// R340's measure (`-rpoverlapat S`): kit 113's overlap off until S
     /// seconds after the open, then on (one run, both ways, the manager
     /// watched in each); `None`: as [`Self::overlap`] says from the start.
@@ -1383,6 +1418,9 @@ impl Chip {
                 rebuilds_ok: 0,
                 gap_us: 0,
                 rebuild_owed: false,
+                pages_most: 0,
+                live_most: 0,
+                held_for_room: 0,
             },
             since: 0,
             opened: 0,
@@ -1501,6 +1539,14 @@ impl Chip {
                 c.chain_us += us;
                 c.gap_us += gap;
                 c.pumped += u32::from(pumped);
+                if let Some(h0) = o.arm_cursor.take()
+                    && let Some(h1) = pm_cursor(o)
+                {
+                    let pages = ring_dist(h0, h1);
+                    o.scene_pages[usize::from(o.armed_b)] = pages;
+                    o.pages_recent = pages.max(o.pages_recent - o.pages_recent / 64);
+                    c.pages_most = c.pages_most.max(pages);
+                }
                 if o.pm_frame >= PM_SNAP_FROM {
                     let m = if !o.overlap {
                         Moment::TaDoneAlone
@@ -1582,6 +1628,13 @@ impl Chip {
                         }
                     ));
                 }
+                log(format_args!(
+                    "rp-gfx: R340 fits at the failed chain: scene A {} pages, B {}, a recent scene's most {}, the cursor now 0x{:x}",
+                    o.scene_pages[0],
+                    o.scene_pages[1],
+                    o.pages_recent,
+                    if mute { 0 } else { pm_cursor(o).unwrap_or(0) }
+                ));
                 if c.rebuild_owed {
                     log(format_args!(
                         "rp-gfx: R340: {}: the full rebuild owed (no core reset)",
@@ -1706,6 +1759,12 @@ impl Chip {
                 c.check_same,
                 c.check_differ,
                 c.check_failed
+            ));
+        }
+        if c.pages_most > 0 || c.held_for_room > 0 {
+            (self.log)(format_args!(
+                "rp-gfx: R340 fits: a scene took {} pages at most, the chip held {} at once at most (of {PM_PAGES}), {} frames held back for room",
+                c.pages_most, c.live_most, c.held_for_room
             ));
         }
         // R340's measure: the manager's block every report
@@ -2627,6 +2686,9 @@ impl Screen for Chip {
             pm_log: self.log,
             pm_opened: rt::ticks(),
             overlap_from: self.overlap_at.filter(|_| overlap_ok),
+            arm_cursor: None,
+            scene_pages: [0; 2],
+            pages_recent: 0,
         });
         if let (Some(o), Some(regs)) = (self.open.as_ref(), self.regs.as_mut()) {
             pm_snap(Moment::SetUp, regs, o, 0, self.log);
@@ -2944,6 +3006,22 @@ impl Screen for Chip {
                 self.report();
                 return Ok(());
             }
+            // R340's fits check: the next scene's TA starts beside the
+            // scenes the chip still holds only when its pages provably fit
+            if o.overlap && (o.rendering.is_some() || o.pending.is_some()) {
+                let live = o.rendering.map_or(0, |_| o.scene_pages[usize::from(o.render_b)])
+                    + o.pending.map_or(0, |b| o.scene_pages[usize::from(b)]);
+                c.live_most = c.live_most.max(live);
+                if live + o.pages_recent * 3 / 2 + PM_MARGIN > PM_PAGES {
+                    c.held_for_room += 1;
+                    let _ = o.wait_render(regs);
+                    if o.pending.is_some() {
+                        o.start_pending(regs);
+                        let _ = o.wait_render(regs);
+                    }
+                }
+            }
+            o.arm_cursor = pm_cursor(o);
             // kit 63: the TA's memory cleared by the chain itself
             let into = o.overlap && o.next_b;
             match ch.start(regs, &o.ta_lay(into), &bg, parts) {
