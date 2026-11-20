@@ -679,6 +679,8 @@ const TA_LIMIT_US: u32 = 500_000;
 /// none finish late (most 16.4 ms at 136.50), so a hang costs 50 ms, not
 /// 200.
 const RENDER_LIMIT_US: u32 = 50_000;
+/// R340: hangs said one by one (then only in the five-second counts).
+const HANGS_SAID: u32 = 20;
 /// Every this many frames the render is waited for at once and timed.
 const TIMED_EVERY: u32 = 16;
 /// The background: opaque black to the eye, but one step of blue off it
@@ -691,6 +693,35 @@ const BLACK: u32 = 0xFF00_0008;
 /// fetch run short), cleared Dell's way; whether it was set (ADR-0035
 /// rule 8: checked after every clock change).
 const GFX_UNDERRUN: u32 = 1 << 4;
+
+/// R340: the bus time-out (`rp_port::gfx::SYSCFG`, why and whose way
+/// there) and the timed status read.
+use rp_port::gfx::{SYSCFG, bus_timed_out, syscfg_timeout_on};
+
+/// R340: the slowest status read since the last report (OS timer ticks),
+/// and the reads ended by the time-out.
+static READS: rt::Global<(u32, u32)> = rt::Global::new((0, 0));
+
+/// R340: [`READS`] as the logs say them: the slowest in microseconds, and
+/// the time-outs.
+fn reads() -> (u32, u32) {
+    READS.with(|r| (r.0 * 4 / 13, r.1))
+}
+
+/// R340: the 3D core's status word, or `None` if the read was ended by
+/// the bus time-out (the chip did not answer: the word is no answer, and
+/// the waits' own limits decide the hang).
+fn status(regs: &mut Mmio) -> Option<u32> {
+    let t0 = rt::ticks();
+    let v = regs.read32(MBX + reg::STATUS);
+    let d = rt::ticks().wrapping_sub(t0);
+    let slow = bus_timed_out(d);
+    READS.with(|r| {
+        r.0 = r.0.max(d);
+        r.1 = r.1.wrapping_add(u32::from(slow));
+    });
+    (!slow).then_some(v)
+}
 
 fn underrun_take(regs: &mut Mmio) -> bool {
     ack_events(regs, GFX_UNDERRUN) & GFX_UNDERRUN != 0
@@ -804,6 +835,9 @@ struct Counts {
     /// the pump's looks at frames in flight.
     rwaits: u32,
     rwait_us: u32,
+    /// R340: hangs of either kind since the screen opened (not reset by
+    /// the reports).
+    run_hangs: u32,
     gap_us: u32,
 }
 
@@ -813,6 +847,8 @@ struct Open {
     ready: ta::Ready,
     /// `MBXCLK` as found, put back at the close.
     clk0: u32,
+    /// R340: `SYSCFG` as found, put back at the close.
+    syscfg0: u32,
     gfx: Gfx,
     /// A render started and not yet seen done: when it started.
     rendering: Option<u32>,
@@ -881,6 +917,8 @@ pub struct Chip {
     log: fn(Arguments<'_>),
     counts: Counts,
     since: u32,
+    /// R340: when the screen was opened (the hang lines' time).
+    opened: u32,
     frame: u32,
     /// The 2700G's clock while the program draws (a test run's
     /// `-rpclock`), or the loader's as found.
@@ -936,9 +974,11 @@ impl Chip {
                 check_failed: 0,
                 rwaits: 0,
                 rwait_us: 0,
+                run_hangs: 0,
                 gap_us: 0,
             },
             since: 0,
+            opened: 0,
             frame: 0,
             rung: None,
             ladder_on: false,
@@ -1024,6 +1064,19 @@ impl Chip {
             }
             Settled::Failed { dma } => {
                 c.ta_hangs += 1;
+                c.run_hangs += 1;
+                if c.run_hangs <= HANGS_SAID {
+                    let (slowest, timeouts) = reads();
+                    log(format_args!(
+                        "rp-gfx: R340: TA hang {} ({}): {timeouts} status reads ended by the bus time-out since the last report, the slowest {slowest} us; the core reset",
+                        c.run_hangs,
+                        if dma {
+                            "the DMA did not finish"
+                        } else {
+                            "the TA never said done"
+                        },
+                    ));
+                }
                 if c.ta_hangs == 1 {
                     log(format_args!(
                         "rp-gfx: step 4f: a frame's chain {}: the core reset",
@@ -1136,7 +1189,18 @@ impl Chip {
                 c.check_failed
             ));
         }
-        self.counts = Counts::default();
+        // R340: the slowest status read and the bus's time-outs (said
+        // every report, then counted again; the hangs so far kept)
+        let (slowest, timeouts) = reads();
+        READS.with(|r| *r = (0, 0));
+        (self.log)(format_args!(
+            "rp-gfx: R340: the slowest 2700G status read {slowest} us, {timeouts} ended by the bus time-out; {} hangs since the screen opened",
+            c.run_hangs
+        ));
+        self.counts = Counts {
+            run_hangs: c.run_hangs,
+            ..Counts::default()
+        };
         self.since = rt::ticks();
     }
 }
@@ -1413,7 +1477,10 @@ impl Open {
             return Ok(0);
         };
         let ok = loop {
-            if regs.read32(MBX + reg::STATUS) & m3::RENDER_DONE != 0 {
+            // R340: a read the bus timed out is no answer: the limit
+            // below decides (QEMU's reads take up to ~0.7 ms of host
+            // time, so a slow read alone is no hang)
+            if status(regs).is_some_and(|s| s & m3::RENDER_DONE != 0) {
                 break true;
             }
             if us_since(t0) > self.limit_us {
@@ -1540,7 +1607,9 @@ impl Open {
         if self.rendering.is_none() {
             return true;
         }
-        if regs.read32(MBX + reg::STATUS) & m3::RENDER_DONE == 0 {
+        // R340: a read the bus timed out is not done (the next wait's
+        // limit decides)
+        if status(regs).is_none_or(|s| s & m3::RENDER_DONE == 0) {
             return false;
         }
         self.rendering = None;
@@ -1624,6 +1693,14 @@ impl Screen for Chip {
             graphics_set(regs, &at(0), Layer::SOLO, false);
             at(offset)
         });
+        // R340: the bus time-out on before anything else (a wedged chip
+        // then ends its cycle instead of holding the device).
+        let syscfg0 = regs.read32(SYSCFG);
+        regs.write32(SYSCFG, syscfg_timeout_on(syscfg0));
+        (self.log)(format_args!(
+            "rp-gfx: R340: the 2700G's bus time-out on: SYSCFG 0x{syscfg0:x} -> 0x{:x}",
+            regs.read32(SYSCFG)
+        ));
         let clk0 = regs.read32(MBXCLK);
         clock::restore(regs, with_3d(clk0));
         rt::delay_us(1_000);
@@ -1698,6 +1775,7 @@ impl Screen for Chip {
                 if let Some(p) = moved {
                     graphics_set(regs, &p, Layer::SOLO, false);
                 }
+                regs.write32(SYSCFG, syscfg0);
                 panel::give_back(vram);
                 return Err(Errno::Io);
             }
@@ -1729,6 +1807,7 @@ impl Screen for Chip {
             vram,
             ready,
             clk0,
+            syscfg0,
             gfx,
             rendering: None,
             en: 0,
@@ -1770,6 +1849,7 @@ impl Screen for Chip {
         {
             o.lay = &LAY_BAR;
         }
+        self.opened = rt::ticks();
         self.since = rt::ticks();
         Ok(gfx)
     }
@@ -1853,6 +1933,18 @@ impl Screen for Chip {
         }
         if waited.is_err() {
             c.render_hangs += 1;
+            c.run_hangs += 1;
+            // R340: every hang said at once, so the card has it even if
+            // the run never reaches its next report
+            if c.run_hangs <= HANGS_SAID {
+                let (slowest, timeouts) = reads();
+                (self.log)(format_args!(
+                    "rp-gfx: R340: render hang {} at frame {} ({} ms into the screen's time): {timeouts} status reads ended by the bus time-out since the last report, the slowest {slowest} us; the core reset",
+                    c.run_hangs,
+                    self.frame,
+                    us_since(self.opened) / 1000,
+                ));
+            }
             // The core's recovery leaves it likely to hang again at
             // divide 1 above 133 MHz (R295 run 25: about half the next
             // renders); one background-only render after it ends that
@@ -2203,6 +2295,7 @@ impl Screen for Chip {
         if let Some(p) = o.moved {
             graphics_set(regs, &p, Layer::SOLO, false);
         }
+        regs.write32(SYSCFG, o.syscfg0);
         (self.log)(format_args!("rp-gfx: the screen given back"));
         panel::give_back(o.vram);
         Ok(())

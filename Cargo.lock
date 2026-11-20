@@ -981,6 +981,7 @@ dependencies = [
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
  "rp-drv-pxa-mmc",
+ "rp-drv-pxa-pwm",
  "rp-drv-pxa-ssp",
  "rp-drv-pxa-uart",
  "rp-drv-sdcard",

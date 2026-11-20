@@ -412,7 +412,8 @@ impl Chain {
                 Settled::Idle
             };
         }
-        if regs.read32(MBX + reg::STATUS) & ta::DONE == 0 {
+        // R340: a read the bus timed out is no answer (not done)
+        if super::status(regs).is_none_or(|s| s & ta::DONE == 0) {
             return if us_since(f.t0) > super::TA_LIMIT_US {
                 self.settle(regs)
             } else {
@@ -448,7 +449,8 @@ impl Chain {
         };
         let done = dma_ok
             && loop {
-                if regs.read32(MBX + reg::STATUS) & ta::DONE != 0 {
+                // R340: a read the bus timed out is no answer (not done)
+                if super::status(regs).is_some_and(|s| s & ta::DONE != 0) {
                     break true;
                 }
                 if us_since(f.t0) > super::TA_LIMIT_US {

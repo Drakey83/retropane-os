@@ -71,7 +71,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_fat::AnyVolume;
-    use rp_hal_api::{BlockDevice, BlockError};
+    use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
     use rp_hal_cabi::{Break, Sys};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, rt};
@@ -201,6 +201,64 @@ mod image {
     /// the latest. The runner only says them on the screen.
     const END_WORD: &[u8] = b"-rpend";
     const LIMIT_WORD: &[u8] = b"-rplimit";
+
+    /// R341 (the owner, 2026-11-20: "it drops down to like half brightness
+    /// and it makes the dark parts of the game hard to see"): the
+    /// backlight's level for the program's time, in percent of the
+    /// perceptual scale (`rp_drv_pxa_pwm::Backlight`), `-rplight <0-100>`;
+    /// without it [`LIGHT_DEFAULT`].
+    const LIGHT_WORD: &[u8] = b"-rplight";
+    /// The backlight while a game plays: full duty, the most the X51v's
+    /// software can give (docs/hw/backlight.md: no LED-current control).
+    /// Windows Mobile leaves whatever its power settings last chose (Dell's
+    /// table tops out at 137 / 216 on the owner's panel type, and dims on
+    /// battery), so a game played at a leftover level; ours is the
+    /// program's own choice, the found level put back at its end.
+    const LIGHT_DEFAULT: u32 = 100;
+
+    /// R341: PWM0 as found (`CR`, `PCR`, `DCR`), put back at the end (a
+    /// program that ends by `exit` or a crash leaves it to the loader,
+    /// which puts the whole board back after every image: audit C39).
+    struct Light {
+        pwm: Mmio,
+        found: [u32; 3],
+    }
+
+    /// R341: the backlight to `level` percent for the program's time (a
+    /// quarter-second fade), the found registers kept for [`light_back`].
+    fn light_up(level: u32) -> Option<Light> {
+        use rp_drv_pxa_pwm::reg;
+        let Some(mut pwm) = rt::take_pwm0() else {
+            let _ = writeln!(Out, "runner: R341: the backlight not taken (PWM0 already taken)");
+            return None;
+        };
+        let found = [reg::CR, reg::PCR, reg::DCR].map(|r| pwm.read32(r));
+        let mut b = rp_drv_pxa_pwm::Backlight::new(pwm);
+        let was = b.level();
+        b.fade_to(level, &mut |us| rt::delay_us(us));
+        let (on, counts) = b.duty();
+        let _ = writeln!(
+            Out,
+            "runner: R341: the backlight {level}% for the program ({on} of {counts} counts); found {was}% (PWM0 CR 0x{:x} PCR 0x{:x} DCR 0x{:x}), put back at the end",
+            found[0], found[1], found[2]
+        );
+        Some(Light {
+            pwm: b.into_inner(),
+            found,
+        })
+    }
+
+    /// R341: the backlight as [`light_up`] found it.
+    fn light_back(l: Option<Light>) {
+        use rp_drv_pxa_pwm::reg;
+        let Some(mut l) = l else {
+            return;
+        };
+        l.pwm.write32(reg::CR, l.found[0]);
+        l.pwm.write32(reg::PCR, l.found[1]);
+        l.pwm.write32(reg::DCR, l.found[2]);
+        let _ = writeln!(Out, "runner: R341: the backlight put back as found");
+    }
 
     /// A test run's word for the 2700G's clock while the program draws:
     /// four numbers, the core PLL's M, N and P (`13 MHz x M / (N x 2^P)`)
@@ -1995,6 +2053,13 @@ mod image {
             || args[..arg_count]
                 .iter()
                 .any(|a| a.to_bytes() == SAMPLE_WORD);
+        // R341: the backlight for the game (the loader puts the board
+        // back after every image, a crash's included: audit C39)
+        let light = light_up(
+            seconds_after(&args[..arg_count], LIGHT_WORD)
+                .unwrap_or(LIGHT_DEFAULT)
+                .min(100),
+        );
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
         if sampling {
@@ -2026,6 +2091,7 @@ mod image {
             rt::start_tick(PUMP_HZ);
         }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
+        light_back(light);
         unlock_icache_after();
         sram_unmap();
         let (maps, unmaps) = SRAM.with(|s| (s.2, s.3));

@@ -328,9 +328,85 @@ fn walk(
     Ok(c)
 }
 
+/// R340: the 2700G's `SYSCFG` (the register block's first word): its
+/// upper 24 bits are the host interface's time-out, how long the chip may
+/// hold the PXA's bus (CS3: VLIO, paced by RDY) before it ends the cycle
+/// itself. Windows Mobile leaves the word 0 on the X51v: no time-out, so a
+/// wedged chip held the bus, and the whole device with it (the FIQ's run
+/// limit included), until the watchdog reset it (free plays 273, 274).
+/// Dell's driver writes `0xFFFFFF00` (SDRAM settings), Linux's mbxfb
+/// `0xFFFFFF0C`; ours sets only the field, the low byte (Linux's drive
+/// strength) as found, and puts the found word back at the close.
+pub const SYSCFG: usize = 0x000;
+/// [`SYSCFG`]'s time-out field, at its longest (Dell's and Linux's).
+pub const SYSCFG_TIMEOUT: u32 = 0xFFFF_FF00;
+
+/// [`SYSCFG`] with the time-out on and the rest as `found`.
+#[must_use]
+pub const fn syscfg_timeout_on(found: u32) -> u32 {
+    found | SYSCFG_TIMEOUT
+}
+
+/// R340: a status read the chip answers takes well under a microsecond
+/// (CS3's 17 clocks a beat, ~0.4 us with a DMA burst ahead of it); one that
+/// took 100 us (the OS timer's 3.25 MHz ticks) was ended by the time-out,
+/// not by the chip: the chip is wedged, and the read's word is not its
+/// status.
+pub const SLOW_READ_TICKS: u32 = 325;
+
+/// Whether a status read that took `ticks` of the OS timer was ended by
+/// the bus time-out (never taken as an answer; the waits' own limits
+/// decide whether the chip hung).
+#[must_use]
+pub const fn bus_timed_out(ticks: u32) -> bool {
+    ticks >= SLOW_READ_TICKS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R340's guard: the time-out on keeps the low byte, is the field at
+    /// its longest, and is the same if set twice.
+    #[test]
+    fn syscfg_timeout_on_sets_the_field_only() {
+        assert_eq!(syscfg_timeout_on(0), 0xFFFF_FF00);
+        assert_eq!(syscfg_timeout_on(0x0C), 0xFFFF_FF0C);
+        assert_eq!(syscfg_timeout_on(syscfg_timeout_on(0x0C)), 0xFFFF_FF0C);
+        assert_eq!(syscfg_timeout_on(0x1234_56AB) & 0xFF, 0xAB);
+    }
+
+    /// R340's guard: a read the chip answers is never a time-out (a
+    /// microsecond, the slowest seen under DMA), one the time-out ended is
+    /// (both directions, and the edge).
+    #[test]
+    fn a_slow_read_is_a_time_out() {
+        assert!(!bus_timed_out(0));
+        assert!(!bus_timed_out(4));
+        assert!(!bus_timed_out(SLOW_READ_TICKS - 1));
+        assert!(bus_timed_out(SLOW_READ_TICKS));
+        assert!(bus_timed_out(u32::MAX));
+    }
+
+    /// R340's class guard: every read of the 3D core's status in the
+    /// runner's 2700G code goes through its timed read (`status`), so no
+    /// wait can take a word the bus time-out made up for an answer, and
+    /// none waits on a chip that stopped answering.
+    #[test]
+    fn every_status_read_in_the_runner_is_timed() {
+        for (name, text) in [
+            ("gfx.rs", include_str!("../../runner/src/gfx.rs")),
+            ("gfx/chain.rs", include_str!("../../runner/src/gfx/chain.rs")),
+            ("gfx/probe4f.rs", include_str!("../../runner/src/gfx/probe4f.rs")),
+        ] {
+            let direct = text.matches("reg::STATUS)").count();
+            let allowed = usize::from(name == "gfx.rs");
+            assert_eq!(
+                direct, allowed,
+                "{name}: a status read outside the timed `status` (R340)"
+            );
+        }
+    }
 
     const G: Gfx = Gfx {
         width: 480,
