@@ -2005,6 +2005,10 @@ mod image {
         };
         // R341: the backlight for the game (the loader puts the board
         // back after every image, a crash's included: audit C39)
+        if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpmemback") {
+            super::gfx::MEM_BACK.with(|m| m.0 = true);
+            let _ = writeln!(uart, "runner: R340 -rpmemback: 0x804 = 1 after every render (the overlap on)");
+        }
         let light = light_up(
             seconds_after(&args[..arg_count], LIGHT_WORD)
                 .unwrap_or(LIGHT_DEFAULT)

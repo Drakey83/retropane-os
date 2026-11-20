@@ -982,6 +982,21 @@ const EVENTS: u32 = EV_TA_MEM | EV_7 | EV_8 | EV_9;
 /// The TA block's word Dell writes 1 to after bit 5.
 const TA_MEM_BACK: usize = 0x804;
 
+/// R340's next lever (`-rpmemback`, run 295: the parameter memory is never
+/// short, so bit 5 is not the memory running out): with the overlap on,
+/// `0x804` = 1 after every render the runner sees end, as if the TA had
+/// asked (Dell's driver writes it only then, but runs one scene at a time
+/// through its own queue: whether the manager needs telling that a render
+/// let its scene go is what this run asks); the writes counted.
+pub static MEM_BACK: rt::Global<(bool, u32)> = rt::Global::new((false, 0));
+
+/// R340: the lever's write after a render seen ending.
+fn mem_back(regs: &mut Mmio, overlap: bool) {
+    if overlap && MEM_BACK.with(|m| { if m.0 { m.1 += 1; } m.0 }) {
+        regs.write32(MBX + TA_MEM_BACK, 1);
+    }
+}
+
 /// R340 (runs 281-286): reads of 1 ms or more ([`MUTE_SLOW_TICKS`]), this many in a
 /// row: the chip's host path is wedged, every access will wait as long,
 /// and only the full rebuild clears it. A length can't tell it (run 281's
@@ -1761,6 +1776,10 @@ impl Chip {
                 c.check_failed
             ));
         }
+        let (mb_on, mb) = MEM_BACK.with(|m| *m);
+        if mb_on {
+            (self.log)(format_args!("rp-gfx: R340 -rpmemback: 0x804 = 1 after {mb} renders since the open"));
+        }
         if c.pages_most > 0 || c.held_for_room > 0 {
             (self.log)(format_args!(
                 "rp-gfx: R340 fits: a scene took {} pages at most, the chip held {} at once at most (of {PM_PAGES}), {} frames held back for room",
@@ -2243,6 +2262,7 @@ impl Open {
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en);
         if ok {
+            mem_back(regs, self.overlap);
             Ok(us)
         } else {
             self.recover(regs);
@@ -2406,6 +2426,7 @@ impl Open {
         self.rendering = None;
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en);
+        mem_back(regs, self.overlap);
         true
     }
 
