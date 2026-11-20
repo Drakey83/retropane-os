@@ -194,11 +194,18 @@ impl PmWatch {
         }
         let flags = flags | F_TAKEN | if cut { F_CUT } else { 0 };
         self.put(k, 3, flags);
+        // Run 286 read the block: 16-bit links, entry p the page after page
+        // p (the set-up's p + 1), the last page's back to the first: a ring
+        // of the free pages; entry 0 the next page the TA takes. The ring's
+        // length from there is the pages free now.
+        let free = if cut { None } else { Some(self.free_pages(k)) };
         if m == Moment::SetUp {
             self.base_used = used;
         }
         log(format_args!(
-            "rp-gfx: R340 PM watch {k} at frame {frame} ({ms} ms): flags 0x{flags:x}; the manager's block {used} words in use ({} at the set-up), {changed} changed since it{}; the TA block's words not 0: {}",
+            "rp-gfx: R340 PM watch {k} at frame {frame} ({ms} ms): flags 0x{flags:x}; pages free {} (the ring from page 0x{:x}); the manager's block {used} words in use ({} at the set-up), {changed} changed since it{}; the TA block's words not 0: {}",
+            free.map_or(-1, |f| f as i32),
+            self.link(k, 0),
             self.base_used,
             Moved(&moved[..nm]),
             Regs(&nz[..n]),
@@ -213,6 +220,30 @@ impl PmWatch {
                 w(4092), w(4093), w(4094), w(4095)
             ));
         }
+    }
+
+    /// Entry `p` of the manager's block in slot `k` (16-bit links).
+    fn link(&self, k: usize, p: usize) -> u32 {
+        let w = self.get(k, HEAD_WORDS + REG_WORDS + p / 2);
+        if p % 2 == 0 { w & 0xFFFF } else { w >> 16 }
+    }
+
+    /// The free ring's length from entry 0's page (at most the block's
+    /// entries: a ring that never closes says so by its length).
+    fn free_pages(&self, k: usize) -> u32 {
+        let head = self.link(k, 0) as usize;
+        let (mut p, mut n) = (head, 0u32);
+        while n < 2 * TABLE_WORDS as u32 {
+            if p == 0 || p >= 2 * TABLE_WORDS {
+                break;
+            }
+            p = self.link(k, p) as usize;
+            n += 1;
+            if p == head {
+                break;
+            }
+        }
+        n
     }
 
     /// The file's bytes: the header and every slot (untaken ones zero).

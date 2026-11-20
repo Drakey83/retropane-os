@@ -749,35 +749,71 @@ fn render_limit_us(rung: Option<clock::Rung>) -> u32 {
     let scaled = u64::from(RENDER_LIMIT_US) * u64::from(LIMIT_CORE_KHZ) / u64::from(core);
     scaled.clamp(u64::from(RENDER_LIMIT_US), 400_000) as u32
 }
-/// R343 (the owner, 2026-11-20: the dark areas muddy, the panel's black a
-/// grey): tone curves for the display's gamma table (`GFXGAM0`-`16`, 17
-/// points, applied at scan-out: no cost a frame), as the mock-up
-/// docs/design/mockups/hl-dark-curves.png drew them: straight, A gamma
-/// 0.8, B gamma 0.65, C the bottom third opened (gamma 0.6 blending to
-/// straight by three quarters). `-rpcurves`: the owner steps through them
-/// with the Record button ([`curve_key`]), the name in [`LAY_PICK`]'s band.
-const CURVES: [(&str, [u8; 17]); 4] = [
+/// R343 (the owner, 2026-11-20: "the blacks looking more mid tone grey
+/// then actually black"). Iterate, don't imitate (rule 0): the vendor and
+/// textbook lever is a gamma curve (Windows Mobile leaves the table
+/// straight; Half-Life's GL its gamma and brightness), and the first picker
+/// offered three that lift the darks, which makes a grey black greyer.
+/// Measured instead (run 287's last frame both ways on the X51v): the
+/// 2700G's picture is as dark as the software renderer's (median 28 of
+/// 255 against 26, the darkest 1% at 2.3 in both): the pixels are black,
+/// the panel shows them grey: the LCD's light through a black pixel, at
+/// the 100% backlight R341 sets. A table can't make a pixel darker than
+/// 0, but the backlight can. The same frames peak low (99% of pixels at
+/// 74 or under, 99.99% at 165), so ours dims the backlight and gives the
+/// light back in the table: slope (100 / level)^(1 / 2.2) at the bottom
+/// (the panel taken as gamma 2.2, the midtones as bright as at 100%),
+/// rolled off to 255 (g t / (1 + (g - 1) t), so a muzzle flash never
+/// clips): the blacks darker by the backlight's own ratio, no cost a frame
+/// (the scan-out applies the table), and less power. The "S" looks add a
+/// contrast curve under it (half straight, half smoothstep: the darks
+/// lower, the midtones where Half-Life's frames live a little higher).
+/// Each look is a backlight level and its table. The picker (the owner
+/// after run 288: "took to long, hard to compare"): a press of Record
+/// steps to the next look, holding it shows NOW until it is let go
+/// (a photo editor's before and after, at the same spot), at the game's
+/// own clock ([`curve_key`], `-rpcurves`; the name in [`LAY_PICK`]'s
+/// band).
+const CURVES: [(&str, u32, [u8; 17]); 4] = [
     (
         "NOW",
+        100,
         [0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255],
     ),
     (
-        "A 0.8",
-        [0, 28, 48, 67, 84, 101, 116, 132, 146, 161, 175, 189, 203, 216, 229, 242, 255],
+        "BL60",
+        60,
+        [0, 20, 39, 57, 75, 93, 110, 126, 142, 158, 173, 187, 202, 216, 229, 242, 255],
     ),
     (
-        "B 0.65",
-        [0, 42, 66, 86, 104, 120, 135, 149, 163, 175, 188, 200, 212, 223, 234, 245, 255],
+        "BL60S",
+        60,
+        [0, 12, 26, 43, 62, 82, 102, 122, 142, 161, 180, 197, 212, 226, 238, 247, 255],
     ),
     (
-        "C LIFT",
-        [0, 48, 73, 91, 103, 114, 124, 134, 144, 155, 166, 178, 191, 207, 223, 239, 255],
+        "BL45S",
+        45,
+        [0, 13, 30, 48, 68, 89, 110, 131, 150, 169, 186, 202, 217, 229, 240, 248, 255],
     ),
 ];
+
+/// R343: the look a game gets without the picker: BL60, the owner's pick
+/// (run 289, 2026-11-20: "bl60 looked the best the other were barely
+/// visable").
+const LOOK_DEFAULT: usize = 1;
+
+/// R341/R343: the backlight while a game plays and its registers as found
+/// (`CR`, `PCR`, `DCR`, put back at the close): each look of [`CURVES`]
+/// sets its level.
+pub type Light = (rp_drv_pxa_pwm::Backlight<Mmio>, [u32; 3]);
+
 /// R343's picker: whether `-rpcurves` runs, the Record button held at the
 /// last scan, and its presses so far (the keypad's scans count them, the
 /// frames step a curve for each).
-static CURVE_KEY: rt::Global<(bool, bool, u32)> = rt::Global::new((false, false, 0));
+static CURVE_KEY: rt::Global<(bool, bool, u32, u32, bool)> =
+    rt::Global::new((false, false, 0, 0, false));
+/// R343: Record held this long (0.4 s) is a compare, not a step.
+const HOLD_TICKS: u32 = rt::TICK_HZ / 1000 * 400;
 
 /// R343's picker on (`-rpcurves`): from then on the Record button steps
 /// the curves and the game never sees it (its own job, the weapon before,
@@ -796,8 +832,17 @@ pub fn curve_key(held: Pressed) -> Pressed {
             return held;
         }
         let r = held.contains(Button::Record);
+        let now = rt::ticks();
         if r && !k.1 {
-            k.2 = k.2.wrapping_add(1);
+            k.3 = now;
+        } else if r && !k.4 && now.wrapping_sub(k.3) >= HOLD_TICKS {
+            // held: NOW shown until it is let go
+            k.4 = true;
+        } else if !r && k.1 {
+            if !k.4 {
+                k.2 = k.2.wrapping_add(1);
+            }
+            k.4 = false;
         }
         k.1 = r;
         Button::ALL
@@ -910,7 +955,7 @@ const EVENTS: u32 = EV_TA_MEM | EV_7 | EV_8 | EV_9;
 /// The TA block's word Dell writes 1 to after bit 5.
 const TA_MEM_BACK: usize = 0x804;
 
-/// R340 (runs 281-284): reads the bus time-out ended, this many in a
+/// R340 (runs 281-286): reads of 1 ms or more ([`MUTE_SLOW_TICKS`]), this many in a
 /// row: the chip's host path is wedged, every access will wait as long,
 /// and only the full rebuild clears it. A length can't tell it (run 281's
 /// slowest at the wedge 9.9 ms, runs 283-284's under 3 ms, and the 1 ms
@@ -919,6 +964,12 @@ const TA_MEM_BACK: usize = 0x804;
 /// most) come one at a time. Kept by [`status`] (whether the rebuild is
 /// owed, the time-outs in a row), taken by the pump and the frame.
 const MUTE_ROW: u32 = 4;
+/// R340 (run 286): a read counts toward [`MUTE_ROW`] at 1 ms or longer:
+/// in play the X51v's slowest answered reads took up to 470 us (the DMA's
+/// bursts ahead of them), four of those in a row called a healthy chip
+/// wedged; a read the pump can starve the program with takes the tick's
+/// whole millisecond.
+const MUTE_SLOW_TICKS: u32 = 3_250;
 static MUTE: rt::Global<(bool, u32)> = rt::Global::new((false, 0));
 
 /// R340: whether reads found the chip wedged since the last look.
@@ -945,7 +996,7 @@ fn status(regs: &mut Mmio) -> Option<u32> {
     let d = rt::ticks().wrapping_sub(t0);
     let slow = bus_timed_out(d);
     MUTE.with(|m| {
-        m.1 = if slow { m.1.saturating_add(1) } else { 0 };
+        m.1 = if d >= MUTE_SLOW_TICKS { m.1.saturating_add(1) } else { 0 };
         if m.1 >= MUTE_ROW {
             m.0 = true;
         }
@@ -957,10 +1008,10 @@ fn status(regs: &mut Mmio) -> Option<u32> {
     (!slow).then_some(v)
 }
 
-/// R343: curve `k` into the gamma table, each point grey (`0x00RRGGBB`);
-/// curve 0 is the table as found, word for word.
+/// R343: look `k`: its backlight level and its gamma table, each point
+/// grey (`0x00RRGGBB`); look 0 is the table as found, word for word.
 fn curve_set(regs: &mut Mmio, k: usize, found: &[u32; 17]) {
-    for (i, &v) in CURVES[k].1.iter().enumerate() {
+    for (i, &v) in CURVES[k].2.iter().enumerate() {
         let w = if k == 0 {
             found[i]
         } else {
@@ -1145,11 +1196,9 @@ struct Counts {
     gap_us: u32,
     /// R340 (run 281): a chain failed in a way a core reset makes worse
     /// (the TA stopped for memory, bit 5; the DMA never finished; the
-    /// chip not answering): the full rebuild at once, from the pump or
-    /// the next frame, and no reads of the chip before it. Then the
-    /// program told its textures are gone at its next frame.
+    /// chip not answering): the full rebuild at the next frame, the pump
+    /// leaving the chip alone until then.
     rebuild_owed: bool,
-    stale_owed: bool,
 }
 
 /// The screen while the program has it.
@@ -1207,6 +1256,8 @@ struct Open {
     /// R343: the curve shown (`-rpcurves`), since when, and the table and
     /// `GSCTRL` as found (put back at the close).
     curve: Option<(usize, u32, [u32; 17], u32)>,
+    /// R343: NOW shown while Record is held ([`CURVE_KEY`]).
+    comparing: bool,
     /// R343: the Record presses already stepped ([`CURVE_KEY`]).
     curve_seen: u32,
     /// R340: bit 5 seen while a render ran: `0x804` owed at its end.
@@ -1271,6 +1322,8 @@ pub struct Chip {
     overlap: bool,
     /// R340's measure (`-rpoverlapat S`): the overlap from S seconds on.
     overlap_at: Option<u32>,
+    /// R341/R343: the backlight (the looks set it), put back at the close.
+    light: Option<Light>,
     /// R346: the last frame's call (OS timer ticks), for the sampler's
     /// slow frames.
     last_frame: u32,
@@ -1326,7 +1379,6 @@ impl Chip {
                 rebuilds_ok: 0,
                 gap_us: 0,
                 rebuild_owed: false,
-                stale_owed: false,
             },
             since: 0,
             opened: 0,
@@ -1342,6 +1394,7 @@ impl Chip {
             chain_check: 0,
             overlap: true,
             overlap_at: None,
+            light: None,
             last_frame: 0,
             rebuild_at: None,
             rebuilt_at: None,
@@ -1368,6 +1421,13 @@ impl Chip {
     #[must_use]
     pub const fn with_overlap(mut self, on: bool) -> Self {
         self.overlap = on;
+        self
+    }
+
+    /// R341/R343: the backlight the runner set for the game.
+    #[must_use]
+    pub fn with_light(mut self, light: Option<Light>) -> Self {
+        self.light = light;
         self
     }
 
@@ -1684,7 +1744,6 @@ impl Chip {
             ev: c.ev,
             ev_answered: c.ev_answered,
             rebuild_owed: c.rebuild_owed,
-            stale_owed: c.stale_owed,
             ..Counts::default()
         };
         self.since = rt::ticks();
@@ -2189,7 +2248,7 @@ impl Open {
         let us = us_since(self.bar_t0).max(1);
         let fps = u64::from(self.bar_frames) * 1_000_000 / u64::from(us);
         let stalls = self.bar_hangs > 0;
-        let Some(k) = self.curve.map(|v| v.0) else {
+        let Some(k) = self.curve.map(|v| if self.comparing { 0 } else { v.0 }) else {
             return;
         };
         let at = (PICK_H * W * 2) as usize;
@@ -2552,6 +2611,7 @@ impl Screen for Chip {
             bar_frames: 0,
             curve: None,
             curve_seen: 0,
+            comparing: false,
             mem_owed: false,
             bar_hangs: 0,
             overlap: overlap_ok && self.overlap_at.is_none(),
@@ -2589,6 +2649,26 @@ impl Screen for Chip {
                 table[0],
                 table[16]
             ));
+        } else if let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) {
+            // R343: the owner's pick from run 289 ("bl60 looked the best"):
+            // the game's look by default, the table as found put back at
+            // the close; until the panel is measured (the next step: its
+            // own curve and black at each backlight, then the backlight
+            // following the scene)
+            use rp_drv_mbx_display::reg::{GFXGAM0, GSCTRL};
+            let table = core::array::from_fn(|k| regs.read32(GFXGAM0 + 4 * k));
+            let gs = regs.read32(GSCTRL);
+            regs.write32(GSCTRL, gs | GSCTRL_GAMMA);
+            curve_set(regs, LOOK_DEFAULT, &table);
+            o.curve = Some((LOOK_DEFAULT, rt::ticks(), table, gs));
+            if let Some((b, _)) = self.light.as_mut() {
+                b.set(CURVES[LOOK_DEFAULT].1);
+            }
+            (self.log)(format_args!(
+                "rp-gfx: R343: the game's look {} (backlight {}%, its table)",
+                CURVES[LOOK_DEFAULT].0,
+                CURVES[LOOK_DEFAULT].1
+            ));
         }
         if self.bar
             && !self.curves
@@ -2615,17 +2695,13 @@ impl Screen for Chip {
         // Step 4f: the last frame's chain done and its render started.
         self.settle();
         // R340 (run 281): a rebuild owed now, before anything else reads
-        // the chip; one the pump did, said to the program
+        // the chip
         if mute_take() {
             self.counts.rebuild_owed = true;
         }
         if self.counts.rebuild_owed {
             self.counts.rebuild_owed = false;
             return Err(self.rebuild_now("the TA stalled or the chip stopped answering"));
-        }
-        if self.counts.stale_owed {
-            self.counts.stale_owed = false;
-            return Err(Errno::Stale);
         }
         let (Some(o), true) = (self.open.as_mut(), self.regs.is_some()) else {
             return Err(Errno::BadHandle);
@@ -2709,9 +2785,28 @@ impl Screen for Chip {
             c.rwaits += 1;
             c.rwait_us += r;
         }
-        let presses = CURVE_KEY.with(|k| k.2);
+        let (presses, compare) = CURVE_KEY.with(|k| (k.2, k.4));
+        if let Some((k, _, table, _)) = o.curve
+            && compare != o.comparing
+        {
+            // R343: hold to see NOW, let go for the look again
+            o.comparing = compare;
+            let show = if compare { 0 } else { k };
+            curve_set(regs, show, &table);
+            o.draw_band(true);
+            if let Some((b, _)) = self.light.as_mut() {
+                b.set(CURVES[show].1);
+            }
+            if compare {
+                (self.log)(format_args!(
+                    "rp-gfx: R343: the owner held Record: NOW against {} at frame {}",
+                    CURVES[k].0, self.frame
+                ));
+            }
+        }
         if let Some((k, _, table, gs)) = o.curve
             && presses != o.curve_seen
+            && !o.comparing
         {
             // one step a frame, however many presses came (each shown)
             o.curve_seen = o.curve_seen.wrapping_add(1);
@@ -2723,6 +2818,9 @@ impl Screen for Chip {
                 "rp-gfx: R343: the owner stepped to the curve {} at frame {}",
                 CURVES[k].0, self.frame
             ));
+            if let Some((b, _)) = self.light.as_mut() {
+                b.set(CURVES[k].1);
+            }
         }
         if o.bar {
             o.bar_frames += 1;
@@ -3060,13 +3158,14 @@ impl Screen for Chip {
         // R340 (run 281): the rebuild at once, from the tick (~0.5 s), so
         // neither the pump's reads nor the program's writes wait out the
         // bus time-out on a wedged chip in the meantime
+        // R340: a rebuild owed is the next frame's (run 286: one run from
+        // here, the tick's interrupt, never finished: a white screen and
+        // the watchdog); meanwhile the pump leaves the chip alone, so its
+        // reads can't starve the program on a wedged chip
         if mute_take() {
             self.counts.rebuild_owed = true;
         }
-        if self.counts.rebuild_owed && self.open.is_some() {
-            self.counts.rebuild_owed = false;
-            let _ = self.rebuild_now("the TA stalled or the chip stopped answering (from the pump)");
-            self.counts.stale_owed = true;
+        if self.counts.rebuild_owed {
             return;
         }
         let (Some(o), Some(regs), Some(ch)) =
@@ -3158,6 +3257,15 @@ impl Screen for Chip {
             graphics_set(regs, &p, Layer::SOLO, false);
         }
         regs.write32(SYSCFG, o.syscfg0);
+        if let Some((b, found)) = self.light.take() {
+            // R341: the backlight as the runner found it
+            use rp_drv_pxa_pwm::reg as pwm;
+            let mut p = b.into_inner();
+            p.write32(pwm::CR, found[0]);
+            p.write32(pwm::PCR, found[1]);
+            p.write32(pwm::DCR, found[2]);
+            (self.log)(format_args!("runner: R341: the backlight put back as found"));
+        }
         (self.log)(format_args!("rp-gfx: the screen given back"));
         panel::give_back(o.vram);
         Ok(())

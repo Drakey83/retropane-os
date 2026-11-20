@@ -225,14 +225,11 @@ mod image {
     /// R341: PWM0 as found (`CR`, `PCR`, `DCR`), put back at the end (a
     /// program that ends by `exit` or a crash leaves it to the loader,
     /// which puts the whole board back after every image: audit C39).
-    struct Light {
-        pwm: Mmio,
-        found: [u32; 3],
-    }
-
     /// R341: the backlight to `level` percent for the program's time (a
-    /// quarter-second fade), the found registers kept for [`light_back`].
-    fn light_up(level: u32) -> Option<Light> {
+    /// quarter-second fade), with its registers as found: the screen's
+    /// close puts them back (`gfx::Chip::with_light`; R343's looks set
+    /// its level while the game plays).
+    fn light_up(level: u32) -> Option<super::gfx::Light> {
         use rp_drv_pxa_pwm::reg;
         let Some(mut pwm) = rt::take_pwm0() else {
             let _ = writeln!(Out, "runner: R341: the backlight not taken (PWM0 already taken)");
@@ -245,25 +242,10 @@ mod image {
         let (on, counts) = b.duty();
         let _ = writeln!(
             Out,
-            "runner: R341: the backlight {level}% for the program ({on} of {counts} counts); found {was}% (PWM0 CR 0x{:x} PCR 0x{:x} DCR 0x{:x}), put back at the end",
+            "runner: R341: the backlight {level}% for the program ({on} of {counts} counts); found {was}% (PWM0 CR 0x{:x} PCR 0x{:x} DCR 0x{:x}), put back at the screen's close",
             found[0], found[1], found[2]
         );
-        Some(Light {
-            pwm: b.into_inner(),
-            found,
-        })
-    }
-
-    /// R341: the backlight as [`light_up`] found it.
-    fn light_back(l: Option<Light>) {
-        use rp_drv_pxa_pwm::reg;
-        let Some(mut l) = l else {
-            return;
-        };
-        l.pwm.write32(reg::CR, l.found[0]);
-        l.pwm.write32(reg::PCR, l.found[1]);
-        l.pwm.write32(reg::DCR, l.found[2]);
-        let _ = writeln!(Out, "runner: R341: the backlight put back as found");
+        Some((b, found))
     }
 
     /// A test run's word for the 2700G's clock while the program draws:
@@ -2021,8 +2003,16 @@ mod image {
             );
             chain
         };
+        // R341: the backlight for the game (the loader puts the board
+        // back after every image, a crash's included: audit C39)
+        let light = light_up(
+            seconds_after(&args[..arg_count], LIGHT_WORD)
+                .unwrap_or(LIGHT_DEFAULT)
+                .min(100),
+        );
         match CHIP.put_with(|| {
             super::gfx::Chip::new(gfx_log, mbx)
+                .with_light(light)
                 .with_rung(rung)
                 .with_ladder(ladder)
                 .with_bar(bar)
@@ -2106,13 +2096,6 @@ mod image {
             || args[..arg_count]
                 .iter()
                 .any(|a| a.to_bytes() == SAMPLE_WORD);
-        // R341: the backlight for the game (the loader puts the board
-        // back after every image, a crash's included: audit C39)
-        let light = light_up(
-            seconds_after(&args[..arg_count], LIGHT_WORD)
-                .unwrap_or(LIGHT_DEFAULT)
-                .min(100),
-        );
         let sys: &'static mut dyn Sys = s;
         rp_hal_cabi::start(sys, exit);
         if sampling {
@@ -2154,7 +2137,6 @@ mod image {
             rt::start_tick(PUMP_HZ);
         }
         let ran = rp_hal_cabi::run_module(PROGRAM.as_bytes(), &args[..arg_count]);
-        light_back(light);
         unlock_icache_after();
         sram_unmap();
         let (maps, unmaps) = SRAM.with(|s| (s.2, s.3));
