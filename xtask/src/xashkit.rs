@@ -726,4 +726,27 @@ engine c
         assert!(drive < copy && copy < hash && hash < ro);
         assert!(!text.contains("hash rp-xash/client.rpm"));
     }
+
+    /// R338's class guard: every per-bone bit test our client patch adds
+    /// (a 32-bit mask shifted by the bone's number) is bounded to bones
+    /// 0-31 on the same line. Unbounded, a shift by 32 or more is no bit
+    /// (ARM gives 0), and bone 32 on of every larger model was skipped:
+    /// the snark, grenade and satchel hands (75 bones) drawn stretched.
+    #[test]
+    fn the_client_never_shifts_a_bone_mask_past_its_width() {
+        let patch = include_str!("../../ports/xash/patches/hlsdk-portable.patch");
+        let mut tests = 0;
+        for line in patch.lines().filter(|l| l.starts_with('+')) {
+            for var in ["i", "k"] {
+                if line.contains(&format!(">> {var} & 1")) {
+                    tests += 1;
+                    assert!(
+                        line.contains(&format!("{var} < 32")) || line.contains("numbones <= 32"),
+                        "a bone mask shifted by {var} with no bound to 32 (R338): {line}"
+                    );
+                }
+            }
+        }
+        assert!(tests > 0, "the guard found no bone mask tests to check");
+    }
 }
