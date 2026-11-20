@@ -118,6 +118,11 @@ pub struct Chain {
     pub last_gap_us: u32,
     /// Looks at the frame in flight (the pump's and the settle's).
     pub looks: u32,
+    /// R340: the channel's registers (`DCSR`, `DDADR`, `DSADR`, `DTADR`)
+    /// at the last chain that did not finish, before its stop, `DCSR`
+    /// after it, the descriptor it was on (of [`Self::last_descriptors`]),
+    /// and its microseconds since the arm.
+    pub last_fail: Option<([u32; 4], u32, u32, u32)>,
 }
 
 impl Chain {
@@ -157,6 +162,7 @@ impl Chain {
             ends: 0,
             last_gap_us: 0,
             looks: 0,
+            last_fail: None,
             last_descriptors: 0,
         })
     }
@@ -443,7 +449,12 @@ impl Chain {
                 break true;
             }
             if us_since(f.t0) > CHAIN_LIMIT_US {
+                // R340: where it stuck, before and after the stop
+                let r = self.dma.registers();
                 self.dma.abort();
+                let after = self.dma.registers()[0];
+                let desc = r[1].wrapping_sub(self.addr(DESC)) / 16;
+                self.last_fail = Some(([r[0], r[1], r[2], r[3]], after, desc, us_since(f.t0)));
                 break false;
             }
         };

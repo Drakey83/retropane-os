@@ -679,6 +679,40 @@ const TA_LIMIT_US: u32 = 500_000;
 /// none finish late (most 16.4 ms at 136.50), so a hang costs 50 ms, not
 /// 200.
 const RENDER_LIMIT_US: u32 = 50_000;
+/// R343 (the owner, 2026-11-20: the dark areas muddy, the panel's black a
+/// grey): tone curves for the display's gamma table (`GFXGAM0`-`16`, 17
+/// points, applied at scan-out: no cost a frame), as the mock-up
+/// docs/design/mockups/hl-dark-curves.png drew them: straight, A gamma
+/// 0.8, B gamma 0.65, C the bottom third opened (gamma 0.6 blending to
+/// straight by three quarters). `-rpcurves` steps through them every
+/// [`CURVE_US`], the name in the bar, for the owner to pick on the panel.
+const CURVES: [(&str, [u8; 17]); 4] = [
+    (
+        "NOW",
+        [0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255],
+    ),
+    (
+        "A 0.8",
+        [0, 28, 48, 67, 84, 101, 116, 132, 146, 161, 175, 189, 203, 216, 229, 242, 255],
+    ),
+    (
+        "B 0.65",
+        [0, 42, 66, 86, 104, 120, 135, 149, 163, 175, 188, 200, 212, 223, 234, 245, 255],
+    ),
+    (
+        "C LIFT",
+        [0, 48, 73, 91, 103, 114, 124, 134, 144, 155, 166, 178, 191, 207, 223, 239, 255],
+    ),
+];
+const CURVE_US: u32 = 20_000_000;
+/// The gamma table's use bit in `GSCTRL` (Windows Mobile leaves it set).
+const GSCTRL_GAMMA: u32 = 1 << 26;
+
+/// R340's escalation: chains failed in a row before the CPU feeds the TA,
+/// and the CPU's feeds failed in a row before the clock goes back to
+/// Windows Mobile's (ADR-0035 rule 6).
+const CHAIN_FAILS_OFF: u32 = 2;
+const CPU_FAILS_CLOCK: u32 = 3;
 /// R340: hangs said one by one (then only in the five-second counts).
 const HANGS_SAID: u32 = 20;
 /// Every this many frames the render is waited for at once and timed.
@@ -721,6 +755,19 @@ fn status(regs: &mut Mmio) -> Option<u32> {
         r.1 = r.1.wrapping_add(u32::from(slow));
     });
     (!slow).then_some(v)
+}
+
+/// R343: curve `k` into the gamma table, each point grey (`0x00RRGGBB`);
+/// curve 0 is the table as found, word for word.
+fn curve_set(regs: &mut Mmio, k: usize, found: &[u32; 17]) {
+    for (i, &v) in CURVES[k].1.iter().enumerate() {
+        let w = if k == 0 {
+            found[i]
+        } else {
+            u32::from(v) * 0x01_0101
+        };
+        regs.write32(rp_drv_mbx_display::reg::GFXGAM0 + 4 * i, w);
+    }
 }
 
 fn underrun_take(regs: &mut Mmio) -> bool {
@@ -838,6 +885,11 @@ struct Counts {
     /// R340: hangs of either kind since the screen opened (not reset by
     /// the reports).
     run_hangs: u32,
+    /// R340: chains that did not finish in a row, and the CPU's feeds
+    /// the TA never finished in a row (the escalation's counts; kept
+    /// across the reports).
+    chain_fails_row: u32,
+    cpu_fails_row: u32,
     gap_us: u32,
 }
 
@@ -893,6 +945,9 @@ struct Open {
     bar: bool,
     bar_t0: u32,
     bar_frames: u32,
+    /// R343: the curve shown (`-rpcurves`), since when, and the table and
+    /// `GSCTRL` as found (put back at the close).
+    curve: Option<(usize, u32, [u32; 17], u32)>,
     bar_hangs: u32,
     /// Kit 113 (ref-rp.md): the TA takes frame N + 1 while the 3D stage
     /// draws frame N, the two scenes in two tail buffers and region
@@ -925,6 +980,10 @@ pub struct Chip {
     rung: Option<clock::Rung>,
     /// R295's diagnostic ladder asked for (`-rpladder`), and where it is.
     ladder_on: bool,
+    /// R340: the chain given up on for the run (the TA fed by the CPU).
+    chain_off: bool,
+    /// R343: the curves stepped through (`-rpcurves`; the bar on with it).
+    curves: bool,
     /// The frame-rate bar asked for (`-rpfpsbar`).
     bar: bool,
     ladder: Option<Ladder>,
@@ -975,6 +1034,8 @@ impl Chip {
                 rwaits: 0,
                 rwait_us: 0,
                 run_hangs: 0,
+                chain_fails_row: 0,
+                cpu_fails_row: 0,
                 gap_us: 0,
             },
             since: 0,
@@ -982,6 +1043,8 @@ impl Chip {
             frame: 0,
             rung: None,
             ladder_on: false,
+            chain_off: false,
+            curves: false,
             ladder: None,
             bar: false,
             cpu: None,
@@ -1036,6 +1099,7 @@ impl Chip {
             s,
             false,
             ch.last_gap_us,
+            ch.last_fail.take(),
         );
     }
 
@@ -1048,10 +1112,12 @@ impl Chip {
         s: Settled,
         pumped: bool,
         gap: u32,
+        fail: Option<([u32; 4], u32, u32, u32)>,
     ) {
         match s {
             Settled::Idle => {}
             Settled::Done(us) => {
+                c.chain_fails_row = 0;
                 c.chain_us += us;
                 c.gap_us += gap;
                 c.pumped += u32::from(pumped);
@@ -1065,6 +1131,7 @@ impl Chip {
             Settled::Failed { dma } => {
                 c.ta_hangs += 1;
                 c.run_hangs += 1;
+                c.chain_fails_row += 1;
                 if c.run_hangs <= HANGS_SAID {
                     let (slowest, timeouts) = reads();
                     log(format_args!(
@@ -1076,6 +1143,20 @@ impl Chip {
                             "the TA never said done"
                         },
                     ));
+                    if let Some((r, after, desc, us)) = fail {
+                        log(format_args!(
+                            "rp-gfx: R340: the chain's DMA at {us} us: DCSR 0x{:08x} DDADR 0x{:08x} DSADR 0x{:08x} DTADR 0x{:08x} (descriptor {desc}); DCSR after the stop 0x{after:08x} ({})",
+                            r[0],
+                            r[1],
+                            r[2],
+                            r[3],
+                            if after & (1 << 3) != 0 {
+                                "stopped"
+                            } else {
+                                "NOT stopped"
+                            }
+                        ));
+                    }
                 }
                 if c.ta_hangs == 1 {
                     log(format_args!(
@@ -1111,6 +1192,16 @@ impl Chip {
     #[must_use]
     pub const fn with_bar(mut self, on: bool) -> Self {
         self.bar = on;
+        self
+    }
+
+    /// R343: the tone curves stepped through, named in the bar.
+    #[must_use]
+    pub const fn with_curves(mut self, on: bool) -> Self {
+        self.curves = on;
+        if on {
+            self.bar = true;
+        }
         self
     }
 
@@ -1199,6 +1290,8 @@ impl Chip {
         ));
         self.counts = Counts {
             run_hangs: c.run_hangs,
+            chain_fails_row: c.chain_fails_row,
+            cpu_fails_row: c.cpu_fails_row,
             ..Counts::default()
         };
         self.since = rt::ticks();
@@ -1538,6 +1631,9 @@ impl Open {
             2,
             (0xFFE0, 0x0000),
         );
+        if let Some(k) = self.curve.map(|v| v.0) {
+            let _ = write!(c, "{}  ", CURVES[k].0);
+        }
         let _ = write!(
             c,
             "{}.{} fps  2700G {}.{:02} MHz  stalls {}",
@@ -1833,6 +1929,7 @@ impl Screen for Chip {
             bar: self.bar,
             bar_t0: rt::ticks(),
             bar_frames: 0,
+            curve: None,
             bar_hangs: 0,
             overlap: self.overlap
                 && self.chain.is_some()
@@ -1844,6 +1941,22 @@ impl Screen for Chip {
             render_b: false,
             pending: None,
         });
+        if self.curves
+            && let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut())
+        {
+            use rp_drv_mbx_display::reg::{GFXGAM0, GSCTRL};
+            let table = core::array::from_fn(|k| regs.read32(GFXGAM0 + 4 * k));
+            let gs = regs.read32(GSCTRL);
+            regs.write32(GSCTRL, gs | GSCTRL_GAMMA);
+            curve_set(regs, 0, &table);
+            o.curve = Some((0, rt::ticks(), table, gs));
+            (self.log)(format_args!(
+                "rp-gfx: R343: the curves stepped every {} s (found GFXGAM0 0x{:x} .. GFXGAM16 0x{:x}, GSCTRL 0x{gs:x})",
+                CURVE_US / 1_000_000,
+                table[0],
+                table[16]
+            ));
+        }
         if self.bar
             && let Some(o) = self.open.as_mut()
         {
@@ -1926,6 +2039,19 @@ impl Screen for Chip {
             c.rwaits += 1;
             c.rwait_us += r;
         }
+        if let Some((k, t0, _, _)) = o.curve
+            && us_since(t0) >= CURVE_US
+        {
+            let k = (k + 1) % CURVES.len();
+            if let Some(c) = o.curve {
+                curve_set(regs, k, &c.2);
+            }
+            o.curve = o.curve.map(|c| (k, rt::ticks(), c.2, c.3));
+            (self.log)(format_args!(
+                "rp-gfx: R343: the curve {} from frame {}",
+                CURVES[k].0, self.frame
+            ));
+        }
         if o.bar {
             o.bar_frames += 1;
             o.bar_hangs += u32::from(waited.is_err());
@@ -1980,8 +2106,19 @@ impl Screen for Chip {
             self.report();
             return r;
         }
+        // R340's escalation: chains that keep failing after the core's
+        // reset leave the TA to the CPU's feed for the rest of the run
+        // (which also says whether the TA or the DMA is the one stuck)
+        if !self.chain_off && c.chain_fails_row >= CHAIN_FAILS_OFF {
+            self.chain_off = true;
+            (self.log)(format_args!(
+                "rp-gfx: R340: {} chains in a row did not finish after the core's reset: the TA fed by the CPU from frame {} on",
+                c.chain_fails_row, self.frame
+            ));
+        }
         // Step 4f: the frame as one DMA chain, the CPU let go at once.
         if self.ladder.is_none()
+            && !self.chain_off
             && let Some(ch) = self.chain.as_mut()
         {
             let t1 = rt::ticks();
@@ -2163,8 +2300,26 @@ impl Screen for Chip {
         c.strips += counts.strips;
         c.feed_us += fed.feed_us;
         c.ta_us += fed.ta_us;
+        c.cpu_fails_row = if fed.done { 0 } else { c.cpu_fails_row + 1 };
+        if !fed.done && c.cpu_fails_row >= CPU_FAILS_CLOCK && o.cur.is_some() {
+            // R340's escalation, ADR-0035 rule 6: a GPU that keeps hanging
+            // drops to Windows Mobile's clock at once, said in the log
+            let a = clock::put_back(regs, rt::delay_us, set_cs3);
+            o.cur = None;
+            (self.log)(format_args!(
+                "rp-gfx: R340: {} CPU feeds in a row the TA never finished: the 2700G's clock put back to Windows Mobile's ({}), the underrun flag {}",
+                c.cpu_fails_row,
+                match a {
+                    Some(a) if a.unwritten == 0 => "locked",
+                    Some(_) => "a memory-controller write never held",
+                    None => "the PLL did not lock",
+                },
+                if underrun_take(regs) { "set" } else { "clear" }
+            ));
+        }
         if !fed.done {
             c.ta_hangs += 1;
+            c.run_hangs += 1;
             if c.ta_hangs == 1 {
                 (self.log)(format_args!(
                     "rp-gfx: the TA never said done ({} words, stuck {:?}): the core reset",
@@ -2231,7 +2386,16 @@ impl Screen for Chip {
         };
         if ch.busy() {
             let s = ch.pump(regs);
-            Self::settled(&mut self.counts, self.log, o, regs, s, true, ch.last_gap_us);
+            Self::settled(
+                &mut self.counts,
+                self.log,
+                o,
+                regs,
+                s,
+                true,
+                ch.last_gap_us,
+                ch.last_fail.take(),
+            );
         }
         if o.pending.is_some() {
             o.start_pending(regs);
@@ -2270,6 +2434,7 @@ impl Screen for Chip {
                 s,
                 false,
                 ch.last_gap_us,
+            ch.last_fail.take(),
             );
         }
         let _ = o.wait_render(regs);
@@ -2290,6 +2455,12 @@ impl Screen for Chip {
                 },
                 if underrun_take(regs) { "set" } else { "clear" }
             ));
+        }
+        if let Some((_, _, table, gs)) = o.curve {
+            for (k, v) in table.iter().enumerate() {
+                regs.write32(rp_drv_mbx_display::reg::GFXGAM0 + 4 * k, *v);
+            }
+            regs.write32(rp_drv_mbx_display::reg::GSCTRL, gs);
         }
         clock::restore(regs, o.clk0);
         if let Some(p) = o.moved {

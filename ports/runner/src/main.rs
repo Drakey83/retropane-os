@@ -1910,6 +1910,8 @@ mod image {
             .iter()
             .any(|a| a.to_bytes() == LADDER_WORD);
         let bar = args[..arg_count].iter().any(|a| a.to_bytes() == BAR_WORD);
+        // R343: the tone curves stepped through for the owner's pick
+        let curves = args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpcurves");
         let cpu_n2 = args[..arg_count]
             .iter()
             .rposition(|a| a.to_bytes() == CPU_WORD)
@@ -1983,6 +1985,7 @@ mod image {
                 .with_rung(rung)
                 .with_ladder(ladder)
                 .with_bar(bar)
+                .with_curves(curves)
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
                 .with_chain(chain)
