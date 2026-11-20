@@ -238,10 +238,17 @@ impl<'r, B: RegisterBus> Feed<'r, B> {
     /// store; the same words in the same order as [`Self::put`] a word at a
     /// time (the bus's ~133 ns a word was paying ~100 ns more of software,
     /// run 39: 234 ns a word). False once the scene has ended stuck.
+    ///
+    /// R340 (run 276): a wedged chip's status reads, ended by the bus
+    /// time-out, said the FIFO empty, so every chunk wrote on without a
+    /// wait and the feed spun for 30 s until the run limit; now each chunk
+    /// checks the scene's time against the limit [`Self::finish`] keeps
+    /// (one clock read a chunk of up to 510 words), and past it the scene
+    /// is stuck.
     pub fn put_words(&mut self, words: &[u32]) -> bool {
         let mut i = 0;
         while i < words.len() {
-            if self.credit == 0 && !self.wait_room() {
+            if self.past_limit() || (self.credit == 0 && !self.wait_room()) {
                 return false;
             }
             let window = (PORT_SIZE - self.at) / 4;
@@ -291,8 +298,21 @@ impl<'r, B: RegisterBus> Feed<'r, B> {
         }
     }
 
+    /// The scene past its limit from the start (no scene finishing after
+    /// it is done: [`Self::finish`] polls up to the same limit): stuck.
+    fn past_limit(&mut self) -> bool {
+        if self.fed.stuck.is_some() {
+            return true;
+        }
+        if self.clock.us_since(self.t0) > self.limit_us {
+            self.fed.stuck = Some(self.regs.read32(MBX + reg::STATUS));
+            return true;
+        }
+        false
+    }
+
     fn write(&mut self, offset: usize, v: u32) -> bool {
-        if self.credit == 0 && !self.wait_room() {
+        if self.credit == 0 && (self.past_limit() || !self.wait_room()) {
             return false;
         }
         self.regs.write32(offset, v);

@@ -819,6 +819,22 @@ mod feed {
     }
 
     #[test]
+    fn a_chip_that_always_says_room_cannot_hold_the_feed_past_its_limit() {
+        // R340, run 276: a wedged chip's timed-out status reads said the
+        // FIFO empty; the CPU's feed then wrote on for 30 s. Here every
+        // read says empty and each clock read is 1 ms: a 5 ms scene must
+        // end stuck after a few chunks, not after all 100,000 words.
+        let words: Vec<u32> = (0..100_000u32).collect();
+        let mut bus = idle(0);
+        let mut f = ta::Feed::start(&mut bus, &READY, &GLESFEAT, CLOCK, 5_000);
+        assert!(!f.put_words(&words));
+        let fed = f.finish();
+        assert!(fed.stuck.is_some());
+        assert!(!fed.done);
+        assert!(fed.words < 510 * 10, "{} words", fed.words);
+    }
+
+    #[test]
     fn words_in_runs_write_what_words_one_at_a_time_write() {
         // 3,000 words: past the 510-word FIFO many times and across the
         // window's wrap (1,024 words), the FIFO full once along the way.

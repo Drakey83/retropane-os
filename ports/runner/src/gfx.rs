@@ -36,6 +36,7 @@ use rp_drv_mbx_display::console::Console;
 use rp_drv_mbx_display::layers::Layer;
 use rp_drv_mbx_display::{PixelFormat as PlaneFormat, Plane, ack_events, graphics_set};
 use rp_drv_mbx3d::{self as m3, ta};
+use rp_drv_pxa_keypad::{Button, Pressed};
 use rp_hal_api::RegisterBus;
 use rp_hal_cabi::{Errno, Gfx};
 use rp_hal_mem::{load32_volatile, store32_volatile};
@@ -165,6 +166,27 @@ const LAY_BAR: Lay = Lay {
     },
     keep: KEEP,
 };
+/// R343's picker (`-rpcurves`, the owner after run 276: "it wasnt
+/// titled clear enough"): a band of 48 rows (the landscape picture's left
+/// edge, 48 pixels wide) the 3D frame leaves to the CPU, where the curve's
+/// name stands big and upright as the owner holds the device, its letters
+/// stacked down the band; the frame rate under it.
+const PICK_ROWS: u32 = 48;
+const PICK_H: u32 = H - PICK_ROWS;
+const LAY_PICK: Lay = Lay {
+    name: "all in SDRAM, the bottom 48 rows the curve picker's",
+    ta: ta::Layout {
+        height: PICK_H,
+        ..TA
+    },
+    pm: TA_PM,
+    from: binner::Layout {
+        h: PICK_H as u16,
+        ..FROM_TA
+    },
+    keep: KEEP,
+};
+const _: () = assert!(PICK_H.is_multiple_of(m3::TILE_H) && PICK_H.is_multiple_of(16));
 const SCREEN_BAR: Target = Target {
     picture: Picture::packed(0, W as u16, DRAW_H as u16, PixelFormat::Rgb565),
     x: 0,
@@ -684,8 +706,8 @@ const RENDER_LIMIT_US: u32 = 50_000;
 /// points, applied at scan-out: no cost a frame), as the mock-up
 /// docs/design/mockups/hl-dark-curves.png drew them: straight, A gamma
 /// 0.8, B gamma 0.65, C the bottom third opened (gamma 0.6 blending to
-/// straight by three quarters). `-rpcurves` steps through them every
-/// [`CURVE_US`], the name in the bar, for the owner to pick on the panel.
+/// straight by three quarters). `-rpcurves`: the owner steps through them
+/// with the Record button ([`curve_key`]), the name in [`LAY_PICK`]'s band.
 const CURVES: [(&str, [u8; 17]); 4] = [
     (
         "NOW",
@@ -704,15 +726,103 @@ const CURVES: [(&str, [u8; 17]); 4] = [
         [0, 48, 73, 91, 103, 114, 124, 134, 144, 155, 166, 178, 191, 207, 223, 239, 255],
     ),
 ];
-const CURVE_US: u32 = 60_000_000;
+/// R343's picker: whether `-rpcurves` runs, the Record button held at the
+/// last scan, and its presses so far (the keypad's scans count them, the
+/// frames step a curve for each).
+static CURVE_KEY: rt::Global<(bool, bool, u32)> = rt::Global::new((false, false, 0));
+
+/// R343's picker on (`-rpcurves`): from then on the Record button steps
+/// the curves and the game never sees it (its own job, the weapon before,
+/// waits: the owner judges dark corners, not weapons; every run without
+/// `-rpcurves` keeps the button's job).
+pub fn curve_key_on() {
+    CURVE_KEY.with(|k| k.0 = true);
+}
+
+/// The buttons held as the game gets them: with the picker on, Record
+/// taken out and each new press counted.
+#[must_use]
+pub fn curve_key(held: Pressed) -> Pressed {
+    CURVE_KEY.with(|k| {
+        if !k.0 {
+            return held;
+        }
+        let r = held.contains(Button::Record);
+        if r && !k.1 {
+            k.2 = k.2.wrapping_add(1);
+        }
+        k.1 = r;
+        Button::ALL
+            .into_iter()
+            .filter(|&b| b != Button::Record && held.contains(b))
+            .fold(Pressed::NONE, Pressed::with)
+    })
+}
+
+/// One pixel of the picker's band at the landscape point (`lx` across
+/// from the picture's left edge, `ly` down from its top): the runner's
+/// turn (`RP_TURN_RIGHT`: the device's top edge at the player's right) puts
+/// it at the upright screen's (`ly`, `H - 1 - lx`).
+fn band_px(rows: &mut [u8], lx: u32, ly: u32, c: u16) {
+    if lx >= PICK_ROWS || ly >= W {
+        return;
+    }
+    let r = H - 1 - lx - PICK_H;
+    let at = ((r * W + ly) * 2) as usize;
+    if let Some(p) = rows.get_mut(at..at + 2) {
+        p.copy_from_slice(&c.to_le_bytes());
+    }
+}
+
+/// `text` upright in the band at scale `s` from (`lx0`, `ly0`): its
+/// letters stacked down the band, or side by side across it.
+fn band_text(rows: &mut [u8], (lx0, ly0): (u32, u32), s: u32, text: &str, c: u16, stacked: bool) {
+    use rp_drv_mbx_display::font::{HEIGHT, WIDTH, glyph};
+    let (gw, gh) = (WIDTH as u32, HEIGHT as u32);
+    for (i, ch) in text.chars().enumerate() {
+        let i = i as u32;
+        let (x0, y0) = if stacked {
+            (lx0, ly0 + i * (gh + 2) * s)
+        } else {
+            (lx0 + i * (gw + 1) * s, ly0)
+        };
+        for (gy, &bits) in glyph(ch).iter().enumerate() {
+            for gx in 0..gw {
+                if bits & (1 << (gw - 1 - gx)) == 0 {
+                    continue;
+                }
+                for d in 0..s * s {
+                    band_px(rows, x0 + gx * s + d % s, y0 + gy as u32 * s + d / s, c);
+                }
+            }
+        }
+    }
+}
 /// The gamma table's use bit in `GSCTRL` (Windows Mobile leaves it set).
 const GSCTRL_GAMMA: u32 = 1 << 26;
 
-/// R340's escalation: chains failed in a row before the 2700G's clock goes
-/// back to Windows Mobile's (ADR-0035 rule 6), and the CPU's own feeds
-/// (frames too large for the chain) failed in a row before the same.
+/// R340's escalation: chains failed in a row, or the CPU's own feeds
+/// (frames too large for the chain), before the 2700G's full reset and
+/// rebuild (R344: run 278 proved a core reset at Windows Mobile's clock
+/// does not clear the wedge; the rebuild puts that clock back too,
+/// ADR-0035 rule 6).
 const CHAIN_FAILS_OFF: u32 = 2;
 const CPU_FAILS_CLOCK: u32 = 3;
+/// R344: rebuilds said one by one (then only counted).
+const REBUILDS_SAID: u32 = 10;
+/// R344: the least time between rebuilds (between them a failed chain
+/// takes the core's reset only), doubled after each rebuild no finished
+/// chain followed, up to [`REBUILD_GAP_MOST_US`], and back to the least at
+/// the next finished chain: a wedge a rebuild cures costs ~0.25 s, one it
+/// cannot (or the emulator, whose chains never say done) a few rebuilds a
+/// minute at most, never the run.
+const REBUILD_GAP_US: u32 = 2_000_000;
+const REBUILD_GAP_MOST_US: u32 = 64_000_000;
+
+/// R344: whether a rebuild may run now: none yet, or the last `gap` ago.
+fn rebuild_due(last: Option<(u32, u32)>) -> bool {
+    last.is_none_or(|(t, gap)| us_since(t) >= gap)
+}
 /// R340: hangs said one by one (then only in the five-second counts).
 const HANGS_SAID: u32 = 20;
 /// Every this many frames the render is waited for at once and timed.
@@ -772,6 +882,46 @@ fn curve_set(regs: &mut Mmio, k: usize, found: &[u32; 17]) {
 
 fn underrun_take(regs: &mut Mmio) -> bool {
     ack_events(regs, GFX_UNDERRUN) & GFX_UNDERRUN != 0
+}
+
+/// R344: run Z's reset and rebuild, then the 3D clock on as the open
+/// turns it on and the underrun flag cleared (ADR-0035 rule 8). Leaves
+/// Linux's `SYSCFG` (the bus time-out on); the close puts the found back.
+/// The PXA's CS3 bus timing the long way through the reset (the chip on
+/// its reset clocks), Windows Mobile's after (the clock it rebuilds to),
+/// as `clock::put_back` does.
+fn rebuild_chip(regs: &mut Mmio) -> rp_drv_mbx_display::rebuild::Rebuilt {
+    set_cs3(clock::CS3_LONG);
+    let r = rp_drv_mbx_display::rebuild::run(regs, rt::delay_us);
+    set_cs3(clock::CS3_WM);
+    let clk = regs.read32(MBXCLK);
+    clock::restore(regs, with_3d(clk));
+    rt::delay_us(1_000);
+    let _ = underrun_take(regs);
+    r
+}
+
+/// R344: a rebuild's line for the log.
+fn rebuilt_line(
+    log: fn(Arguments<'_>),
+    why: &str,
+    n: u32,
+    ok: bool,
+    us: u32,
+    r: &rp_drv_mbx_display::rebuild::Rebuilt,
+) {
+    log(format_args!(
+        "rp-gfx: R344: the 2700G reset and rebuilt ({n}, {why}) in {} ms: PLLSTAT 0x{:x} LMPWRSTAT 0x{:x}, {} writes read back differently, DINTRS 0x{:x}, the display {} (DSIG 0x{:x} then 0x{:x}); the TA {}; Windows Mobile's 2700G clock from here",
+        us / 1000,
+        r.pllstat,
+        r.lmpwrstat,
+        r.off_by,
+        r.dintrs,
+        if r.sending() { "sending" } else { "NOT sending" },
+        r.dsig.0,
+        r.dsig.1,
+        if ok { "ready" } else { "NOT ready" }
+    ));
 }
 
 /// CS3's bus timing for a clock step (`clock::step`, `clock::put_back`).
@@ -890,6 +1040,10 @@ struct Counts {
     /// across the reports).
     chain_fails_row: u32,
     cpu_fails_row: u32,
+    /// R344: full resets and rebuilds since the screen opened, and those
+    /// after which the TA's memory manager came up.
+    rebuilds: u32,
+    rebuilds_ok: u32,
     gap_us: u32,
 }
 
@@ -948,6 +1102,8 @@ struct Open {
     /// R343: the curve shown (`-rpcurves`), since when, and the table and
     /// `GSCTRL` as found (put back at the close).
     curve: Option<(usize, u32, [u32; 17], u32)>,
+    /// R343: the Record presses already stepped ([`CURVE_KEY`]).
+    curve_seen: u32,
     bar_hangs: u32,
     /// Kit 113 (ref-rp.md): the TA takes frame N + 1 while the 3D stage
     /// draws frame N, the two scenes in two tail buffers and region
@@ -998,6 +1154,13 @@ pub struct Chip {
     chain_check: u32,
     /// Kit 113's overlap asked for (off with `-rpnooverlap`).
     overlap: bool,
+    /// R344's test (`-rprebuild S`): one full reset and rebuild forced S
+    /// seconds after the screen opened, on a healthy chip, so the cure is
+    /// proven (the emulator, the X51v) without waiting for a stall.
+    rebuild_at: Option<u32>,
+    /// R344: when the last rebuild ran, and the gap before the next may
+    /// ([`REBUILD_GAP_US`]); `None` once a chain finished after it.
+    rebuilt_at: Option<(u32, u32)>,
 }
 
 impl Chip {
@@ -1034,6 +1197,8 @@ impl Chip {
                 run_hangs: 0,
                 chain_fails_row: 0,
                 cpu_fails_row: 0,
+                rebuilds: 0,
+                rebuilds_ok: 0,
                 gap_us: 0,
             },
             since: 0,
@@ -1049,7 +1214,16 @@ impl Chip {
             chain: None,
             chain_check: 0,
             overlap: true,
+            rebuild_at: None,
+            rebuilt_at: None,
         }
+    }
+
+    /// R344's test: a rebuild forced `s` seconds after the open.
+    #[must_use]
+    pub const fn with_rebuild_at(mut self, s: Option<u32>) -> Self {
+        self.rebuild_at = s;
+        self
     }
 
     /// Kit 113: the TA and the 3D stage at work on two frames at once
@@ -1282,13 +1456,17 @@ impl Chip {
         let (slowest, timeouts) = reads();
         READS.with(|r| *r = (0, 0));
         (self.log)(format_args!(
-            "rp-gfx: R340: the slowest 2700G status read {slowest} us, {timeouts} ended by the bus time-out; {} hangs since the screen opened",
-            c.run_hangs
+            "rp-gfx: R340: the slowest 2700G status read {slowest} us, {timeouts} ended by the bus time-out; {} hangs since the screen opened; R344: {} full resets ({} brought the TA back)",
+            c.run_hangs,
+            c.rebuilds,
+            c.rebuilds_ok
         ));
         self.counts = Counts {
             run_hangs: c.run_hangs,
             chain_fails_row: c.chain_fails_row,
             cpu_fails_row: c.cpu_fails_row,
+            rebuilds: c.rebuilds,
+            rebuilds_ok: c.rebuilds_ok,
             ..Counts::default()
         };
         self.since = rt::ticks();
@@ -1296,6 +1474,38 @@ impl Chip {
 }
 
 impl Chip {
+    /// R344: the 2700G's full reset and rebuild while a game has the
+    /// screen (R340's escalation, `why`); the frame not drawn, and the
+    /// error the program gets: its textures are gone (`Errno::Stale`).
+    fn rebuild_now(&mut self, why: &str) -> Errno {
+        let gap = self
+            .rebuilt_at
+            .map_or(REBUILD_GAP_US, |(_, g)| (g * 2).min(REBUILD_GAP_MOST_US));
+        self.rebuilt_at = Some((rt::ticks(), gap));
+        let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
+            return Errno::BadHandle;
+        };
+        let n = self.counts.rebuilds + 1;
+        if n <= REBUILDS_SAID {
+            // said first: the card has it even if the rebuild froze
+            (self.log)(format_args!(
+                "rp-gfx: R344: {why} at frame {}: the 2700G's full reset and rebuild next",
+                self.frame
+            ));
+        }
+        let t0 = rt::ticks();
+        let (ok, r) = o.rebuild(regs);
+        let us = us_since(t0);
+        self.counts.rebuilds = n;
+        self.counts.rebuilds_ok += u32::from(ok);
+        if n <= REBUILDS_SAID {
+            rebuilt_line(self.log, why, n, ok, us, &r);
+        }
+        self.frame = self.frame.wrapping_add(1);
+        self.report();
+        Errno::Stale
+    }
+
     /// Before a frame's feed: the ladder's next cell when this one is
     /// full (its counts logged), the run's own clock and layout after the
     /// last.
@@ -1560,6 +1770,46 @@ impl Open {
             .is_ok()
     }
 
+    /// R344/R340: the 2700G's full reset and rebuild (run Z,
+    /// `rp_drv_mbx_display::rebuild`), its 3D clock on, the TA's manager
+    /// set up again in the same layout, the scenes in flight forgotten and
+    /// the R343 curve put back. Windows Mobile's 2700G clock from here on
+    /// (ADR-0035 rule 6). The chip's memory is lost: the caller tells the
+    /// program (`Errno::Stale`). Whether the TA came up, and what the
+    /// rebuild found.
+    fn rebuild(&mut self, regs: &mut Mmio) -> (bool, rp_drv_mbx_display::rebuild::Rebuilt) {
+        let r = rebuild_chip(regs);
+        self.cur = None;
+        self.rendering = None;
+        self.pending = None;
+        self.render_b = false;
+        self.armed_b = false;
+        self.next_b = self.overlap;
+        self.warm_owed = false;
+        if let Some((k, _, table, _)) = self.curve {
+            use rp_drv_mbx_display::reg::GSCTRL;
+            let gs = regs.read32(GSCTRL);
+            regs.write32(GSCTRL, gs | GSCTRL_GAMMA);
+            curve_set(regs, k, &table);
+        }
+        let ok = match ta::set_up(
+            regs,
+            self.vram,
+            self.lay.pm,
+            &self.lay.keep,
+            rt::delay_us,
+            cpu::drain_write_buffer,
+            CLOCK,
+        ) {
+            Ok(ready) => {
+                self.ready = ready;
+                true
+            }
+            Err(_) => false,
+        };
+        (ok, r)
+    }
+
     /// Waits for the render in flight, if any: how long it took to be seen
     /// done, or `Err` if it hung (the core then reset and set up again).
     fn wait_render(&mut self, regs: &mut Mmio) -> Result<u32, Errno> {
@@ -1614,6 +1864,10 @@ impl Open {
         if us < 1_000_000 {
             return;
         }
+        if self.curve.is_some() {
+            self.draw_band(false);
+            return;
+        }
         let tenths = u64::from(self.bar_frames) * 10_000_000 / u64::from(us.max(1));
         let khz = self.cur.map_or(0, |r| r.speed.khz());
         let at = (DRAW_H * W * 2) as usize;
@@ -1642,6 +1896,44 @@ impl Open {
         );
         self.bar_t0 = rt::ticks();
         self.bar_frames = 0;
+    }
+
+    /// R343's band: the curve's name upright and big (its letters 25 x 35
+    /// pixels, stacked), the frame rate under it; `name` draws the whole
+    /// band (a step), else the rate only (once a second).
+    fn draw_band(&mut self, name: bool) {
+        let us = us_since(self.bar_t0).max(1);
+        let fps = u64::from(self.bar_frames) * 1_000_000 / u64::from(us);
+        let stalls = self.bar_hangs > 0;
+        let Some(k) = self.curve.map(|v| v.0) else {
+            return;
+        };
+        let at = (PICK_H * W * 2) as usize;
+        let Some(rows) = self.vram.get_mut(at..at + (PICK_ROWS * W * 2) as usize) else {
+            return;
+        };
+        if name {
+            rows.fill(0);
+            band_text(rows, (12, 8), 5, CURVES[k].0, 0xFFE0, true);
+        } else {
+            for ly in 380..W {
+                for lx in 0..PICK_ROWS {
+                    band_px(rows, lx, ly, 0);
+                }
+            }
+            let f = fps.min(999) as u32;
+            let digits = [b'0' + (f / 100) as u8, b'0' + (f / 10 % 10) as u8, b'0' + (f % 10) as u8];
+            let skip = if f >= 100 { 0 } else if f >= 10 { 1 } else { 2 };
+            let n = core::str::from_utf8(&digits[skip..]).unwrap_or("");
+            band_text(rows, (3, 384), 3, n, 0xFFFF, false);
+            band_text(rows, (6, 420), 2, "FPS", 0xFFFF, false);
+            if stalls {
+                band_text(rows, (6, 446), 2, "STL", 0xF800, false);
+            }
+            self.bar_t0 = rt::ticks();
+            self.bar_frames = 0;
+        }
+        cpu::drain_write_buffer();
     }
 
     /// Bit k set: `MARKS[k]` no longer reads as the mark.
@@ -1848,7 +2140,7 @@ impl Screen for Chip {
         if let Some(n2) = self.cpu {
             crate::cpu::step(n2, self.log);
         }
-        let ready = match ta::set_up(
+        let mut ready = ta::set_up(
             regs,
             vram,
             TA_PM,
@@ -1856,7 +2148,31 @@ impl Screen for Chip {
             rt::delay_us,
             cpu::drain_write_buffer,
             CLOCK,
-        ) {
+        );
+        if matches!(ready, Err(ta::SetUpError::NotReady)) {
+            // R344 (run 277: a chip the last run left wedged played blind):
+            // the full reset and rebuild, at Windows Mobile's clock from
+            // then on (ADR-0035 rule 6), and the set-up again
+            (self.log)(format_args!(
+                "rp-gfx: R344: the TA's set-up NotReady at the open: the 2700G's full reset and rebuild next"
+            ));
+            let t0 = rt::ticks();
+            let r = rebuild_chip(regs);
+            stepped = false;
+            ready = ta::set_up(
+                regs,
+                vram,
+                TA_PM,
+                &KEEP,
+                rt::delay_us,
+                cpu::drain_write_buffer,
+                CLOCK,
+            );
+            self.counts.rebuilds += 1;
+            self.counts.rebuilds_ok += u32::from(ready.is_ok());
+            rebuilt_line(self.log, "at the open", 1, ready.is_ok(), us_since(t0), &r);
+        }
+        let ready = match ready {
             Ok(r) => r,
             Err(e) => {
                 (self.log)(format_args!("rp-gfx: not opened: the TA's set-up: {e:?}"));
@@ -1870,6 +2186,8 @@ impl Screen for Chip {
                 }
                 regs.write32(SYSCFG, syscfg0);
                 panel::give_back(vram);
+                // R344: never play with no picture unsaid
+                panel::note(b"2700G NOT READY, even after|a full reset: no picture.|Soft-reset the X51v.");
                 return Err(Errno::Io);
             }
         };
@@ -1927,6 +2245,7 @@ impl Screen for Chip {
             bar_t0: rt::ticks(),
             bar_frames: 0,
             curve: None,
+            curve_seen: 0,
             bar_hangs: 0,
             overlap: self.overlap
                 && self.chain.is_some()
@@ -1947,14 +2266,17 @@ impl Screen for Chip {
             regs.write32(GSCTRL, gs | GSCTRL_GAMMA);
             curve_set(regs, 0, &table);
             o.curve = Some((0, rt::ticks(), table, gs));
+            o.curve_seen = CURVE_KEY.with(|k| k.2);
+            o.lay = &LAY_PICK;
+            o.draw_band(true);
             (self.log)(format_args!(
-                "rp-gfx: R343: the curves stepped every {} s (found GFXGAM0 0x{:x} .. GFXGAM16 0x{:x}, GSCTRL 0x{gs:x})",
-                CURVE_US / 1_000_000,
+                "rp-gfx: R343: the picker: the Record button steps the curves (found GFXGAM0 0x{:x} .. GFXGAM16 0x{:x}, GSCTRL 0x{gs:x})",
                 table[0],
                 table[16]
             ));
         }
         if self.bar
+            && !self.curves
             && let Some(o) = self.open.as_mut()
         {
             o.lay = &LAY_BAR;
@@ -2036,16 +2358,18 @@ impl Screen for Chip {
             c.rwaits += 1;
             c.rwait_us += r;
         }
-        if let Some((k, t0, _, _)) = o.curve
-            && us_since(t0) >= CURVE_US
+        let presses = CURVE_KEY.with(|k| k.2);
+        if let Some((k, _, table, gs)) = o.curve
+            && presses != o.curve_seen
         {
+            // one step a frame, however many presses came (each shown)
+            o.curve_seen = o.curve_seen.wrapping_add(1);
             let k = (k + 1) % CURVES.len();
-            if let Some(c) = o.curve {
-                curve_set(regs, k, &c.2);
-            }
-            o.curve = o.curve.map(|c| (k, rt::ticks(), c.2, c.3));
+            curve_set(regs, k, &table);
+            o.curve = Some((k, rt::ticks(), table, gs));
+            o.draw_band(true);
             (self.log)(format_args!(
-                "rp-gfx: R343: the curve {} from frame {}",
+                "rp-gfx: R343: the owner stepped to the curve {} at frame {}",
                 CURVES[k].0, self.frame
             ));
         }
@@ -2103,29 +2427,32 @@ impl Screen for Chip {
             self.report();
             return r;
         }
-        // R340's escalation (run 276: after the core's reset the next chain
-        // stuck writing the 2700G's own memory, and the CPU's feed then
-        // spun in the slowed bus until the run limit): chains that keep
-        // failing take the 2700G back to Windows Mobile's clock (ADR-0035
-        // rule 6) and the core reset there; the CPU never feeds a chip that
-        // stopped taking writes
-        if c.chain_fails_row >= CHAIN_FAILS_OFF && o.cur.is_some() {
-            let a = clock::put_back(regs, rt::delay_us, set_cs3);
-            o.cur = None;
-            let back = o.recover(regs);
-            (self.log)(format_args!(
-                "rp-gfx: R340: {} chains in a row did not finish after the core's reset: the 2700G's clock put back to Windows Mobile's ({}) from frame {}, the core reset there {}; the underrun flag {}",
-                c.chain_fails_row,
-                match a {
-                    Some(a) if a.unwritten == 0 => "locked",
-                    Some(_) => "a memory-controller write never held",
-                    None => "the PLL did not lock",
-                },
-                self.frame,
-                if back { "ready" } else { "NOT ready" },
-                if underrun_take(regs) { "set" } else { "clear" }
-            ));
-            c.chain_fails_row = 0;
+        // R340's escalation, R344's cure (runs 276-278: after the core's
+        // reset, and at Windows Mobile's clock too, every chain stuck
+        // writing the 2700G's own memory; only a reset cleared it): chains
+        // that keep failing take the full reset and rebuild (~0.3 s), the
+        // frame not drawn, and the program told its textures are gone
+        if c.chain_fails_row == 0 && c.cpu_fails_row == 0 {
+            self.rebuilt_at = None;
+        }
+        if c.chain_fails_row >= CHAIN_FAILS_OFF && rebuild_due(self.rebuilt_at) {
+            return Err(self.rebuild_now("chains in a row did not finish"));
+        }
+        if self
+            .rebuild_at
+            .is_some_and(|s| us_since(self.opened) / 1_000_000 >= s)
+        {
+            // R344's test: the render in flight finished first (a healthy
+            // chip), then the same path as a stall's
+            self.rebuild_at = None;
+            if let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) {
+                let _ = o.wait_render(regs);
+                if o.pending.is_some() {
+                    o.start_pending(regs);
+                    let _ = o.wait_render(regs);
+                }
+            }
+            return Err(self.rebuild_now("-rprebuild: forced"));
         }
         // Step 4f: the frame as one DMA chain, the CPU let go at once.
         if self.ladder.is_none()
@@ -2311,21 +2638,11 @@ impl Screen for Chip {
         c.feed_us += fed.feed_us;
         c.ta_us += fed.ta_us;
         c.cpu_fails_row = if fed.done { 0 } else { c.cpu_fails_row + 1 };
-        if !fed.done && c.cpu_fails_row >= CPU_FAILS_CLOCK && o.cur.is_some() {
-            // R340's escalation, ADR-0035 rule 6: a GPU that keeps hanging
-            // drops to Windows Mobile's clock at once, said in the log
-            let a = clock::put_back(regs, rt::delay_us, set_cs3);
-            o.cur = None;
-            (self.log)(format_args!(
-                "rp-gfx: R340: {} CPU feeds in a row the TA never finished: the 2700G's clock put back to Windows Mobile's ({}), the underrun flag {}",
-                c.cpu_fails_row,
-                match a {
-                    Some(a) if a.unwritten == 0 => "locked",
-                    Some(_) => "a memory-controller write never held",
-                    None => "the PLL did not lock",
-                },
-                if underrun_take(regs) { "set" } else { "clear" }
-            ));
+        if !fed.done && c.cpu_fails_row >= CPU_FAILS_CLOCK && rebuild_due(self.rebuilt_at) {
+            // R340's escalation, R344's cure: as the chain's above
+            c.ta_hangs += 1;
+            c.run_hangs += 1;
+            return Err(self.rebuild_now("CPU feeds in a row the TA never finished"));
         }
         if !fed.done {
             c.ta_hangs += 1;

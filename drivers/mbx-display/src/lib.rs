@@ -19,6 +19,7 @@ pub mod game_route;
 pub mod heat;
 pub mod layers;
 pub mod pattern;
+pub mod rebuild;
 pub mod scanout;
 pub mod sig;
 

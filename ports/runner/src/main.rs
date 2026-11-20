@@ -1201,7 +1201,8 @@ mod image {
 
     impl Pad for X51vPad {
         fn pressed(&mut self) -> Pressed {
-            self.keypad.scan().held
+            // R343's picker takes the Record button while it runs
+            super::gfx::curve_key(self.keypad.scan().held)
         }
         fn pen(&mut self) -> Option<Sample> {
             self.touch.sample().map(|t| Sample {
@@ -1905,13 +1906,22 @@ mod image {
                 let _ = writeln!(uart, "input: none (no keypad or SSP1)");
             }
         }
-        let rung = clock_rung(&args[..arg_count]);
+        // `-rpwmclock`: Windows Mobile's 2700G clock kept (R343's picker
+        // run, where the chip never wedged), whatever `-rpclock` says
+        let rung = if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpwmclock") {
+            None
+        } else {
+            clock_rung(&args[..arg_count])
+        };
         let ladder = args[..arg_count]
             .iter()
             .any(|a| a.to_bytes() == LADDER_WORD);
         let bar = args[..arg_count].iter().any(|a| a.to_bytes() == BAR_WORD);
         // R343: the tone curves stepped through for the owner's pick
         let curves = args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpcurves");
+        if curves {
+            super::gfx::curve_key_on();
+        }
         let cpu_n2 = args[..arg_count]
             .iter()
             .rposition(|a| a.to_bytes() == CPU_WORD)
@@ -1986,6 +1996,7 @@ mod image {
                 .with_ladder(ladder)
                 .with_bar(bar)
                 .with_curves(curves)
+                .with_rebuild_at(seconds_after(&args[..arg_count], b"-rprebuild"))
                 .with_cpu(cpu_n2)
                 .with_probe(probe)
                 .with_chain(chain)

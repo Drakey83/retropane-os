@@ -48,6 +48,7 @@ recently drawn page. The models are step 4a's (below); sprites,
 particles, the sky, water and 2D are step 4's later sub-steps.
 */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
@@ -1609,6 +1610,28 @@ static void RP_TexReset( void )
 	rp_tex_gen++;
 	rp_tex_used = 0;
 	rp_tex_full = 0;
+}
+
+/*
+R344 (runs 276-278: a 2700G whose memory stopped taking writes, cleared
+only by a reset): the runner resets and rebuilds the chip and the frame
+call says ESTALE once: the chip's memory is lost. Rule 0: a desktop driver
+says the same (a lost context, GL_ARB_robustness) and the game reloads
+every texture from disk; ours keeps every texture's source in RAM already
+(the atlas's pages and the texture pool are rebuilt on demand by their
+generations), so dropping them all is the whole reload, done over the next
+frames as faces are drawn, with no pause.
+*/
+static uint32_t rp_chip_lost;
+
+static void RP_ChipLost( void )
+{
+	for( int pg = 0; pg < rp_pages; pg++ )
+		RP_PageDrop( &rp_page[pg] );
+	RP_TexReset( );
+	rp_state = NULL;
+	if( ++rp_chip_lost <= 5 )
+		fprintf( stderr, "rp-emit: R344: the 2700G was reset (its memory lost, %u times): every texture placed again\n", rp_chip_lost );
 }
 
 /* Once a frame, before any face: the switch, and a pool that filled last
@@ -5563,7 +5586,12 @@ void RP_EmitSubmit( void )
 			list[k++].count = end - rp_seg_from;
 		}
 		if( rp_gfx_frame_parts( list, (size_t)k ) != 0 )
-			rp_count.refused++;
+		{
+			if( errno == ESTALE )
+				RP_ChipLost( );
+			else
+				rp_count.refused++;
+		}
 	}
 	if( rp_both )
 	{

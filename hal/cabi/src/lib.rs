@@ -43,6 +43,10 @@ pub enum Errno {
     NoSpace = 28,
     /// Not something this system does (`ENOSYS`).
     NoSys = 88,
+    /// R344: the 2700G was reset and rebuilt, its memory lost: every
+    /// texture must be placed again (`ESTALE`: picolibc 1.8.12 says 133 in
+    /// `sys/errno.h`; Linux says 116).
+    Stale = 133,
 }
 
 /// `open`'s flags as picolibc passes them (`sys/_default_fcntl.h`).
