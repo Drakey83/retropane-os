@@ -175,8 +175,16 @@ pub const BINDS_FILE: &str = "rp_binds.cfg";
 /// saved config's `rp_layout` is older (the player's remaps kept; the
 /// owner, run 46: "make sure you make the key remappable"). Raise it with
 /// any change to [`BINDS`] (3: the touch keys at 25%, the owner after run
-/// 48: "the on screen buttons need to be more transparent").
-pub const LAYOUT: u32 = 3;
+/// 48: "the on screen buttons need to be more transparent"; 4: Record the
+/// weapon before, the wireless button the next, the owner's swap of run
+/// 277, which 48051789 made in [`BINDS`] without raising this, so the saved
+/// config's layout 3 kept the old order: the owner, run 279, "the record
+/// and wifi swap got swapped back"). [`LAYOUT_OF`] holds the binds' sum
+/// each layout was raised for: a test fails a change to [`BINDS`] that
+/// left the number as it was.
+pub const LAYOUT: u32 = 4;
+/// The CRC-32 of [`BINDS`] when [`LAYOUT`] was last raised.
+pub const LAYOUT_OF: u32 = 0x53505B6C;
 
 /// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL
 /// M, N, P, the cores' divider): 125.67 / 1, the owner's ruling of
@@ -651,6 +659,23 @@ engine c
         // name, its file 511 bytes.
         assert!(words.len() < 32 && args.len() < 512);
         assert!(args_fit(&args).is_ok());
+    }
+
+    #[test]
+    fn a_change_to_the_binds_raises_the_layout() {
+        // CRC-32 (IEEE), as zlib's: the binds' sum when LAYOUT was raised
+        let mut c = !0u32;
+        for b in BINDS.bytes() {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 { c >> 1 ^ 0xEDB8_8320 } else { c >> 1 };
+            }
+        }
+        assert_eq!(
+            !c, LAYOUT_OF,
+            "BINDS changed: raise LAYOUT (the saved config's layout keeps the old binds otherwise) and set LAYOUT_OF to 0x{:08X}",
+            !c
+        );
     }
 
     #[test]
