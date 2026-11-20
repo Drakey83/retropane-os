@@ -7752,10 +7752,10 @@ index e47e115..bc9eb5f 100644
  		CACHESPOT( surface )[miplevel] = cache;
  		cache->owner = &CACHESPOT( surface )[miplevel];
 diff --git a/ref/soft/r_trialias.c b/ref/soft/r_trialias.c
-index e2edb3d..d6dcea0 100644
+index e2edb3d..8ee9b8e 100644
 --- a/ref/soft/r_trialias.c
 +++ b/ref/soft/r_trialias.c
-@@ -60,6 +60,27 @@ void R_SetUpWorldTransform( void )
+@@ -60,6 +60,31 @@ void R_SetUpWorldTransform( void )
  //
  
  	s_ziscale = (float)0x8000 * (float)0x10000;
@@ -7775,7 +7775,11 @@ index e2edb3d..d6dcea0 100644
 +		memcpy( now + 3, RI.vup, sizeof( vec3_t ));
 +		memcpy( now + 6, RI.vforward, sizeof( vec3_t ));
 +		memcpy( now + 9, RI.rvp.vieworigin, sizeof( vec3_t ));
-+		if( have && !memcmp( now, last, sizeof( now )))
++		static int   nowt = -1; // R338: -rpnowt turns kit 118's keeping off
++
++		if( nowt < 0 )
++			nowt = gEngfuncs.Sys_CheckParm( "-rpnowt" ) != 0 || gEngfuncs.Sys_CheckParm( "-rpr338" ) != 0;
++		if( have && !nowt && !memcmp( now, last, sizeof( now )))
 +			return;
 +		memcpy( last, now, sizeof( now ));
 +		have = 1;

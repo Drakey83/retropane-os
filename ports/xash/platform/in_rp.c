@@ -811,7 +811,9 @@ static void RP_End( void )
 		{
 			stage = 2;
 			topped = ms;
-			Cbuf_AddText( "weapon_9mmAR\n" );
+			/* -rpsnark (the owner, 2026-11-19: the snark in his hand looked
+			   wrong in run 273): held from the start, for its end picture */
+			Cbuf_AddText( RP_Parm( "-rpsnark" ) ? "weapon_snark\n" : "weapon_9mmAR\n" );
 			fprintf( stderr, "rp-play: the player's own from %u ms of game time\n", (unsigned)ms );
 		}
 		else if( stage == 2 )
