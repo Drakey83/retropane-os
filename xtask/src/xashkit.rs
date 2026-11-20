@@ -92,10 +92,11 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {CLOCK} -console +cl_nopred 0 +cl_lw 0 +rp_defaults {LAYOUT}",
+            "+map {} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {} -console +cl_nopred 0 +cl_lw 0 +rp_defaults {LAYOUT}",
             map(),
             play_secs(),
-            limit_secs()
+            limit_secs(),
+            clock()
         ),
         std::env::var(EXTRA).ok().as_deref(),
     )
@@ -186,6 +187,22 @@ pub const LAYOUT: u32 = 3;
 /// 53, 136.50 about 1 in 5 (R295). An experiment's own `-rpclock` in
 /// `RETROPANE_XASH_EXTRA` comes later on the line and wins.
 pub const CLOCK: &str = "29 3 0 1";
+
+/// An experiment's clock in place of [`CLOCK`] (`RETROPANE_XASH_CLOCK`,
+/// four numbers: PLL M, N, P, the cores' divider): the same four words,
+/// where an `-rpclock` in [`EXTRA`] costs five of the runner's 31 (run
+/// 279). Anything but four whole numbers is ignored (the default kept).
+pub const CLOCK_VAR: &str = "RETROPANE_XASH_CLOCK";
+
+fn clock() -> String {
+    std::env::var(CLOCK_VAR)
+        .ok()
+        .filter(|v| {
+            let n: Vec<&str> = v.split_whitespace().collect();
+            n.len() == 4 && n.iter().all(|w| w.parse::<u32>().is_ok())
+        })
+        .map_or_else(|| CLOCK.to_string(), |v| v.split_whitespace().collect::<Vec<_>>().join(" "))
+}
 
 /// The variable naming an experiment's extra words for the command line.
 pub const EXTRA: &str = "RETROPANE_XASH_EXTRA";
@@ -463,12 +480,33 @@ pub fn sram_ranges(elf: &Path) -> Result<Option<(Vec<u8>, String)>, String> {
 ///
 /// # Errors
 /// A file could not be written, or the game's background is damaged.
+/// The runner's command line: 32 words with the program's name, its file
+/// at most 511 bytes (`rp_hal_cabi::ARGS`; the runner refuses a longer
+/// `args.txt` at its step 1: run 279's extra words made 32 and the X51v
+/// ran nothing). Checked when the kit is built, not on the device.
+///
+/// # Errors
+///
+/// The line, its word count and its bytes, when it does not fit.
+pub fn args_fit(line: &str) -> Result<(), String> {
+    let words = line.split_whitespace().count();
+    if words < 32 && line.len() < 512 {
+        Ok(())
+    } else {
+        Err(format!(
+            "the kit's command line is {words} words and {} bytes; the runner holds 31 words and 511 bytes (drop words from {EXTRA}): {line}",
+            line.len()
+        ))
+    }
+}
+
 pub fn lay_out(
     root: &Path,
     runner: &Path,
     modules: &[(String, Vec<u8>)],
     game: &Path,
 ) -> Result<Kit, String> {
+    args_fit(&args())?;
     let dir = root.join("target").join("xash-kit");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -612,6 +650,20 @@ engine c
         // The runner's command line holds 32 words with the program's
         // name, its file 511 bytes.
         assert!(words.len() < 32 && args.len() < 512);
+        assert!(args_fit(&args).is_ok());
+    }
+
+    #[test]
+    fn a_line_past_the_runners_31_words_is_refused_at_build() {
+        let line = with_extra(base_for_test(), Some("-a -b -c -d -e -f -g -h -i -j -k -l -m -n -o -p"));
+        assert!(args_fit(&line).is_err());
+        let long = format!("+map {}", "x".repeat(520));
+        assert!(args_fit(&long).is_err());
+        assert!(args_fit("+map c1a0 -rpfps").is_ok());
+    }
+
+    fn base_for_test() -> String {
+        "+map c2a5f -rpfps -rpend 900 -rplimit 4500 -rpendshot -rpsample -rpfloat -rpbase /rp-xash/game -rodir /Ports -rpclock 29 3 0 1 -console +cl_nopred 0 +cl_lw 0 +rp_defaults 3".to_string()
     }
 
     #[test]
