@@ -142,6 +142,47 @@ const SDK_DEFINES: &[&str] = &[
     "-D_GNU_SOURCE=1",
 ];
 
+/// The SDK's `mod_options.txt` as its own build reads it (`wscript`: a
+/// line `NAME=ON # what` defines `NAME` 1, `OFF` leaves it undefined,
+/// anything else is a setting, not a define). R345, R348-R350 (the owner,
+/// runs 279-287: the MP5's hand shaking after a switch, the crowbar
+/// missing swings, the gluon's beam off to one side, the tau cannon
+/// spending ammo with no shot): this build defined none of them, so
+/// `CLIENT_WEAPONS` was off in both libraries while `+cl_lw 1` had the
+/// client predict the weapons: the server never sent the weapons' state
+/// (`weapondata`, the ammo in `vuser4`) nor skipped its own animations,
+/// and the client predicted from zeros. Rule 0: no list of our own to
+/// drift from the SDK's; its file is the one source, and a line this
+/// can't read is an error, not a silent skip.
+fn mod_options(sdk: &Path) -> Result<Vec<String>, String> {
+    let file = sdk.join("mod_options.txt");
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    parse_mod_options(&text).map_err(|e| format!("{}: {e}", file.display()))
+}
+
+/// [`mod_options`]'s reading of the file's text.
+fn parse_mod_options(text: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (setting, _what) = line
+            .split_once(" # ")
+            .ok_or_else(|| format!("a line not `NAME=VALUE # what`: {line}"))?;
+        let (name, value) = setting
+            .split_once('=')
+            .ok_or_else(|| format!("a line with no `=`: {line}"))?;
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            return Err(format!("a name the SDK's build would not read: {line}"));
+        }
+        if value == "ON" {
+            out.push(format!("-D{name}=1"));
+        }
+    }
+    Ok(out)
+}
+
 /// The server library's sources its own build leaves out.
 const SERVER_LEFT_OUT: &[&str] = &["mpstubb.cpp", "stats.cpp", "Wxdebug.cpp"];
 /// The client library's: a sample in its own folder.
@@ -414,9 +455,13 @@ fn parts(root: &Path, low_memory: u8) -> Vec<Part> {
             .join("r_emit.c"),
     );
 
+    // R345/R348-R350: the SDK's own options file, as its build reads it
+    // a file the build cannot read stops it: never the options left out
+    let options = mod_options(&sdk).unwrap_or_else(|e| panic!("the SDK's options: {e}"));
     let sdk_flags = |dirs: &[&str], more: &[&str]| {
         let mut f = includes(&sdk, dirs);
         f.extend(defines(SDK_DEFINES));
+        f.extend(options.iter().cloned());
         f.extend(defines(more));
         f
     };
@@ -1181,6 +1226,31 @@ pub fn modules_as(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R345, R348-R350's guard: the SDK's options read as its build reads
+    /// them (ON defined 1, OFF and settings not defined), the real file's
+    /// `CLIENT_WEAPONS` on, a damaged line refused.
+    #[test]
+    fn the_sdk_s_mod_options_are_its_defines() {
+        let t = "BARNACLE_FIX_VISIBILITY=OFF # Barnacle
+CLIENT_WEAPONS=ON # Client local weapons prediction
+
+GAMEDIR=valve # Gamedir path
+# a comment
+";
+        assert_eq!(parse_mod_options(t).unwrap(), vec!["-DCLIENT_WEAPONS=1".to_string()]);
+        assert!(parse_mod_options("CLIENT_WEAPONS ON # no equals
+").is_err());
+        assert!(parse_mod_options("CLIENT_WEAPONS=ON
+").is_err(), "no comment part");
+        assert!(parse_mod_options("BAD NAME=ON # x
+").is_err());
+        let sdk = crate::workspace_root().join("target/ports-src/hlsdk-portable");
+        if sdk.join("mod_options.txt").exists() {
+            let real = mod_options(&sdk).unwrap();
+            assert!(real.contains(&"-DCLIENT_WEAPONS=1".to_string()), "{real:?}");
+        }
+    }
 
     #[test]
     fn the_size_tool_s_three_columns_are_read() {
