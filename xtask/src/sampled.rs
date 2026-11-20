@@ -39,20 +39,32 @@ pub struct Samples {
     pub at: [u32; 5],
     /// Each sample: where, and the return address.
     pub pairs: Vec<(u32, u32)>,
+    /// R346 (RPSAMP2): one sample in `keep` kept of a frame not slow (0:
+    /// every sample), every sample of a frame of `slow_us` or more, behind
+    /// a mark ([`SLOW_MARK`]).
+    pub keep: u32,
+    pub slow_us: u32,
 }
 
 const MAGIC: &[u8; 8] = b"RPSAMP1\0";
+const MAGIC2: &[u8; 8] = b"RPSAMP2\0";
 const HEAD: usize = 8 + 4 * 8;
+const HEAD2: usize = 8 + 4 * 10;
+/// A slow frame's mark (`rt::SAMPLE_SLOW_MARK`): its second word the
+/// frame's samples (low 16 bits) and milliseconds (high 16).
+const SLOW_MARK: u32 = 0xFFFF_FFFF;
 
 /// The file's samples, or why it is not one.
 pub fn parse(bytes: &[u8]) -> Result<Samples, String> {
-    if bytes.len() < HEAD || &bytes[..8] != MAGIC {
-        return Err("not a samples file (no RPSAMP1 header)".into());
+    let two = bytes.len() >= HEAD2 && &bytes[..8] == MAGIC2;
+    if !two && (bytes.len() < HEAD || &bytes[..8] != MAGIC) {
+        return Err("not a samples file (no RPSAMP1 or RPSAMP2 header)".into());
     }
     let word = |k: usize| u32::from_le_bytes(bytes[8 + 4 * k..12 + 4 * k].try_into().unwrap());
     let (hz, taken, full) = (word(0), word(1) as usize, word(2));
     let at = [word(3), word(4), word(5), word(6), word(7)];
-    let body = &bytes[HEAD..];
+    let (keep, slow_us) = if two { (word(8), word(9)) } else { (0, 0) };
+    let body = &bytes[if two { HEAD2 } else { HEAD }..];
     if body.len() != taken * 8 {
         return Err(format!(
             "the header says {taken} samples, the file holds {} bytes of them",
@@ -75,6 +87,8 @@ pub fn parse(bytes: &[u8]) -> Result<Samples, String> {
         full,
         at,
         pairs,
+        keep,
+        slow_us,
     })
 }
 
@@ -148,11 +162,32 @@ fn helper(function: &str) -> bool {
 }
 
 /// The report: each stretch of the run, its time, its modules' shares, the
-/// functions most sampled, and the callers of the helpers among them.
+/// functions most sampled, and the callers of the helpers among them; for
+/// an RPSAMP2 file kept by the frame (R346), each stretch's whole-run
+/// picture (one in N) and, apart, its slow frames' (every sample).
 #[must_use]
 pub fn report(s: &Samples, code: &Code, top: usize) -> String {
     let n = s.pairs.len() as u32;
-    let ms = |k: u32| u64::from(k) * 1000 / u64::from(s.hz.max(1));
+    let each_us = 1_000_000 / u64::from(s.hz.max(1));
+    let ms = |k: u64| k * each_us / 1000;
+    // each sample: 0 the run's one-in-N (or every sample), 1 a slow
+    // frame's (the k-th of its frame), 2 a mark
+    let mut kind = vec![(0u8, 0u32); s.pairs.len()];
+    let mut slow_frames = Vec::new();
+    let mut i = 0;
+    while i < s.pairs.len() {
+        if s.keep > 0 && s.pairs[i].0 == SLOW_MARK {
+            let k = (s.pairs[i].1 & 0xFFFF) as usize;
+            kind[i] = (2, 0);
+            slow_frames.push((i, s.pairs[i].1 >> 16));
+            for j in 0..k.min(s.pairs.len() - i - 1) {
+                kind[i + 1 + j] = (1, j as u32);
+            }
+            i += 1 + k;
+        } else {
+            i += 1;
+        }
+    }
     let at = |i: usize| s.at[i].min(n);
     let stretches = [
         ("the engine's start (step 2 to 3)", 0, at(2)),
@@ -163,82 +198,130 @@ pub fn report(s: &Samples, code: &Code, top: usize) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{n} samples at {} a second ({} ms){}",
+        "{n} samples at {} a second{}{}",
         s.hz,
-        ms(n),
+        if s.keep > 0 {
+            format!(
+                ", one in {} kept but every sample of a frame of {} ms or more ({} such frames)",
+                s.keep,
+                s.slow_us / 1000,
+                slow_frames.len()
+            )
+        } else {
+            format!(" ({} ms)", ms(u64::from(n)))
+        },
         if s.full > 0 {
             format!(
                 "; {} more found the room full: the run's last {} ms not sampled",
                 s.full,
-                ms(s.full)
+                ms(u64::from(s.full))
             )
         } else {
             String::new()
         }
     );
+    let keep = u64::from(s.keep.max(1));
     for (what, from, to) in stretches {
-        let part = &s.pairs[from as usize..to.max(from) as usize];
-        if part.is_empty() {
+        let (from, to) = (from as usize, to.max(from) as usize);
+        if from >= to {
             continue;
         }
-        let total = part.len() as f64;
-        let pct = |k: usize| 100.0 * k as f64 / total;
+        // the run's picture: one in N, a slow frame's samples thinned the same way
+        let run: Vec<(u32, u32)> = (from..to)
+            .filter(|&k| match kind[k] {
+                (0, _) => true,
+                (1, j) => u64::from(j) % keep == 0,
+                _ => false,
+            })
+            .map(|k| s.pairs[k])
+            .collect();
+        let slow: Vec<(u32, u32)> = (from..to)
+            .filter(|&k| kind[k].0 == 1)
+            .map(|k| s.pairs[k])
+            .collect();
+        if run.is_empty() && slow.is_empty() {
+            continue;
+        }
         let _ = writeln!(
             out,
             "\n== {what}: {} samples, {} ms",
-            part.len(),
-            ms(part.len() as u32)
+            run.len(),
+            ms(run.len() as u64 * keep)
         );
-        let mut modules: HashMap<&str, usize> = HashMap::new();
-        let mut functions: HashMap<String, usize> = HashMap::new();
-        let mut callers: HashMap<String, HashMap<String, usize>> = HashMap::new();
-        for &(pc, lr) in part {
-            *modules.entry(code.module(pc)).or_default() += 1;
-            let f = code.name(pc);
-            if helper(&f) {
-                *callers
-                    .entry(f.clone())
-                    .or_default()
-                    .entry(code.name(lr))
-                    .or_default() += 1;
-            }
-            *functions.entry(f).or_default() += 1;
-        }
-        let mut modules: Vec<_> = modules.into_iter().collect();
-        modules.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-        let _ = write!(out, "by module:");
-        for (m, k) in &modules {
-            let _ = write!(out, " {m} {:.1}%", pct(*k));
-        }
-        let _ = writeln!(out);
-        let helpers: usize = functions
-            .iter()
-            .filter(|(f, _)| helper(f))
-            .map(|(_, k)| k)
-            .sum();
-        let _ = writeln!(
-            out,
-            "in the helpers (software float, division, memory copies): {:.1}%",
-            pct(helpers)
-        );
-        let mut functions: Vec<_> = functions.into_iter().collect();
-        functions.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        for (f, k) in functions.iter().take(top) {
-            let _ = writeln!(out, "  {:5.1}%  {k:6}  {f}", pct(*k));
-            if let Some(by) = callers.get(f) {
-                let mut by: Vec<_> = by.iter().collect();
-                by.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-                for (c, j) in by.iter().take(3) {
-                    let _ = writeln!(
-                        out,
-                        "           {:5.1}% of it from {c}",
-                        100.0 * **j as f64 / *k as f64
-                    );
-                }
-            }
+        profile(&mut out, &run, code, top);
+        if !slow.is_empty() {
+            let frames: Vec<u32> = slow_frames
+                .iter()
+                .filter(|(k, _)| (from..to).contains(k))
+                .map(|f| f.1)
+                .collect();
+            let total: u32 = frames.iter().sum();
+            let _ = writeln!(
+                out,
+                "\n== {what}, its slow frames only (R346): {} frames of {} ms or more, {} ms on average, {} samples (every one)",
+                frames.len(),
+                s.slow_us / 1000,
+                total / (frames.len() as u32).max(1),
+                slow.len()
+            );
+            profile(&mut out, &slow, code, top);
         }
     }
     out
+}
+
+/// One part's modules, helpers' share and functions most sampled.
+fn profile(out: &mut String, part: &[(u32, u32)], code: &Code, top: usize) {
+    let total = part.len().max(1) as f64;
+    let pct = |k: usize| 100.0 * k as f64 / total;
+    let mut modules: HashMap<&str, usize> = HashMap::new();
+    let mut functions: HashMap<String, usize> = HashMap::new();
+    let mut callers: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    for &(pc, lr) in part {
+        *modules.entry(code.module(pc)).or_default() += 1;
+        let f = code.name(pc);
+        if helper(&f) {
+            *callers
+                .entry(f.clone())
+                .or_default()
+                .entry(code.name(lr))
+                .or_default() += 1;
+        }
+        *functions.entry(f).or_default() += 1;
+    }
+    let mut modules: Vec<_> = modules.into_iter().collect();
+    modules.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let _ = write!(out, "by module:");
+    for (m, k) in &modules {
+        let _ = write!(out, " {m} {:.1}%", pct(*k));
+    }
+    let _ = writeln!(out);
+    let helpers: usize = functions
+        .iter()
+        .filter(|(f, _)| helper(f))
+        .map(|(_, k)| k)
+        .sum();
+    let _ = writeln!(
+        out,
+        "in the helpers (software float, division, memory copies): {:.1}%",
+        pct(helpers)
+    );
+    let mut functions: Vec<_> = functions.into_iter().collect();
+    functions.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    for (f, k) in functions.iter().take(top) {
+        let _ = writeln!(out, "  {:5.1}%  {k:6}  {f}", pct(*k));
+        if let Some(by) = callers.get(f) {
+            let mut by: Vec<_> = by.iter().collect();
+            by.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            for (c, j) in by.iter().take(3) {
+                let _ = writeln!(
+                    out,
+                    "           {:5.1}% of it from {c}",
+                    100.0 * **j as f64 / *k as f64
+                );
+            }
+        }
+    }
 }
 
 /// `cargo xtask xash-profile`: the report for `file`, named against the
@@ -304,11 +387,14 @@ mod tests {
                 hz: 1000,
                 full: 3,
                 at,
-                pairs: pairs.to_vec()
+                pairs: pairs.to_vec(),
+                keep: 0,
+                slow_us: 0,
             }
         );
         assert!(parse(&b[..b.len() - 1]).is_err(), "a sample cut short");
-        assert!(parse(b"RPSAMP2\0").is_err());
+        assert!(parse(b"RPSAMP2\0").is_err(), "a header cut short");
+        assert!(parse(b"RPSAMP3\0").is_err());
         let mut wrong = b.clone();
         wrong[0] = b'X';
         assert!(parse(&wrong).is_err());
@@ -383,6 +469,57 @@ mod tests {
             !r.contains("== the end"),
             "no samples after step 5: no stretch"
         );
+    }
+
+    /// R346: an RPSAMP2 file's slow frames are profiled apart, every
+    /// sample, and the run's picture takes one in N of them as of any
+    /// frame; a mark is never named as code.
+    #[test]
+    fn slow_frames_are_reported_apart_and_thinned_into_the_runs_picture() {
+        let code = Code::of(vec![(
+            "server",
+            vec![
+                sym(0x1000, 0x100, "CBaseMonster::RunAI"),
+                sym(0x2000, 0x100, "PM_Move"),
+            ],
+        )]);
+        // the play: 3 one-in-N samples, a slow frame of 4 (60 ms), 1 more
+        let mut pairs: Vec<(u32, u32)> = vec![(0x2004, 0), (0x2004, 0), (0x1004, 0)];
+        pairs.push((SLOW_MARK, 4 | 60 << 16));
+        pairs.extend([(0x1004, 0); 4]);
+        pairs.push((0x2004, 0));
+        let mut b = MAGIC2.to_vec();
+        let at = [0, 0, 0, 0, pairs.len() as u32];
+        for w in [1000, pairs.len() as u32, 0]
+            .iter()
+            .chain(at.iter())
+            .chain([2u32, 50_000].iter())
+        {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        for (p, l) in &pairs {
+            b.extend_from_slice(&p.to_le_bytes());
+            b.extend_from_slice(&l.to_le_bytes());
+        }
+        let s = parse(&b).unwrap();
+        assert_eq!((s.keep, s.slow_us), (2, 50_000));
+        let r = report(&s, &code, 10);
+        assert!(r.contains("one in 2 kept"), "{r}");
+        // the run's picture: 4 plain + 2 of the slow frame's 4 (every 2nd)
+        assert!(
+            r.contains("== the play (step 4 to 5): 6 samples, 12 ms"),
+            "{r}"
+        );
+        let slow = r.split("its slow frames only").nth(1).unwrap();
+        assert!(
+            slow.contains("1 frames of 50 ms or more, 60 ms on average, 4 samples"),
+            "{slow}"
+        );
+        assert!(
+            slow.contains("100.0%       4  server: CBaseMonster::RunAI"),
+            "{slow}"
+        );
+        assert!(!r.contains("0xffffffff"), "{r}");
     }
 
     #[test]

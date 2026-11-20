@@ -92,6 +92,12 @@ int rp_emit_on;
    by the setting `rp_both` 1; 2 once both are written). `rp_gpu` says the
    2700G draws the frames. */
 int rp_both;
+static cvar_t *rp_near; /* R347: the near plane (1 ref_rp, 4 Half-Life GL) */
+/* R347 (the owner's ladder smear, run 280): the near plane in 16.16 view
+   units, `rp_near` (1 by default, ref_rp's since step 4b; Half-Life's GL
+   draws at 4): the world's faces, the water's cells and the models' and
+   effects' corners cut against it. Read once a frame (RP_EmitFrame). */
+static int32_t rp_near16 = 65536 /* RP_ONE16 */;
 static cvar_t *rp_report; /* kit 80: a report at the next frame (rp_report 1) */
 static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes, *rp_lm, *rp_lit;
 static void RP_LmFlush( void );
@@ -184,6 +190,7 @@ void RP_EmitInit( void )
 		rp_facecull = 0; /* kit 104's control: off-screen faces sent as kit 103 did */
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
+	rp_near = gEngfuncs.Cvar_Get( "rp_near", "1", 0, "ref_rp: R347: the near plane in units, 1 to 8 (1 ref_rp's own, 4 Half-Life GL's); a ladder's look" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
 	RP_FixedInit();
 }
@@ -571,6 +578,12 @@ void RP_EmitFrame( void )
 	rp_lit_on = (int)rp_lit->value;
 	rp_mip_force = (int)rp_mip->value;
 	rp_cull_on = (int)rp_cull->value;
+	{
+		/* R347: 1 to 8 units, in 1/16ths */
+		float n = rp_near->value;
+
+		rp_near16 = n >= 1.0f && n <= 8.0f ? (int32_t)( n * 16.0f ) << 12 : 65536;
+	}
 	RP_LmFrame();
 	RP_CodeHint();
 	rp_time_ms = (int64_t)( gp_cl->time * 1000.0 );
@@ -2892,7 +2905,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 
 			c->frame = serial;
 			RP_ViewPoint( m, o, c->pos, v );
-			if( v[2] < RP_ONE16 )
+			if( v[2] < rp_near16 )
 				c->zi = 0;
 			else
 			{
@@ -2928,7 +2941,7 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 		for( int i = 0; i < n; i++ )
 		{
 			int     j = i + 1 == n ? 0 : i + 1;
-			int     ini = q[i][2] >= RP_ONE16, inj = q[j][2] >= RP_ONE16;
+			int     ini = q[i][2] >= rp_near16, inj = q[j][2] >= rp_near16;
 
 			if( ini )
 			{
@@ -2943,13 +2956,13 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 			{
 				/* t = (1 - z_i) / (z_j - z_i), 0.16 */
 				int64_t  den = (int64_t)q[j][2] - q[i][2];
-				int32_t  t = (int32_t)(( (int64_t)( RP_ONE16 - q[i][2] ) << 16 ) / den );
+				int32_t  t = (int32_t)(( (int64_t)( rp_near16 - q[i][2] ) << 16 ) / den );
 				int32_t  p[3];
 				uint32_t wd[3];
 
 				for( int k = 0; k < 2; k++ )
 					p[k] = q[i][k] + (int32_t)(( (int64_t)( q[j][k] - q[i][k] ) * t ) >> 16 );
-				p[2] = RP_ONE16;
+				p[2] = rp_near16;
 				RP_ProjectS( p, wd, kxy[m2] );
 				zis[m2] = wd[2];
 				kst[m2][0] = wc[i].st[0] + (int32_t)(( (int64_t)( wc[j].st[0] - wc[i].st[0] ) * t ) >> 16 );
@@ -3685,7 +3698,7 @@ static void RP_ChipWater( msurface_t *fa )
 
 			RP_TurbPoint( &x, s, tt8, gv[k], guv[k] );
 			gout[k] = RP_TurbOut( w, s, tt8 );
-			if( gv[k][2] >= RP_ONE16 )
+			if( gv[k][2] >= rp_near16 )
 				RP_ProjectS( gv[k], gw[k], NULL );
 			else
 				gw[k][2] = 0;
@@ -3757,7 +3770,7 @@ static void RP_ChipWater( msurface_t *fa )
 				n = ( gout[k0] | gout[k0 + 1] | gout[k1] | gout[k1 + 1] ) ? RP_TurbClip( w, 4, sq, tmp ) : 4;
 				for( int v = 0; v < n; v++ )
 					RP_TurbPoint( &x, sq[v][0], sq[v][1], q[v], uv[v] );
-				RP_PolyEmit( n, (const int32_t( * )[3] )q, (const int32_t( * )[2] )uv, RP_ONE16, 0, colour );
+				RP_PolyEmit( n, (const int32_t( * )[3] )q, (const int32_t( * )[2] )uv, rp_near16, 0, colour );
 				rp_count.water_cells++;
 			}
 			i++;
@@ -4070,7 +4083,7 @@ static inline void RP_StudioVertSet( int idx, rp_mvert_t *mv, const int32_t q[3]
 	rp_mq[idx][0] = q[0];
 	rp_mq[idx][1] = q[1];
 	rp_mq[idx][2] = q[2];
-	if( q[2] < RP_ONE16 )
+	if( q[2] < rp_near16 )
 		mv->zi = 0;
 	else
 	{
@@ -4779,14 +4792,14 @@ static void RP_NearCorner( const uint32_t ( *c )[RP_VERTEX_WORDS], const int32_t
 	int a, int b, uint32_t out[RP_VERTEX_WORDS], int32_t xy[2] )
 {
 	/* f = (z_a - 1) / (z_a - z_b) as 0.16: z_a >= 1 > z_b, so 0 <= f < 1 */
-	int64_t  num = (int64_t)( cq[a][2] - RP_ONE16 ) << 16;
+	int64_t  num = (int64_t)( cq[a][2] - rp_near16 ) << 16;
 	int64_t  den = (int64_t)cq[a][2] - cq[b][2];
 	int32_t  f = (int32_t)( num / den ), p[3];
 	uint32_t rgb = rp_vert_alpha;
 
 	p[0] = RP_Lerp16( cq[a][0], cq[b][0], f );
 	p[1] = RP_Lerp16( cq[a][1], cq[b][1], f );
-	p[2] = RP_ONE16;
+	p[2] = rp_near16;
 	RP_ProjectS( p, out, xy );
 	out[3] = out[2];
 	for( int j = 0; j < 3; j++ )
@@ -5197,7 +5210,7 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			TransformVector( local, t );
 			for( int j = 0; j < 3; j++ )
 				cq[k][j] = RP_Fix16( t[j] );
-			if( cq[k][2] < RP_ONE16 )
+			if( cq[k][2] < rp_near16 )
 			{
 				/* behind the near plane: its words come from the clip */
 				behind++;

@@ -117,6 +117,12 @@ mod image {
     const SAMPLE_ROOM: usize = 512 * 1024;
     /// Samples a second.
     const SAMPLE_HZ: u32 = 1000;
+    /// R346: free play keeps one sample in this many (a 15-minute play's
+    /// ~37,500 of [`SAMPLE_ROOM`]'s 65,536), and every sample of a frame
+    /// this long or longer (the hitches, run 279: 259 frames over 50 ms in
+    /// 11.5 min, ~15,000 samples at 1,000 a second).
+    const SAMPLE_KEEP: u32 = 24;
+    const SAMPLE_SLOW_US: u32 = 50_000;
     /// The screen's pump's tick when not sampling (kit 69).
     const PUMP_HZ: u32 = 1000;
     /// A test run's word for sampling where the program is ([`SAMPLE_ROOM`])
@@ -1144,37 +1150,59 @@ mod image {
     /// the run's log.
     fn write_samples(buf: &[u8], taken: u32, full: u32) {
         let at = SAMPLE_AT.with(|a| *a);
-        let mut head = [0u8; 8 + 4 * 8];
-        head[..8].copy_from_slice(b"RPSAMP1\0");
-        for (k, w) in [SAMPLE_HZ, taken, full].iter().chain(at.iter()).enumerate() {
+        // R346: RPSAMP2 adds the one-in-N and the slow frames' length
+        // (`rt::sample_keep`; 0, 0: every sample, as RPSAMP1)
+        let (keep, slow_us) = rt::sample_kept();
+        let mut head = [0u8; 8 + 4 * 10];
+        head[..8].copy_from_slice(b"RPSAMP2\0");
+        for (k, w) in [SAMPLE_HZ, taken, full]
+            .iter()
+            .chain(at.iter())
+            .chain([keep, slow_us].iter())
+            .enumerate()
+        {
             head[8 + 4 * k..12 + 4 * k].copy_from_slice(&w.to_le_bytes());
         }
         let body = &buf[..taken as usize * rt::SAMPLE_BYTES];
+        let put = write_card(SAMPLE_FILE, &[&head, body]);
+        let _ = writeln!(
+            Out,
+            "runner: {taken} samples ({full} more found the room full; one in {keep} kept but frames of {} ms or more whole), the steps at samples {:?}: {}",
+            slow_us / 1000,
+            at,
+            put
+        );
+    }
+
+    /// `parts` written one after another to `name` in the runner's folder
+    /// on the card (made new): what the log says of it.
+    fn write_card(name: &str, parts: &[&[u8]]) -> &'static str {
         // From the root: the program may have moved the current folder.
         let mut path = [0u8; 64];
-        let len = 1 + FOLDER.len() + 1 + SAMPLE_FILE.len();
+        let len = 1 + FOLDER.len() + 1 + name.len();
+        if len > path.len() {
+            return "NOT written: the name is too long";
+        }
         path[0] = b'/';
         path[1..=FOLDER.len()].copy_from_slice(FOLDER.as_bytes());
         path[1 + FOLDER.len()] = b'/';
-        path[2 + FOLDER.len()..len].copy_from_slice(SAMPLE_FILE.as_bytes());
+        path[2 + FOLDER.len()..len].copy_from_slice(name.as_bytes());
         // Write only (1), made new.
         let how = 1 | rp_hal_cabi::flags::CREATE | rp_hal_cabi::flags::TRUNCATE;
         let put = rp_hal_cabi::with_system(|s| {
             let fd = s.open(&path[..len], how)?;
-            let wrote = s.write(fd, &head).and_then(|_| s.write(fd, body));
+            let mut wrote = Ok(0);
+            for p in parts {
+                wrote = wrote.and_then(|_| s.write(fd, p));
+            }
             let closed = s.close(fd);
             wrote.and(closed)
         });
-        let _ = writeln!(
-            Out,
-            "runner: {taken} samples ({full} more found the room full), the steps at samples {:?}: {}",
-            at,
-            match put {
-                Some(Ok(_)) => "written to the card",
-                Some(Err(_)) => "NOT written to the card",
-                None => "NOT written: no system",
-            }
-        );
+        match put {
+            Some(Ok(_)) => "written to the card",
+            Some(Err(_)) => "NOT written to the card",
+            None => "NOT written: no system",
+        }
     }
 
     static SYSTEM: rt::Slot<System<'static, Disk, HANDLES, Text>> = rt::Slot::new();
@@ -1688,6 +1716,9 @@ mod image {
         let (names, room) = room.split_at_mut(NAMES_ROOM);
         let (samples, room) = room.split_at_mut(SAMPLE_ROOM);
         let (chain_mem, room) = room.split_at_mut(super::gfx::CHAIN_BYTES);
+        // R340's measure: the parameter memory manager's snapshots
+        let (pm_mem, room) = room.split_at_mut(super::gfx::PM_WATCH_ROOM);
+        super::gfx::PM_WATCH.with(|w| *w = super::gfx::PmWatch::new(pm_mem));
         let mut files: Files<'static, Disk, HANDLES> = Files::new(vol, work, room);
         files.remember(Names::new(names));
 
@@ -1997,6 +2028,7 @@ mod image {
                 .with_bar(bar)
                 .with_curves(curves)
                 .with_rebuild_at(seconds_after(&args[..arg_count], b"-rprebuild"))
+                .with_overlap_at(seconds_after(&args[..arg_count], b"-rpoverlapat"))
                 .with_report_every(
                     if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpplay") {
                         15_000_000
@@ -2102,6 +2134,16 @@ mod image {
                 }
                 None => rt::start_sampling(samples, SAMPLE_HZ),
             }
+            if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpplay") {
+                // R346: free play's minutes fit (one in 24), its slow
+                // frames whole
+                rt::sample_keep(SAMPLE_KEEP, SAMPLE_SLOW_US);
+                let _ = writeln!(
+                    uart,
+                    "runner: free play: one sample in {SAMPLE_KEEP} kept, every sample of a frame of {} ms or more",
+                    SAMPLE_SLOW_US / 1000
+                );
+            }
         }
         // Kit 69 (Half-Life run 66: the CPU waited 0.6-2.9 ms a frame for
         // the last frame's render, which the pump started only at the
@@ -2137,6 +2179,15 @@ mod image {
         // Stopped at once: what follows is the runner's, not the program's.
         if let Some((buf, taken, full)) = rt::stop_sampling() {
             write_samples(buf, taken, full);
+        }
+        // R340's measure: the manager's snapshots to the card
+        if let Some(w) = super::gfx::PM_WATCH.with(Option::take) {
+            let put = write_card(super::gfx::PM_WATCH_FILE, &[w.bytes()]);
+            let _ = writeln!(
+                Out,
+                "runner: R340: the parameter memory manager's snapshots ({} KiB) {put}",
+                w.bytes().len() / 1024
+            );
         }
         // The program's end stopped the DMA engine (`Sys::end`): the codec
         // down, the board as it was found.

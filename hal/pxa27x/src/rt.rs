@@ -1683,6 +1683,115 @@ pub fn event_totals() -> [u64; 5] {
     t
 }
 
+/// R346's frames ([`sample_keep`]): keep one sample in this many of a
+/// frame that was not slow (0: every sample, the sampler as it was), a
+/// frame this long or longer (us) kept whole; where this frame's samples
+/// start; the running count the one-in-N picks from.
+static mut SAMPLE_KEEP: u32 = 0;
+static mut SAMPLE_SLOW_US: u32 = 0;
+static mut SAMPLE_MARK: u32 = 0;
+static mut SAMPLE_PHASE: u32 = 0;
+
+/// The mark before a slow frame's samples ([`sample_frame`]): its first
+/// word (never an instruction's address); the second is the frame's
+/// samples (low 16 bits) and its milliseconds (high 16).
+pub const SAMPLE_SLOW_MARK: u32 = 0xFFFF_FFFF;
+
+/// R346: a long run's samples kept by the frame (the owner's fights: a
+/// 15-minute free play at 1,000 a second fills the room at 65 s, and the
+/// tick that samples also drives the screen's 1 ms pump, so the rate
+/// stays). Iterate, don't imitate (rule 0): a profiler's usual answer is
+/// a lower rate or a ring of the last seconds, which either blurs the
+/// hitches or keeps only the end; ours keeps every sample of a frame that
+/// took `slow_us` or longer (the hitches themselves, at full rate, behind
+/// a [`SAMPLE_SLOW_MARK`]), and one in `every` of the others (the whole
+/// run's picture), decided as each frame ends ([`sample_frame`]).
+pub fn sample_keep(every: u32, slow_us: u32) {
+    let was = irq_save();
+    // SAFETY: IRQs masked: the tick's handler can't run meanwhile.
+    unsafe {
+        core::ptr::addr_of_mut!(SAMPLE_KEEP).write(every);
+        core::ptr::addr_of_mut!(SAMPLE_SLOW_US).write(slow_us);
+        core::ptr::addr_of_mut!(SAMPLE_MARK).write(core::ptr::addr_of!(SAMPLE_N).read_volatile());
+        core::ptr::addr_of_mut!(SAMPLE_PHASE).write(0);
+    }
+    irq_restore(was);
+}
+
+/// R346: a frame ended, `us` after the last ([`sample_keep`]): its
+/// samples kept whole behind a mark if it was slow (and `counted`: the
+/// first frame's time is no frame's), else one in N of them. A few
+/// words moved with IRQs masked; nothing when not sampling by frames.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn sample_frame(us: u32, counted: bool) {
+    let was = irq_save();
+    // SAFETY: IRQs masked: the tick's handler (the only other writer of
+    // the samples and their count) can't run; every sample moved lies
+    // inside the buffer's first `SAMPLE_N` samples, the mark written at
+    // `SAMPLE_N` only when it is below `SAMPLE_CAP`.
+    unsafe {
+        let every = core::ptr::addr_of!(SAMPLE_KEEP).read();
+        let buf = core::ptr::addr_of!(SAMPLE_BUF).read();
+        if every == 0 || buf.is_null() {
+            irq_restore(was);
+            return;
+        }
+        let n = core::ptr::addr_of!(SAMPLE_N).read_volatile();
+        let m = core::ptr::addr_of!(SAMPLE_MARK).read().min(n);
+        let cap = core::ptr::addr_of!(SAMPLE_CAP).read();
+        let slow = counted && us >= core::ptr::addr_of!(SAMPLE_SLOW_US).read();
+        let end = if slow && n < cap && n > m {
+            // the frame's samples up one, the mark before them
+            core::ptr::copy(
+                buf.add(m as usize * SAMPLE_BYTES),
+                buf.add((m as usize + 1) * SAMPLE_BYTES),
+                (n - m) as usize * SAMPLE_BYTES,
+            );
+            let at = buf.add(m as usize * SAMPLE_BYTES);
+            let ms = (us / 1000).min(0xFFFF);
+            at.cast::<[u8; 4]>().write_unaligned(SAMPLE_SLOW_MARK.to_le_bytes());
+            at.add(4)
+                .cast::<[u8; 4]>()
+                .write_unaligned(((n - m).min(0xFFFF) | ms << 16).to_le_bytes());
+            n + 1
+        } else {
+            // (a slow frame with no room for its mark: one in N, as any)
+            let mut phase = core::ptr::addr_of!(SAMPLE_PHASE).read();
+            let mut w = m;
+            for i in m..n {
+                if phase % every == 0 {
+                    if w != i {
+                        core::ptr::copy(
+                            buf.add(i as usize * SAMPLE_BYTES),
+                            buf.add(w as usize * SAMPLE_BYTES),
+                            SAMPLE_BYTES,
+                        );
+                    }
+                    w += 1;
+                }
+                phase = phase.wrapping_add(1);
+            }
+            core::ptr::addr_of_mut!(SAMPLE_PHASE).write(phase);
+            w
+        };
+        core::ptr::addr_of_mut!(SAMPLE_N).write_volatile(end);
+        core::ptr::addr_of_mut!(SAMPLE_MARK).write(end);
+    }
+    irq_restore(was);
+}
+
+/// R346: the one-in-N and the slow frames' length [`sample_keep`] set.
+#[must_use]
+pub fn sample_kept() -> (u32, u32) {
+    // SAFETY: plain reads of words written with IRQs masked.
+    unsafe {
+        (
+            core::ptr::addr_of!(SAMPLE_KEEP).read(),
+            core::ptr::addr_of!(SAMPLE_SLOW_US).read(),
+        )
+    }
+}
+
 /// Samples taken so far.
 #[must_use]
 pub fn samples_taken() -> u32 {

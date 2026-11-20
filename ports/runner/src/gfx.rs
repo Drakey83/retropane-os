@@ -47,8 +47,40 @@ use rp_port::gfx::{Piece, Screen, check, send, send_runs};
 use super::panel;
 
 mod chain;
+mod pmwatch;
 mod probe4f;
 use chain::Settled;
+pub use pmwatch::{FILE as PM_WATCH_FILE, PmWatch, ROOM as PM_WATCH_ROOM};
+use pmwatch::{F_OVERLAP, F_RENDERING, F_TA_BUSY, Moment};
+
+/// R340's measure ([`PmWatch`]): the runner puts it in before the program
+/// runs and takes it back after, for the card.
+pub static PM_WATCH: rt::Global<Option<PmWatch>> = rt::Global::new(None);
+
+/// R340: a snapshot of the manager's block and the TA block (taken out of
+/// [`PM_WATCH`] while it reads: ~2 ms of bus reads with IRQs on).
+fn pm_snap(m: Moment, regs: &mut Mmio, o: &Open, flags: u32, log: fn(Arguments<'_>)) {
+    let Some(mut w) = PM_WATCH.with(Option::take) else {
+        return;
+    };
+    if w.wants(m) {
+        let flags = flags
+            | if o.rendering.is_some() { F_RENDERING } else { 0 }
+            | if o.overlap { F_OVERLAP } else { 0 };
+        w.take(
+            m,
+            regs,
+            o.vram,
+            o.lay.pm.table,
+            (o.pm_frame, us_since(o.pm_opened) / 1000, flags),
+            log,
+        );
+    }
+    PM_WATCH.with(|s| *s = Some(w));
+}
+
+/// R340: snapshots of a game's steady frames, not the loading screens'.
+const PM_SNAP_FROM: u32 = 300;
 pub use chain::{CHAIN_BYTES, Chain};
 pub use probe4f::{Probe, WALK_BYTES};
 
@@ -878,6 +910,22 @@ const EVENTS: u32 = EV_TA_MEM | EV_7 | EV_8 | EV_9;
 /// The TA block's word Dell writes 1 to after bit 5.
 const TA_MEM_BACK: usize = 0x804;
 
+/// R340 (runs 281-284): reads the bus time-out ended, this many in a
+/// row: the chip's host path is wedged, every access will wait as long,
+/// and only the full rebuild clears it. A length can't tell it (run 281's
+/// slowest at the wedge 9.9 ms, runs 283-284's under 3 ms, and the 1 ms
+/// pump starved the program either way); a run of them can: an answered
+/// read takes under 2 us on the X51v, the emulator's slow ones (~1 ms at
+/// most) come one at a time. Kept by [`status`] (whether the rebuild is
+/// owed, the time-outs in a row), taken by the pump and the frame.
+const MUTE_ROW: u32 = 4;
+static MUTE: rt::Global<(bool, u32)> = rt::Global::new((false, 0));
+
+/// R340: whether reads found the chip wedged since the last look.
+fn mute_take() -> bool {
+    MUTE.with(|m| core::mem::replace(&mut m.0, false))
+}
+
 /// R340: the slowest status read since the last report (OS timer ticks),
 /// and the reads ended by the time-out.
 static READS: rt::Global<(u32, u32)> = rt::Global::new((0, 0));
@@ -896,6 +944,12 @@ fn status(regs: &mut Mmio) -> Option<u32> {
     let v = regs.read32(MBX + reg::STATUS);
     let d = rt::ticks().wrapping_sub(t0);
     let slow = bus_timed_out(d);
+    MUTE.with(|m| {
+        m.1 = if slow { m.1.saturating_add(1) } else { 0 };
+        if m.1 >= MUTE_ROW {
+            m.0 = true;
+        }
+    });
     READS.with(|r| {
         r.0 = r.0.max(d);
         r.1 = r.1.wrapping_add(u32::from(slow));
@@ -1089,6 +1143,13 @@ struct Counts {
     rebuilds: u32,
     rebuilds_ok: u32,
     gap_us: u32,
+    /// R340 (run 281): a chain failed in a way a core reset makes worse
+    /// (the TA stopped for memory, bit 5; the DMA never finished; the
+    /// chip not answering): the full rebuild at once, from the pump or
+    /// the next frame, and no reads of the chip before it. Then the
+    /// program told its textures are gone at its next frame.
+    rebuild_owed: bool,
+    stale_owed: bool,
 }
 
 /// The screen while the program has it.
@@ -1164,6 +1225,14 @@ struct Open {
     armed_b: bool,
     render_b: bool,
     pending: Option<bool>,
+    /// R340's measure: the frame and the open's time, for [`pm_snap`].
+    pm_frame: u32,
+    pm_log: fn(Arguments<'_>),
+    pm_opened: u32,
+    /// R340's measure (`-rpoverlapat S`): kit 113's overlap off until S
+    /// seconds after the open, then on (one run, both ways, the manager
+    /// watched in each); `None`: as [`Self::overlap`] says from the start.
+    overlap_from: Option<u32>,
 }
 
 /// The 2700G as `rp_port`'s [`Screen`].
@@ -1200,6 +1269,11 @@ pub struct Chip {
     chain_check: u32,
     /// Kit 113's overlap asked for (off with `-rpnooverlap`).
     overlap: bool,
+    /// R340's measure (`-rpoverlapat S`): the overlap from S seconds on.
+    overlap_at: Option<u32>,
+    /// R346: the last frame's call (OS timer ticks), for the sampler's
+    /// slow frames.
+    last_frame: u32,
     /// R344's test (`-rprebuild S`): one full reset and rebuild forced S
     /// seconds after the screen opened, on a healthy chip, so the cure is
     /// proven (the emulator, the X51v) without waiting for a stall.
@@ -1251,6 +1325,8 @@ impl Chip {
                 rebuilds: 0,
                 rebuilds_ok: 0,
                 gap_us: 0,
+                rebuild_owed: false,
+                stale_owed: false,
             },
             since: 0,
             opened: 0,
@@ -1265,6 +1341,8 @@ impl Chip {
             chain: None,
             chain_check: 0,
             overlap: true,
+            overlap_at: None,
+            last_frame: 0,
             rebuild_at: None,
             rebuilt_at: None,
             report_us: 5_000_000,
@@ -1290,6 +1368,14 @@ impl Chip {
     #[must_use]
     pub const fn with_overlap(mut self, on: bool) -> Self {
         self.overlap = on;
+        self
+    }
+
+    /// R340's measure: the overlap off until `s` seconds after the open,
+    /// then on (`-rpoverlapat S`).
+    #[must_use]
+    pub const fn with_overlap_at(mut self, s: Option<u32>) -> Self {
+        self.overlap_at = s;
         self
     }
 
@@ -1351,6 +1437,18 @@ impl Chip {
                 c.chain_us += us;
                 c.gap_us += gap;
                 c.pumped += u32::from(pumped);
+                if o.pm_frame >= PM_SNAP_FROM {
+                    let m = if !o.overlap {
+                        Moment::TaDoneAlone
+                    } else if o.rendering.is_some() {
+                        Moment::TaDoneOverlap
+                    } else {
+                        Moment::Report
+                    };
+                    if m != Moment::Report {
+                        pm_snap(m, regs, o, 0, log);
+                    }
+                }
                 if o.overlap {
                     o.pending = Some(o.armed_b);
                     o.start_pending(regs);
@@ -1359,9 +1457,21 @@ impl Chip {
                 }
             }
             Settled::Failed { dma } => {
+                // run 281: the TA stopped asking for memory (bit 5, three
+                // times while a render ran), the core reset, and the next
+                // chain wedged the chip's host path; then every access
+                // waited out the bus time-out (~10 ms), the 1 ms pump read
+                // the status each tick, and the program starved until the
+                // run limit (30 s). So such a failure goes straight to the
+                // full rebuild (run 280: 445 ms), no core reset first.
+                let t0 = rt::ticks();
+                let st = regs.read32(MBX + reg::STATUS);
+                let mute = bus_timed_out(rt::ticks().wrapping_sub(t0));
+                if dma || mute || st & EV_TA_MEM != 0 {
+                    c.rebuild_owed = true;
+                }
                 if c.run_hangs < HANGS_SAID {
-                    let st = regs.read32(MBX + reg::STATUS);
-                    let en = regs.read32(MBX + reg::ENABLE);
+                    let en = if mute { 0 } else { regs.read32(MBX + reg::ENABLE) };
                     log(format_args!(
                         "rp-gfx: R340: at the failed chain the core's status 0x{st:08x}, enables 0x{en:08x}; bit 5 {}, owed {}",
                         if st & EV_TA_MEM != 0 { "set" } else { "clear" },
@@ -1374,13 +1484,14 @@ impl Chip {
                 if c.run_hangs <= HANGS_SAID {
                     let (slowest, timeouts) = reads();
                     log(format_args!(
-                        "rp-gfx: R340: TA hang {} ({}): {timeouts} status reads ended by the bus time-out since the last report, the slowest {slowest} us; the core reset",
+                        "rp-gfx: R340: TA hang {} ({}): {timeouts} status reads ended by the bus time-out since the last report, the slowest {slowest} us; {}",
                         c.run_hangs,
                         if dma {
                             "the DMA did not finish"
                         } else {
                             "the TA never said done"
                         },
+                        if c.rebuild_owed { "the full rebuild next" } else { "the core reset" },
                     ));
                     if let Some((r, after, desc, us)) = fail {
                         log(format_args!(
@@ -1407,7 +1518,21 @@ impl Chip {
                         }
                     ));
                 }
-                o.recover(regs);
+                if c.rebuild_owed {
+                    log(format_args!(
+                        "rp-gfx: R340: {}: the full rebuild owed (no core reset)",
+                        if dma {
+                            "the DMA did not finish"
+                        } else if mute {
+                            "the chip does not answer"
+                        } else {
+                            "the TA stopped for memory (bit 5)"
+                        }
+                    ));
+                } else {
+                    pm_snap(Moment::Failed, regs, o, F_TA_BUSY, log);
+                    o.recover(regs);
+                }
             }
         }
     }
@@ -1519,6 +1644,17 @@ impl Chip {
                 c.check_failed
             ));
         }
+        // R340's measure: the manager's block every report
+        if let (Some(o), Some(regs)) = (self.open.as_ref(), self.regs.as_mut()) {
+            let busy = self.chain.as_ref().is_some_and(Chain::busy);
+            pm_snap(
+                Moment::Report,
+                regs,
+                o,
+                if busy { F_TA_BUSY } else { 0 },
+                self.log,
+            );
+        }
         // R340: the slowest status read and the bus's time-outs (said
         // every report, then counted again; the hangs so far kept)
         let (slowest, timeouts) = reads();
@@ -1547,6 +1683,8 @@ impl Chip {
             rebuilds_ok: c.rebuilds_ok,
             ev: c.ev,
             ev_answered: c.ev_answered,
+            rebuild_owed: c.rebuild_owed,
+            stale_owed: c.stale_owed,
             ..Counts::default()
         };
         self.since = rt::ticks();
@@ -2155,6 +2293,9 @@ impl Open {
         if let Some(b) = self.pending
             && self.render_done_now(regs)
         {
+            if self.pm_frame >= PM_SNAP_FROM {
+                pm_snap(Moment::RenderDoneOverlap, regs, self, 0, self.pm_log);
+            }
             self.pending = None;
             self.render_b = b;
             self.start_render(regs);
@@ -2286,21 +2427,35 @@ impl Screen for Chip {
         if let Some(n2) = self.cpu {
             crate::cpu::step(n2, self.log);
         }
-        let mut ready = ta::set_up(
-            regs,
-            vram,
-            TA_PM,
-            &KEEP,
-            rt::delay_us,
-            cpu::drain_write_buffer,
-            CLOCK,
-        );
-        if matches!(ready, Err(ta::SetUpError::NotReady)) {
+        // R340 (run 282: run 281's crash left the chip wedged, its set-up
+        // "ready" from a read that timed out, then the pump starved the
+        // program): a status read the bus time-out ended is a wedged chip,
+        // rebuilt before the set-up writes 16 KiB into it at ~10 ms a word
+        let _ = mute_take();
+        for _ in 0..MUTE_ROW {
+            let _ = status(regs);
+        }
+        let mute = mute_take();
+        let mut ready = if mute {
+            Err(ta::SetUpError::NotReady)
+        } else {
+            ta::set_up(
+                regs,
+                vram,
+                TA_PM,
+                &KEEP,
+                rt::delay_us,
+                cpu::drain_write_buffer,
+                CLOCK,
+            )
+        };
+        if mute || matches!(ready, Err(ta::SetUpError::NotReady)) {
             // R344 (run 277: a chip the last run left wedged played blind):
             // the full reset and rebuild, at Windows Mobile's clock from
             // then on (ADR-0035 rule 6), and the set-up again
             (self.log)(format_args!(
-                "rp-gfx: R344: the TA's set-up NotReady at the open: the 2700G's full reset and rebuild next"
+                "rp-gfx: R344: the TA's set-up {} at the open: the 2700G's full reset and rebuild next",
+                if mute { "on a chip that does not answer (a status read took the whole bus time-out)" } else { "NotReady" }
             ));
             let t0 = rt::ticks();
             let r = rebuild_chip(regs);
@@ -2360,6 +2515,11 @@ impl Screen for Chip {
             "rp-gfx: the screen is the program's: 480 x 640 drawn by the 3D core into the screen, MBXCLK 0x{clk0:x}, texture memory {} KiB at 0x{TEX_AT:x}",
             TEX_BYTES / 1024
         ));
+        let overlap_ok = self.overlap
+            && self.chain.is_some()
+            && self.probe.is_none()
+            && !self.ladder_on
+            && self.chain_check == 0;
         self.open = Some(Open {
             vram,
             ready,
@@ -2394,16 +2554,24 @@ impl Screen for Chip {
             curve_seen: 0,
             mem_owed: false,
             bar_hangs: 0,
-            overlap: self.overlap
-                && self.chain.is_some()
-                && self.probe.is_none()
-                && !self.ladder_on
-                && self.chain_check == 0,
+            overlap: overlap_ok && self.overlap_at.is_none(),
             next_b: false,
             armed_b: false,
             render_b: false,
             pending: None,
+            pm_frame: 0,
+            pm_log: self.log,
+            pm_opened: rt::ticks(),
+            overlap_from: self.overlap_at.filter(|_| overlap_ok),
         });
+        if let (Some(o), Some(regs)) = (self.open.as_ref(), self.regs.as_mut()) {
+            pm_snap(Moment::SetUp, regs, o, 0, self.log);
+            if let Some(s) = o.overlap_from {
+                (self.log)(format_args!(
+                    "rp-gfx: R340: -rpoverlapat: kit 113's overlap off until {s} s after the open, then on"
+                ));
+            }
+        }
         if self.curves
             && let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut())
         {
@@ -2437,10 +2605,28 @@ impl Screen for Chip {
         if self.open.is_none() || self.regs.is_none() {
             return Err(Errno::BadHandle);
         }
+        // R346: the sampler keeps a slow frame's samples whole, the rest
+        // one in N (a no-op when not sampling)
+        let dt = us_since(self.last_frame);
+        self.last_frame = rt::ticks();
+        rt::sample_frame(dt, self.frame > 0);
         // C2: the core's known answer every frame while past 624 MHz.
         crate::cpu::check(self.log);
         // Step 4f: the last frame's chain done and its render started.
         self.settle();
+        // R340 (run 281): a rebuild owed now, before anything else reads
+        // the chip; one the pump did, said to the program
+        if mute_take() {
+            self.counts.rebuild_owed = true;
+        }
+        if self.counts.rebuild_owed {
+            self.counts.rebuild_owed = false;
+            return Err(self.rebuild_now("the TA stalled or the chip stopped answering"));
+        }
+        if self.counts.stale_owed {
+            self.counts.stale_owed = false;
+            return Err(Errno::Stale);
+        }
         let (Some(o), true) = (self.open.as_mut(), self.regs.is_some()) else {
             return Err(Errno::BadHandle);
         };
@@ -2477,13 +2663,31 @@ impl Screen for Chip {
         let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) else {
             return Err(Errno::BadHandle);
         };
+        o.pm_frame = self.frame;
+        if let Some(s) = o.overlap_from
+            && us_since(o.pm_opened) / 1_000_000 >= s
+        {
+            // R340's measure: the overlap on from here, the next chain
+            // into the second scene while this render draws the first
+            o.overlap_from = None;
+            o.overlap = true;
+            o.next_b = true;
+            (self.log)(format_args!(
+                "rp-gfx: R340: -rpoverlapat: kit 113's overlap on at frame {} ({s} s)",
+                self.frame
+            ));
+        }
         let c = &mut self.counts;
         let t0 = rt::ticks();
         // Kit 113: with the overlap the render waited for is the one two
         // frames back (its scene is the one this frame's TA reuses), and
         // only while the last frame's scene is still waiting behind it.
         let waited = if !o.overlap {
-            o.wait_render(regs)
+            let r = o.wait_render(regs);
+            if r.is_ok() && o.pm_frame >= PM_SNAP_FROM {
+                pm_snap(Moment::RenderDoneAlone, regs, o, 0, self.log);
+            }
+            r
         } else if o.pending.is_some() {
             let r = o.wait_render(regs);
             if r.is_ok() {
@@ -2853,6 +3057,18 @@ impl Screen for Chip {
     }
 
     fn pump(&mut self) {
+        // R340 (run 281): the rebuild at once, from the tick (~0.5 s), so
+        // neither the pump's reads nor the program's writes wait out the
+        // bus time-out on a wedged chip in the meantime
+        if mute_take() {
+            self.counts.rebuild_owed = true;
+        }
+        if self.counts.rebuild_owed && self.open.is_some() {
+            self.counts.rebuild_owed = false;
+            let _ = self.rebuild_now("the TA stalled or the chip stopped answering (from the pump)");
+            self.counts.stale_owed = true;
+            return;
+        }
         let (Some(o), Some(regs), Some(ch)) =
             (self.open.as_mut(), self.regs.as_mut(), self.chain.as_mut())
         else {
