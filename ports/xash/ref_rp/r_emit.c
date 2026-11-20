@@ -145,6 +145,7 @@ static struct
 	uint32_t fx_fixed, fx_cut, fx_off, fx_behind; /* kit 114: fx_behind, wholly behind the near plane, dropped in integers; kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
+	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
 } rp_count;
@@ -390,6 +391,9 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: R297 B (rp_lm %d): %u faces a frame as texture and lightmap, %u lightmaps written a frame (%u for a dynamic light), %u second-pass words a frame, %u faces with no second-pass room; %u textures written (%u KiB), the texture pool %u of %u KiB, %u pool resets\n",
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u\n",
+			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -2043,7 +2047,36 @@ static __attribute__(( noinline )) int RP_ChipFaceLm1( int n, const uint32_t *zi
 	return 1;
 }
 
+static int RP_ChipFaceLmTry( msurface_t *fa, int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st );
+
+/*
+R352 (the owner, run 293: a patch on a ledge flashing bright and back):
+a face drawn by option B one frame (texture, then its lightmap in a
+second pass) and by its lit surface the next (choice 2 A, ref_soft's own
+lighting) looks different each time it changes way. Each face's way and
+frame are kept (16 bits a face: the frame's low 15, the way), and a
+change between two frames in a row counted.
+*/
+#define RP_FACES_KEPT 32768
+static uint16_t rp_face_way[RP_FACES_KEPT];
+
 static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st )
+{
+	int        b = RP_ChipFaceLmTry( fa, n, zis, cxy, st );
+	uintptr_t  fi = (uintptr_t)( fa - WORLDMODEL->surfaces );
+
+	if( fi < RP_FACES_KEPT )
+	{
+		uint16_t was = rp_face_way[fi], now = (uint16_t)(( rp_view.serial & 0x7FFF ) << 1 | ( b != 0 ));
+
+		if(( was >> 1 ) == (( rp_view.serial - 1 ) & 0x7FFF ) && ( was & 1 ) != ( now & 1 ))
+			rp_count.path_flips++;
+		rp_face_way[fi] = now;
+	}
+	return b;
+}
+
+static int RP_ChipFaceLmTry( msurface_t *fa, int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st )
 {
 	texture_t *tt;
 	rp_tex_t  *t;
@@ -2054,7 +2087,10 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 	uintptr_t  fi = (uintptr_t)( fa - WORLDMODEL->surfaces );
 
 	if( rp_face_blend || rp_face_masked || fa->pdecals )
+	{
+		rp_count.why_decal += fa->pdecals != NULL;
 		return 0;
+	}
 	/* kit 103: the face's fixed facts from the cooked map (one byte), not
 	   three structures and a call into the engine */
 	if( rp_ck_live && fi < (uintptr_t)rp_ck.nfaces )
@@ -2075,10 +2111,16 @@ static int RP_ChipFaceLm( msurface_t *fa, int n, const uint32_t *zis, const int3
 		return 0;
 	t = RP_TexPlace( R_GetTexture( tt->gl_texturenum ), 0 );
 	if( !t )
+	{
+		rp_count.why_tex++;
 		return 0;
+	}
 	pg = RP_LmPlace( fa, &qx, &qy );
 	if( pg < 0 )
+	{
+		rp_count.why_lm++;
 		return 0;
+	}
 
 	/* the texture's repeats: s from the face's corner, moved by whole
 	   texture widths to start inside the first (the floats stay small) */
