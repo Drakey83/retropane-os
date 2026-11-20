@@ -781,26 +781,30 @@ const CURVES: [(&str, u32, [u8; 17]); 4] = [
         [0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255],
     ),
     (
-        "M60",
+        "M70",
         100,
-        [0, 41, 68, 90, 108, 124, 139, 153, 167, 179, 191, 203, 214, 225, 235, 245, 255],
+        [0, 31, 55, 75, 94, 110, 126, 141, 155, 169, 182, 195, 208, 220, 232, 244, 255],
     ),
     (
-        "M50",
+        "M65",
         100,
-        [0, 56, 85, 107, 125, 140, 154, 167, 179, 190, 201, 211, 220, 229, 238, 247, 255],
+        [0, 36, 61, 82, 100, 117, 133, 147, 161, 174, 187, 199, 211, 222, 233, 244, 255],
     ),
     (
-        "M40",
+        "M75",
         100,
-        [0, 76, 106, 127, 144, 158, 170, 182, 192, 202, 211, 219, 227, 234, 242, 248, 255],
+        [0, 26, 49, 69, 87, 104, 120, 135, 150, 164, 178, 192, 205, 218, 230, 243, 255],
     ),
 ];
 
-/// R343: the look a game gets without the picker: M50 (the owner after
-/// run 289: BL60 best of its set yet "almost no mid tones", "it needs to
-/// be brighter in the midtones"), until his pick from the M looks.
-const LOOK_DEFAULT: usize = 2;
+/// R343: the look a game gets without the picker: M70 with Half-Life's
+/// `brightness` 1 (the light lifted, not the picture), the owner's pick
+/// from run 291 ("m70 looks best"); before it M60, his pick from run 290 ("m60 looks the best too me with the highlights and
+/// viewability but the midtones are now lost"): a whole-picture curve
+/// trades the midtones' separation for the darks' lift; the next step
+/// lifts the light, not the picture (Half-Life's own split: its
+/// `brightness` lifts the lightmaps and keeps the textures' contrast).
+const LOOK_DEFAULT: usize = 1;
 
 /// R341/R343: the backlight while a game plays and its registers as found
 /// (`CR`, `PCR`, `DCR`, put back at the close): each look of [`CURVES`]
