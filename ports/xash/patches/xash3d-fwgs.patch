@@ -5534,9 +5534,35 @@ index 5d6dec1..3ec0ca5 100644
  }
  
 diff --git a/ref/soft/r_draw.c b/ref/soft/r_draw.c
-index 5e64fcd..53bcfc0 100644
+index 5e64fcd..8fd53a1 100644
 --- a/ref/soft/r_draw.c
 +++ b/ref/soft/r_draw.c
+@@ -57,7 +57,7 @@ static void R_DrawStretchPicImplementation( int x, int y, int w, int h, int s1,
+ 		h = vid.height - y;
+ 	}
+ 
+-	if( !pic->pixels[0] || s1 >= s2 || t1 >= t2 )
++	if( !R_TexLoaded( pic ) || s1 >= s2 || t1 >= t2 )
+ 		return;
+ 
+ 	// gEngfuncs.Con_Printf ("pixels is %p\n", pic->pixels[0] );
+@@ -76,13 +76,13 @@ static void R_DrawStretchPicImplementation( int x, int y, int w, int h, int s1,
+ 	else
+ 		skip = 0;
+ 
+-	if( pic->alpha_pixels )
++	if( R_TexHasAlpha( pic )) // RetroPane R335
+ 	{
+-		buffer = pic->alpha_pixels;
++		buffer = R_TexAlpha( pic );
+ 		transparent = true;
+ 	}
+ 	else
+-		buffer = pic->pixels[0];
++		buffer = R_TexPix( pic, 0 );
+ 
+ 
+ #pragma omp parallel for schedule(static)
 @@ -153,11 +153,22 @@ void GAME_EXPORT R_DrawStretchPic( float x, float y, float w, float h, float s1,
  		return;
  	if( w < 1.0f || h < 1.0f )
@@ -5569,7 +5595,7 @@ index 5e64fcd..53bcfc0 100644
  	if( enable )
  	{
 diff --git a/ref/soft/r_edge.c b/ref/soft/r_edge.c
-index 235fbe2..2108c9c 100644
+index 235fbe2..a090906 100644
 --- a/ref/soft/r_edge.c
 +++ b/ref/soft/r_edge.c
 @@ -102,6 +102,15 @@ void R_BeginEdgeFrame( void )
@@ -5588,6 +5614,33 @@ index 235fbe2..2108c9c 100644
  // FIXME: set with memset
  	for( int v = RI.vrect.y; v < RI.vrectbottom; v++ )
  	{
+@@ -842,7 +851,7 @@ static pixel_t D_SkyboxSample( const vec3_t dir )
+ 	const int tx = Q_min((int)( s * tex->width ), tex->width - 1 );
+ 	const int ty = Q_min((int)( t * tex->height ), tex->height - 1 );
+ 
+-	return tex->pixels[0][ty * tex->width + tx];
++	return R_TexPix( (image_t *)tex, 0 )[ty * tex->width + tx]; // RetroPane R335
+ }
+ 
+ /*
+@@ -921,7 +930,7 @@ static void D_TurbulentSurf( surf_t *s )
+ 
+ 	pface = s->msurf;
+ 	miplevel = 0;
+-	cacheblock = R_GetTexture( pface->texinfo->texture->gl_texturenum )->pixels[0];
++	cacheblock = R_TexPix( R_GetTexture( pface->texinfo->texture->gl_texturenum ), 0 ); // RetroPane R335
+ 	cachewidth = 64;
+ 
+ 	if( s->insubmodel )
+@@ -1015,7 +1024,7 @@ static void D_AlphaSurf( surf_t *s )
+ 
+ 	if( s->flags & SURF_DRAWTURB )
+ 	{
+-		cacheblock = R_GetTexture( pface->texinfo->texture->gl_texturenum )->pixels[0];
++		cacheblock = R_TexPix( R_GetTexture( pface->texinfo->texture->gl_texturenum ), 0 ); // RetroPane R335
+ 		cachewidth = 64;
+ 		D_CalcGradients( pface );
+ 		TurbulentZ8( s->spans, alpha );
 diff --git a/ref/soft/r_glblit.c b/ref/soft/r_glblit.c
 index 863d5b4..322f249 100644
 --- a/ref/soft/r_glblit.c
@@ -5610,37 +5663,712 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_image.c b/ref/soft/r_image.c
-index 8a82400..024ca73 100644
+index 8a82400..0fb0ec5 100644
 --- a/ref/soft/r_image.c
 +++ b/ref/soft/r_image.c
-@@ -44,6 +44,8 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
+@@ -22,6 +22,463 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
+ static uint    r_numImages;
+ 
+ #define IsLightMap( tex ) ( FBitSet(( tex )->flags, TF_ATLAS_PAGE ))
++
++/*
++RetroPane R335 (docs/design/ref-rp.md "Texture memory"): Half-Life's
++textures, skins and sprites are 8-bit images with their own palette;
++ref_soft kept each as 16-bit pixel_t at four mip levels plus an alpha
++copy (2.7 to 3.7 bytes a texel: 12.4 MiB of c2a5f's 38 MiB heap), though
++on the 2700G path the chip holds the texture and the CPU reads the RAM
++copy only to write it there again or to light a face it still lights.
++Quake and GoldSrc kept 8 bits and a palette and read through it on every
++texel; ref_gl gives the texels to GL and reads the file again when the
++context is lost. Ours: at upload a texture of at most 256 colours keeps
++its 8-bit indices and those exact RGBA colours (found from the texels
++themselves, so any source and any processing before the upload counts),
++and its 16-bit levels are rebuilt when a reader asks, by the same code on
++the same bytes (the colours expanded, GL_BuildMipMap, R_TexLevel), into a
++fixed ring (Quake's surface-cache allocator: the oldest blocks give way,
++blocks handed out this frame never do). The picture cannot change, one
++byte a texel stays (about 1 instead of 2.7), nothing is read from the
++card again, and the ring is one block for the game's life (no holes:
++R310's lesson). `-rpnotexpal` keeps the old way (the A/B); `-rptexcheck`
++rebuilds every texture at upload and compares it with the old way's.
++*/
++typedef struct r_tent_s
++{
++	image_t          *owner;   // NULL: free
++	uint32_t         size;     // the block's bytes, this header included
++	uint32_t         stamp;    // r_ring_frame when last handed out
++	byte             from;     // the first level held
++	byte             to;       // the last level held
++	byte             heap;     // 1: from the heap (the ring was full), freed next frame
++	byte             pad;
++	pixel_t          *lv[4];
++	pixel_t          *alpha;
++	struct r_tent_s  *next_heap;
++} r_tent_t;
++
++#define R_RING_BYTES ( 1024 * 1024 )
++static byte      *r_ring;
++static uint32_t  r_ring_size, r_ring_head, r_ring_frame = 2, r_texserial;
++static r_tent_t  *r_ring_heap;
++static int       r_texpal_on = -1, r_texcheck;
++static struct
++{
++	uint32_t decodes, bytes, evicts, heap, heap_bytes;        // since the last stats line
++	uint32_t pal, pal_b, full, full_b, saved_b, bad;          // uploads since the start
++} r_ring_count;
++image_t *r_skin_img;
++int     r_skin_alpha;
++// every rebuild since the start, and the slowest's microseconds (in_rp.c's
++// per-frame report reads and clears it)
++uint32_t rp_tex_rebuilds, rp_tex_rebuild_us_max;
++uint64_t rp_time_us( void );
++
++static void R_TentDrop( r_tent_t *b )
++{
++	if( b->owner )
++	{
++		b->owner->rp_ent = NULL;
++		b->owner = NULL;
++		r_ring_count.evicts++;
++	}
++}
++
++/* `need` body bytes: the blocks from the ring's head on, as many as it
++   takes (none handed out this frame), or a heap block when they won't do. */
++static r_tent_t *R_RingAlloc( uint32_t need )
++{
++	r_tent_t *b;
++
++	need = ( need + (uint32_t)sizeof( r_tent_t ) + 7u ) & ~7u;
++	if( r_ring && need <= r_ring_size )
++	{
++		uint32_t start = r_ring_head, scanned = 0;
++
++		while( scanned <= 2u * r_ring_size )
++		{
++			uint32_t pos, got = 0;
++			r_tent_t *blk = NULL;
++
++			if( start >= r_ring_size )
++				start = 0;
++			pos = start;
++			while( got < need && pos < r_ring_size )
++			{
++				blk = (r_tent_t *)( r_ring + pos );
++				if( blk->owner && blk->stamp == r_ring_frame )
++					break;
++				got += blk->size;
++				pos += blk->size;
++			}
++			if( got >= need )
++			{
++				for( uint32_t p = start; p < pos; p += ( (r_tent_t *)( r_ring + p ))->size )
++					R_TentDrop( (r_tent_t *)( r_ring + p ));
++				if( got - need >= sizeof( r_tent_t ))
++				{
++					r_tent_t *rest = (r_tent_t *)( r_ring + start + need );
++
++					memset( rest, 0, sizeof( *rest ));
++					rest->size = got - need;
++				}
++				else
++					need = got;
++				b = (r_tent_t *)( r_ring + start );
++				memset( b, 0, sizeof( *b ));
++				b->size = need;
++				r_ring_head = start + need;
++				return b;
++			}
++			if( pos >= r_ring_size )
++			{
++				scanned += pos - start;
++				start = 0;
++			}
++			else
++			{
++				scanned += pos - start + blk->size;
++				start = pos + blk->size;
++			}
++		}
++	}
++	b = (r_tent_t *)Mem_Calloc( r_temppool, need );
++	b->size = need;
++	b->heap = 1;
++	b->next_heap = r_ring_heap;
++	r_ring_heap = b;
++	r_ring_count.heap++;
++	r_ring_count.heap_bytes += need;
++	return b;
++}
++
++/* The newest block cut to `keep` body bytes (its tail was the scratch). */
++static void R_RingShrink( r_tent_t *b, uint32_t keep )
++{
++	r_tent_t *rest;
++
++	keep = ( keep + (uint32_t)sizeof( r_tent_t ) + 7u ) & ~7u;
++	if( b->heap || b->size - keep < sizeof( r_tent_t ))
++		return;
++	rest = (r_tent_t *)((byte *)b + keep );
++	memset( rest, 0, sizeof( *rest ));
++	rest->size = b->size - keep;
++	b->size = keep;
++	if( r_ring_head == (uint32_t)((byte *)rest - r_ring ) + rest->size )
++		r_ring_head = (uint32_t)((byte *)rest - r_ring );
++}
++
++void R_TexRingFrame( void )
++{
++	r_ring_frame++;
++	while( r_ring_heap )
++	{
++		r_tent_t *next = r_ring_heap->next_heap;
++
++		if( r_ring_heap->owner )
++			r_ring_heap->owner->rp_ent = NULL;
++		Mem_Free( r_ring_heap );
++		r_ring_heap = next;
++	}
++	// remade from GL_Bind's image when a rasteriser asks (R_SkinPix)
++	r_affinetridesc.pskin = NULL;
++}
++
++void R_TexRingStats( char *out, size_t len, qboolean reset )
++{
++	Q_snprintf( out, len, "R335: textures %u as 8-bit and palette (%u KiB, %u KiB saved), %u as 16-bit (%u KiB), %u differing from the old way; the ring %u KiB: %u rebuilt (%u KiB), %u dropped, %u to the heap (%u KiB)",
++		r_ring_count.pal, r_ring_count.pal_b >> 10, r_ring_count.saved_b >> 10, r_ring_count.full, r_ring_count.full_b >> 10, r_ring_count.bad,
++		r_ring_size >> 10, r_ring_count.decodes, r_ring_count.bytes >> 10, r_ring_count.evicts, r_ring_count.heap, r_ring_count.heap_bytes >> 10 );
++	if( reset )
++		r_ring_count.decodes = r_ring_count.bytes = r_ring_count.evicts = r_ring_count.heap = r_ring_count.heap_bytes = 0;
++}
++
++/* Level `j` (`width` x `height`) of the RGBA `data` into `out` as pixel_t,
++   and the alpha copy into `aout` at level 0: the upload's own loop. */
++static void R_TexLevel( const image_t *tex, const byte *data, int j, uint width, uint height, pixel_t *out, pixel_t *aout )
++{
++	const int onebit = FBitSet( tex->rp_bits, RP_TB_ONEBIT ) != 0;
++	const int noalpha = FBitSet( tex->rp_bits, RP_TB_NOALPHA ) != 0;
++	const int hasalpha = FBitSet( tex->rp_bits, RP_TB_ALPHA ) != 0;
++
++	for( uint i = 0; i < height * width; i++ )
++	{
++		unsigned int r, g, b, major, minor;
++		// seems to look better
++		r = data[i * 4 + 0] * BIT( 5 ) / 256;
++		g = data[i * 4 + 1] * BIT( 6 ) / 256;
++		b = data[i * 4 + 2] * BIT( 5 ) / 256;
++
++		// 565 to 332
++		major = ((( r >> 2 ) & MASK( 3 )) << 5 ) | (((( g >> 3 ) & MASK( 3 )) << 2 )) | ((( b >> 3 ) & MASK( 2 )));
++
++		// save minor GBRGBRGB
++		minor = MOVE_BIT( r, 1, 5 ) | MOVE_BIT( r, 0, 2 ) | MOVE_BIT( g, 2, 7 ) | MOVE_BIT( g, 1, 4 ) | MOVE_BIT( g, 0, 1 ) | MOVE_BIT( b, 2, 6 ) | MOVE_BIT( b, 1, 3 ) | MOVE_BIT( b, 0, 0 );
++
++		out[i] = major << 8 | ( minor & 0xFF );
++		if( j == 0 && aout )
++		{
++			unsigned int alpha = ( data[i * 4 + 3] * 8 / 256 ) << ( 16 - 3 );
++			aout[i] = ( out[i] >> 3 ) | alpha;
++			if( !noalpha && data[i * 4 + 3] < 128 && onebit )
++				out[i] = TRANSPARENT_COLOR;         // 0000 0011 0100 1001;
++		}
++		// RetroPane (kit 75, R321: c1a0e's ladder drawn as a black strip):
++		// the coarser levels keep the see-through key too, by the same
++		// rule on their averaged alpha (only mip 0 had it, so a '{' face
++		// drawn at mip 1-3 showed its holes black)
++		else if( j > 0 && hasalpha && !noalpha && data[i * 4 + 3] < 128 && onebit )
++			out[i] = TRANSPARENT_COLOR;
++	}
++}
++
++static void GL_BuildMipMap( byte *in, int srcWidth, int srcHeight, int srcDepth, int flags );
++
++/* A compact texture's levels `from` to `to` (and the alpha copy with level
++   0) built into a new ring block. Level 0 is the upload's conversion of
++   each texel on its own, so it is made once a colour (the palette through
++   R_TexLevel, 256 texels at most) and looked up a texel; the coarser levels
++   need the upload's mip chain: the colours expanded into the block's tail,
++   GL_BuildMipMap run on them as the upload ran it, the tail given back.
++   (Run 262: rebuilding all four levels for a skin or a picture, which
++   reads only level 0, cost the fight's first 250 frames ~0.4 ms each.) */
++static r_tent_t *R_TexDecode( image_t *tex, int from, int to )
++{
++	const uint w = tex->width, h = tex->height, n = w * h;
++	const int  alpha = from == 0 && FBitSet( tex->rp_bits, RP_TB_ALPHA );
++	uint32_t   off[4] = { 0 }, aoff = 0, lvbytes = 0;
++	r_tent_t   *b;
++	byte       *body;
++	uint64_t   t0 = rp_time_us( );
++
++	for( int j = from; j <= to; j++ )
++	{
++		off[j] = lvbytes;
++		lvbytes += ( Q_max( 1, w >> j ) * Q_max( 1, h >> j ) * 2u + 3u ) & ~3u;
++	}
++	if( alpha )
++	{
++		aoff = lvbytes;
++		lvbytes += ( n * 2u + 3u ) & ~3u;
++	}
++	b = R_RingAlloc( lvbytes + ( to > 0 ? n * 4u : 0u ));
++	body = (byte *)( b + 1 );
++	for( int j = from; j <= to; j++ )
++		b->lv[j] = (pixel_t *)( body + off[j] );
++	if( alpha )
++		b->alpha = (pixel_t *)( body + aoff );
++	if( from == 0 )
++	{
++		pixel_t c16[256], a16[256];
++		pixel_t *lv0 = b->lv[0];
++
++		R_TexLevel( tex, (const byte *)tex->rp_pal, 0, tex->rp_npal, 1, c16, alpha ? a16 : NULL );
++		for( uint i = 0; i < n; i++ )
++			lv0[i] = c16[tex->rp_idx[i]];
++		if( alpha )
++			for( uint i = 0; i < n; i++ )
++				b->alpha[i] = a16[tex->rp_idx[i]];
++	}
++	if( to > 0 )
++	{
++		uint32_t *rgba = (uint32_t *)( body + lvbytes );
++
++		for( uint i = 0; i < n; i++ )
++			rgba[i] = tex->rp_pal[tex->rp_idx[i]];
++		for( int j = 0; j < to; j++ )
++		{
++			GL_BuildMipMap( (byte *)rgba, Q_max( 1, w >> j ), Q_max( 1, h >> j ), tex->depth, tex->flags );
++			if( j + 1 >= from )
++				R_TexLevel( tex, (const byte *)rgba, j + 1, Q_max( 1, w >> ( j + 1 )), Q_max( 1, h >> ( j + 1 )), b->lv[j + 1], NULL );
++		}
++		R_RingShrink( b, lvbytes );
++	}
++	b->owner = tex;
++	b->from = (byte)from;
++	b->to = (byte)to;
++	tex->rp_ent = b;
++	r_ring_count.decodes++;
++	r_ring_count.bytes += lvbytes;
++	rp_tex_rebuilds++;
++	{
++		uint32_t us = (uint32_t)( rp_time_us( ) - t0 );
++
++		if( us > rp_tex_rebuild_us_max )
++			rp_tex_rebuild_us_max = us;
++	}
++	return b;
++}
++
++/* The block holding levels `from` to `to` of a compact texture, rebuilt
++   when gone (with the levels the old block held, so two readers at two
++   levels don't take turns); `transient`: read at once and let go (the
++   next block may take it). */
++static r_tent_t *R_TexEnt( image_t *tex, int from, int to, int transient )
++{
++	r_tent_t *b = (r_tent_t *)tex->rp_ent;
++
++	if( !b || b->from > from || b->to < to )
++	{
++		if( b )
++		{
++			from = Q_min( from, b->from );
++			to = Q_max( to, b->to );
++			if( b->heap )
++				b->owner = NULL;
++			else
++				R_TentDrop( b );
++			tex->rp_ent = NULL;
++			if( r_skin_img == tex )
++				r_affinetridesc.pskin = NULL; // it may have pointed into that block
++		}
++		b = R_TexDecode( tex, from, to );
++		b->stamp = transient && !b->heap ? r_ring_frame - 1 : r_ring_frame;
++	}
++	else if( !transient )
++		b->stamp = r_ring_frame;
++	return b;
++}
++
++pixel_t *R_TexPix( image_t *tex, int mip )
++{
++	if( !tex->rp_idx )
++		return tex->pixels[mip];
++	return R_TexEnt( tex, mip, mip, 0 )->lv[mip];
++}
++
++pixel_t *R_TexAlpha( image_t *tex )
++{
++	if( !tex->rp_idx )
++		return tex->alpha_pixels;
++	if( !FBitSet( tex->rp_bits, RP_TB_ALPHA ))
++		return NULL;
++	return R_TexEnt( tex, 0, 0, 0 )->alpha;
++}
++
++pixel_t *const *R_TexLevels( image_t *tex, int transient )
++{
++	if( !tex->rp_idx )
++		return tex->pixels;
++	return R_TexEnt( tex, 0, 3, transient )->lv;
++}
++
++pixel_t *R_SkinPix( void )
++{
++	if( !r_affinetridesc.pskin && r_skin_img )
++		r_affinetridesc.pskin = r_skin_alpha ? R_TexAlpha( r_skin_img ) : R_TexPix( r_skin_img, 0 );
++	return r_affinetridesc.pskin;
++}
++
++/* A texture's storage freed (its slot and name kept). */
++static void R_TexRelease( image_t *tex )
++{
++	r_tent_t *b = (r_tent_t *)tex->rp_ent;
++
++	if( b )
++	{
++		if( b->heap )
++			b->owner = NULL;
++		else
++			R_TentDrop( b );
++		tex->rp_ent = NULL;
++	}
++	for( int i = 0; i < 4; i++ )
++	{
++		if( tex->pixels[i] )
++			Mem_Free( tex->pixels[i] );
++		tex->pixels[i] = NULL;
++	}
++	if( tex->alpha_pixels )
++		Mem_Free( tex->alpha_pixels );
++	tex->alpha_pixels = NULL;
++	if( tex->rp_idx )
++		Mem_Free( tex->rp_idx );
++	if( tex->rp_pal )
++		Mem_Free( tex->rp_pal );
++	tex->rp_idx = NULL;
++	tex->rp_pal = NULL;
++	if( r_skin_img == tex )
++	{
++		r_skin_img = NULL;
++		r_affinetridesc.pskin = NULL;
++	}
++}
++
++/* `n` RGBA texels as 8-bit indices and their colours, when there are at
++   most 256 and that is smaller than `full` bytes (the 16-bit levels). */
++static qboolean R_TexPalettize( image_t *tex, const byte *data, uint n, size_t full )
++{
++	uint32_t key[512], pal[256], last = 0;
++	byte     val[512], occ[512], lastv = 0;
++	int      np = 0, have = 0;
++
++	memset( occ, 0, sizeof( occ ));
++	for( int pass = 0; pass < 2; pass++ )
++	{
++		have = 0;
++		for( uint i = 0; i < n; i++ )
++		{
++			uint32_t c, h;
++
++			memcpy( &c, data + i * 4, 4 );
++			if( !have || c != last )
++			{
++				h = ( c * 2654435761u ) >> 23;
++				while( occ[h] && key[h] != c )
++					h = ( h + 1 ) & 511;
++				if( !occ[h] )
++				{
++					if( np == 256 )
++						return false;
++					occ[h] = 1;
++					key[h] = c;
++					val[h] = (byte)np;
++					pal[np++] = c;
++				}
++				last = c;
++				lastv = val[h];
++				have = 1;
++			}
++			if( pass )
++				tex->rp_idx[i] = lastv;
++		}
++		if( !pass )
++		{
++			if( (size_t)n + (size_t)np * 4 >= full )
++				return false;
++			tex->rp_idx = (byte *)Mem_Malloc( r_temppool, n );
++			tex->rp_pal = (uint32_t *)Mem_Malloc( r_temppool, np * 4 );
++			memcpy( tex->rp_pal, pal, np * 4 );
++			tex->rp_npal = (word)np;
++		}
++	}
++	return true;
++}
++
++/* -rptexcheck: the texture rebuilt from its indices against the old way's
++   levels made from `data` (the upload's RGBA; mipped in place here). */
++static void R_TexCheck( image_t *tex, byte *data )
++{
++	const uint w = tex->width, h = tex->height;
++	r_tent_t   *b = R_TexEnt( tex, 0, 3, 1 );
++	pixel_t    *tmp = (pixel_t *)Mem_Malloc( r_temppool, w * h * 2 * 2 );
++	int        bad = 0;
++
++	for( int j = 0; j < 4 && !bad; j++ )
++	{
++		uint lw = Q_max( 1, w >> j ), lh = Q_max( 1, h >> j );
++
++		R_TexLevel( tex, data, j, lw, lh, tmp, j == 0 && b->alpha ? tmp + w * h : NULL );
++		bad = memcmp( tmp, b->lv[j], lw * lh * 2 ) != 0
++			|| ( j == 0 && b->alpha && memcmp( tmp + w * h, b->alpha, w * h * 2 ) != 0 );
++		if( j < 3 )
++			GL_BuildMipMap( data, lw, lh, tex->depth, tex->flags );
++	}
++	Mem_Free( tmp );
++	if( bad && r_ring_count.bad++ < 8 )
++		gEngfuncs.Con_Printf( S_ERROR "R335: %s rebuilt differs from the old way\n", tex->name );
++}
+ /*
+ =================
+ R_GetTexture
+@@ -44,31 +501,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
  {
  	image_t *image = &r_images[texnum];
  
 +	RP_EmitBind( image ); // ref_rp kit 74: the effects' frame on the 2700G
 +
++	// RetroPane R335: the skin's pixels made when a rasteriser asks
++	// (R_SkinPix), not at every bind: the 2700G draws from its own copy
++	r_skin_img = image;
++	r_skin_alpha = 0;
++	r_affinetridesc.pskin = NULL;
  	if( vid.rendermode == kRenderNormal )
+-	{
+-		r_affinetridesc.pskin = image->pixels[0];
+ 		d_pdrawspans = R_PolysetFillSpans8;
+-	}
+ 	else if( vid.rendermode == kRenderTransAdd )
+-	{
+-		r_affinetridesc.pskin = image->pixels[0];
+ 		d_pdrawspans = R_PolysetDrawSpansAdditive;
+-	}
+ 	else if( vid.rendermode == kRenderGlow )
+-	{
+-		r_affinetridesc.pskin = image->pixels[0];
+ 		d_pdrawspans = R_PolysetDrawSpansGlow;
+-	}
+-	else if( image->alpha_pixels )
++	else if( R_TexHasAlpha( image ))
  	{
- 		r_affinetridesc.pskin = image->pixels[0];
-@@ -276,6 +278,13 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
- 				if( !sw_noalphabrushes.value && data[i * 4 + 3] < 128 && FBitSet( pic->flags, IMAGE_ONEBIT_ALPHA ))
- 					tex->pixels[j][i] = TRANSPARENT_COLOR;         // 0000 0011 0100 1001;
- 			}
-+			// RetroPane (kit 75, R321: c1a0e's ladder drawn as a black strip):
-+			// the coarser levels keep the see-through key too, by the same
-+			// rule on their averaged alpha (only mip 0 had it, so a '{' face
-+			// drawn at mip 1-3 showed its holes black)
-+			else if( j > 0 && FBitSet( tex->flags, TF_HAS_ALPHA ) && !sw_noalphabrushes.value
-+				&& data[i * 4 + 3] < 128 && FBitSet( pic->flags, IMAGE_ONEBIT_ALPHA ))
-+				tex->pixels[j][i] = TRANSPARENT_COLOR;
+-		r_affinetridesc.pskin = image->alpha_pixels;
++		r_skin_alpha = 1;
+ 		d_pdrawspans = R_PolysetDrawSpansTextureBlended;
+ 	}
+ 	else
+-	{
+-		r_affinetridesc.pskin = image->pixels[0];
+ 		d_pdrawspans = R_PolysetDrawSpansBlended;
+-	}
  
- 		}
+ 	r_affinetridesc.skinwidth = image->width;
+ 	r_affinetridesc.skinheight = image->height;
+@@ -227,6 +679,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+ 	Assert( pic != NULL );
+ 	Assert( tex != NULL );
  
++	// RetroPane R335: a texture uploaded again (an update, a remap) lets
++	// its old pixels go (the old way kept them)
++	R_TexRelease( tex );
++
+ 	if( !pic->buffer )
+ 		return true;
+ 
+@@ -240,6 +696,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+ 	else
+ 		data = buf;
+ 
++	// RetroPane R335: 8-bit indices and the exact colours when they fit
++	// (r_image.c's note at R_TexPix), else the 16-bit levels as before
++	tex->rp_serial = ++r_texserial;
++	tex->rp_bits = ( FBitSet( tex->flags, TF_HAS_ALPHA ) ? RP_TB_ALPHA : 0 )
++		| ( FBitSet( pic->flags, IMAGE_ONEBIT_ALPHA ) ? RP_TB_ONEBIT : 0 )
++		| ( sw_noalphabrushes.value ? RP_TB_NOALPHA : 0 );
++	{
++		size_t full = 0;
++
++		for( uint j = 0; j < mipCount; j++ )
++			full += GL_CalcTextureSize( Q_max( 1, ( tex->width >> j )), Q_max( 1, ( tex->height >> j )), tex->depth );
++		if( FBitSet( tex->rp_bits, RP_TB_ALPHA ))
++			full += (size_t)tex->width * tex->height * sizeof( pixel_t );
++		if( r_texpal_on < 0 )
++		{
++			r_texpal_on = !gEngfuncs.Sys_CheckParm( "-rpnotexpal" );
++			r_texcheck = !!gEngfuncs.Sys_CheckParm( "-rptexcheck" );
++		}
++		if( r_texpal_on && tex->depth == 1 && R_TexPalettize( tex, data, tex->width * tex->height, full ))
++		{
++			size_t kept = (size_t)tex->width * tex->height + (size_t)tex->rp_npal * 4;
++
++			for( uint j = 0; j < mipCount; j++ )
++			{
++				tex->size += GL_CalcTextureSize( Q_max( 1, ( tex->width >> j )), Q_max( 1, ( tex->height >> j )), tex->depth );
++				tex->numMips++;
++			}
++			r_ring_count.pal++;
++			r_ring_count.pal_b += kept;
++			r_ring_count.saved_b += full - kept;
++			if( r_texcheck )
++				R_TexCheck( tex, data );
++			return true;
++		}
++		r_ring_count.full++;
++		r_ring_count.full_b += full;
++	}
++
+ 	// mips will be auto-generated if desired
+ 	for( uint j = 0; j < mipCount; j++ )
+ 	{
+@@ -254,31 +748,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+ 		if( j == 0 && tex->flags & TF_HAS_ALPHA )
+ 			tex->alpha_pixels = (pixel_t *)Mem_Calloc( r_temppool, width * height * sizeof( pixel_t ));
+ 
+-		for( uint i = 0; i < height * width; i++ )
+-		{
+-			unsigned int r, g, b, major, minor;
+-			// seems to look better
+-			r = data[i * 4 + 0] * BIT( 5 ) / 256;
+-			g = data[i * 4 + 1] * BIT( 6 ) / 256;
+-			b = data[i * 4 + 2] * BIT( 5 ) / 256;
+-
+-			// 565 to 332
+-			major = ((( r >> 2 ) & MASK( 3 )) << 5 ) | (((( g >> 3 ) & MASK( 3 )) << 2 )) | ((( b >> 3 ) & MASK( 2 )));
+-
+-			// save minor GBRGBRGB
+-			minor = MOVE_BIT( r, 1, 5 ) | MOVE_BIT( r, 0, 2 ) | MOVE_BIT( g, 2, 7 ) | MOVE_BIT( g, 1, 4 ) | MOVE_BIT( g, 0, 1 ) | MOVE_BIT( b, 2, 6 ) | MOVE_BIT( b, 1, 3 ) | MOVE_BIT( b, 0, 0 );
+-
+-			tex->pixels[j][i] = major << 8 | ( minor & 0xFF );
+-			if( j == 0 && tex->alpha_pixels )
+-			{
+-				unsigned int alpha = ( data[i * 4 + 3] * 8 / 256 ) << ( 16 - 3 );
+-				tex->alpha_pixels[i] = ( tex->pixels[j][i] >> 3 ) | alpha;
+-				if( !sw_noalphabrushes.value && data[i * 4 + 3] < 128 && FBitSet( pic->flags, IMAGE_ONEBIT_ALPHA ))
+-					tex->pixels[j][i] = TRANSPARENT_COLOR;         // 0000 0011 0100 1001;
+-			}
+-
+-		}
+-
++		R_TexLevel( tex, data, j, width, height, tex->pixels[j], j == 0 ? tex->alpha_pixels : NULL );
+ 		if( mipCount > 1 )
+ 			GL_BuildMipMap( data, width, height, tex->depth, tex->flags );
+ 
+@@ -431,7 +901,7 @@ static void GL_DeleteTexture( image_t *tex )
+ 	ASSERT( tex != NULL );
+ 
+ 	// already freed?
+-	if( !tex->pixels[0] )
++	if( !R_TexLoaded( tex ))
+ 		return;
+ 
+ 	// debug
+@@ -462,11 +932,7 @@ static void GL_DeleteTexture( image_t *tex )
+ 	if( tex->original )
+ 		gEngfuncs.FS_FreeImage( tex->original );
+ 
+-	for( int i = 0; i < 4; i++ )
+-		if( tex->pixels[i] )
+-			Mem_Free( tex->pixels[i] );
+-	if( tex->alpha_pixels )
+-		Mem_Free( tex->alpha_pixels );
++	R_TexRelease( tex ); // RetroPane R335: every way a texture keeps its pixels
+ 
+ 	memset( tex, 0, sizeof( *tex ));
+ }
+@@ -814,7 +1280,7 @@ void R_TextureList_f( void )
+ 
+ 	for( i = texCount = 0, image = r_images; i < r_numImages; i++, image++ )
+ 	{
+-		if( !image->pixels )
++		if( !R_TexLoaded( image ))
+ 			continue;
+ 
+ 		bytes += image->size;
+@@ -863,6 +1329,23 @@ void R_InitImages( void )
+ 	r_imagesHashTable[r_images->hashValue] = r_images;
+ 	r_numImages = 1;
+ 
++	// RetroPane R335: the texture ring, one block made first (none with
++	// -rpnotexpal: the old way's A/B holds no 8-bit texture; run 266 ran out
++	// of memory at load with both)
++	if( r_texpal_on < 0 )
++	{
++		r_texpal_on = !gEngfuncs.Sys_CheckParm( "-rpnotexpal" );
++		r_texcheck = !!gEngfuncs.Sys_CheckParm( "-rptexcheck" );
++	}
++	if( !r_ring && r_texpal_on )
++	{
++		r_ring = (byte *)Mem_Malloc( r_temppool, R_RING_BYTES );
++		r_ring_size = R_RING_BYTES;
++		r_ring_head = 0;
++		memset( r_ring, 0, sizeof( r_tent_t ));
++		( (r_tent_t *)r_ring )->size = r_ring_size;
++	}
++
+ 	// validate cvars
+ 
+ 	gEngfuncs.Cmd_AddCommand( "texturelist", R_TextureList_f, "display loaded textures list" );
+@@ -886,4 +1369,9 @@ void R_ShutdownImages( void )
+ 	memset( r_imagesHashTable, 0, sizeof( r_imagesHashTable ));
+ 	memset( r_images, 0, sizeof( r_images ));
+ 	r_numImages = 0;
++	R_TexRingFrame( ); // the heap blocks go
++	if( r_ring )
++		Mem_Free( r_ring );
++	r_ring = NULL;
++	r_ring_size = r_ring_head = 0;
+ }
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..bd4fdfe 100644
+index 1a7efd6..292344b 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -992,6 +992,101 @@ typedef struct
+@@ -308,6 +308,17 @@ typedef struct image_s
+ 	pixel_t        *pixels[4];                              // mip levels
+ 	pixel_t        *alpha_pixels;                           // mip levels
+ 
++	// RetroPane R335: a texture of at most 256 colours kept as its 8-bit
++	// indices and those colours (RGBA, exact); pixels[] and alpha_pixels
++	// stay NULL and its 16-bit levels are rebuilt on demand by the same
++	// code into the texture ring (r_image.c R_TexPix)
++	byte           *rp_idx;
++	uint32_t       *rp_pal;
++	void           *rp_ent;    // its levels in the ring, or NULL
++	uint32_t       rp_serial; // a number for each upload (never reused)
++	word           rp_npal;
++	byte           rp_bits;   // RP_TB_*
++
+ 	uint           hashValue;
+ 	struct image_s *nextHash;
+ } image_t;
+@@ -340,6 +351,20 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
+ // gl_image.c
+ //
+ image_t *R_GetTexture( unsigned int texnum );
++// RetroPane R335: a texture's 16-bit pixels, wherever it keeps them
++#define RP_TB_ALPHA   1 // an alpha copy (alpha_pixels) belongs to it
++#define RP_TB_ONEBIT  2 // the image's IMAGE_ONEBIT_ALPHA at upload
++#define RP_TB_NOALPHA 4 // sw_noalphabrushes at upload
++#define R_TexLoaded( t )   ( ( t )->pixels[0] != NULL || ( t )->rp_idx != NULL )
++#define R_TexHasAlpha( t ) ( ( t )->alpha_pixels != NULL || ( ( t )->rp_bits & RP_TB_ALPHA ))
++pixel_t *R_TexPix( image_t *tex, int mip );
++pixel_t *R_TexAlpha( image_t *tex );
++pixel_t *const *R_TexLevels( image_t *tex, int transient );
++pixel_t *R_SkinPix( void );
++void R_TexRingFrame( void );
++void R_TexRingStats( char *out, size_t len, qboolean reset );
++extern image_t *r_skin_img; // GL_Bind's, for the triangle rasterisers
++extern int     r_skin_alpha;
+ #define GL_LoadTextureInternal( name, pic, flags )   GL_LoadTextureFromBuffer( name, pic, flags, false )
+ #define GL_UpdateTextureInternal( name, pic, flags ) GL_LoadTextureFromBuffer( name, pic, flags, true )
+ int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags );
+@@ -992,6 +1017,101 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -5743,7 +6471,7 @@ index 1a7efd6..bd4fdfe 100644
  extern int   r_aliasblendcolor;
  
 diff --git a/ref/soft/r_main.c b/ref/soft/r_main.c
-index 2c644f6..dc43f5b 100644
+index 2c644f6..34b4d5a 100644
 --- a/ref/soft/r_main.c
 +++ b/ref/soft/r_main.c
 @@ -199,6 +199,76 @@ static int R_TransEntityCompare( const cl_entity_t **a, const cl_entity_t **b )
@@ -6093,17 +6821,18 @@ index 2c644f6..dc43f5b 100644
  }
  
  /*
-@@ -1113,6 +1414,9 @@ R_BeginFrame
+@@ -1113,6 +1414,10 @@ R_BeginFrame
  */
  void GAME_EXPORT R_BeginFrame( qboolean clearScene )
  {
 +	// ref_rp: a frame's words start with the screen's update, 3D or not
 +	// (the menu and the loading plaque are 2D alone)
 +	RP_EmitFrame();
++	R_TexRingFrame(); // RetroPane R335: last frame's texture blocks may go now
  	R_Set2DMode( true );
  
  	// draw buffer stuff
-@@ -1224,6 +1528,8 @@ void GAME_EXPORT R_NewMap( void )
+@@ -1224,6 +1529,8 @@ void GAME_EXPORT R_NewMap( void )
  {
  	model_t *world = WORLDMODEL;
  
@@ -6112,7 +6841,7 @@ index 2c644f6..dc43f5b 100644
  	r_viewcluster = -1;
  
  	tr.draw_list->num_solid_entities = 0;
-@@ -1370,6 +1676,8 @@ qboolean GAME_EXPORT R_Init( void )
+@@ -1370,6 +1677,8 @@ qboolean GAME_EXPORT R_Init( void )
  	tr.lineargammatable = (uint16_t *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
  		tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
  
@@ -6207,10 +6936,20 @@ index e308395..7d1f5a0 100644
  
  
 diff --git a/ref/soft/r_polyse.c b/ref/soft/r_polyse.c
-index 52e713a..1c01fff 100644
+index 52e713a..ed036a4 100644
 --- a/ref/soft/r_polyse.c
 +++ b/ref/soft/r_polyse.c
-@@ -637,6 +637,13 @@ void R_DrawTriangle( void )
+@@ -379,7 +379,8 @@ static qboolean R_PolysetCalcGradients( int skinwidth )
+ 
+ 	a_ststepxwhole = skinwidth * ( r_tstepx >> 16 ) + ( r_sstepx >> 16 );
+ 
+-	skinend = (pixel_t *)r_affinetridesc.pskin + r_affinetridesc.skinwidth * r_affinetridesc.skinheight;
++	// RetroPane R335: GL_Bind's skin made here, before any span reads it
++	skinend = R_SkinPix( ) + r_affinetridesc.skinwidth * r_affinetridesc.skinheight;
+ 	return true;
+ }
+ 
+@@ -637,6 +638,13 @@ void R_DrawTriangle( void )
  {
  	spanpackage_t spans[DPS_MAXSPANS];
  
@@ -6811,7 +7550,7 @@ index 03790d8..c53d34b 100644
  		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
  		{
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
-index e47e115..41478c1 100644
+index e47e115..bc9eb5f 100644
 --- a/ref/soft/r_surf.c
 +++ b/ref/soft/r_surf.c
 @@ -133,14 +133,24 @@ static void R_AddDynamicLights( const msurface_t *surf )
@@ -6919,6 +7658,15 @@ index e47e115..41478c1 100644
  {
  	texture_t *base = s->texinfo->texture;
  	int       reletive;
+@@ -320,7 +392,7 @@ void R_DrawSurface( void )
+ 	}
+ 	mt = r_drawsurf.image;
+ 
+-	r_source = mt->pixels[r_drawsurf.surfmip];
++	r_source = R_TexPix( mt, r_drawsurf.surfmip ); // RetroPane R335: rebuilt from its 8 bits when gone
+ 
+ // the fractional light values should range from 0 to (VID_GRADES - 1) << 16
+ // from a source range of 0 - 255
 @@ -636,6 +708,11 @@ void R_DrawSurfaceBlock8_mip1( void )
  			{
  				pix = psource[b];
@@ -6967,6 +7715,27 @@ index e47e115..41478c1 100644
  	// round up to page size
  	size = ( size + 8191 ) & ~8191;
  
+@@ -976,16 +1064,16 @@ static void R_DrawSurfaceDecals( void )
+ 		if( t2 > tex->height )
+ 			t2 = tex->height;
+ 
+-		if( !tex->pixels[0] || s1 >= s2 || t1 >= t2 || !w )
++		if( !R_TexLoaded( tex ) || s1 >= s2 || t1 >= t2 || !w )
+ 			continue;
+ 
+-		if( tex->alpha_pixels )
++		if( R_TexHasAlpha( tex )) // RetroPane R335
+ 		{
+-			buffer = tex->alpha_pixels;
++			buffer = R_TexAlpha( tex );
+ 			transparent = true;
+ 		}
+ 		else
+-			buffer = tex->pixels[0];
++			buffer = R_TexPix( tex, 0 );
+ 
+ 		height = h;
+ 		if( y < 0 )
 @@ -1137,9 +1225,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
  //
  // allocate memory if needed

@@ -357,6 +357,10 @@ mod image {
         file_cmds: u32,
         /// Whether each file read is a line of the log ([`READS_WORD`]).
         each_read: bool,
+        /// Whether each file opened once the game plays is a line of the
+        /// log ([`PLAY_OPENS_WORD`]), and whether it plays (step 4 on).
+        play_opens: bool,
+        playing: bool,
         /// Folder entries listed, and their read commands.
         listed: u32,
         listed_cmds: u32,
@@ -375,6 +379,8 @@ mod image {
         file_bytes: 0,
         file_cmds: 0,
         each_read: false,
+        play_opens: false,
+        playing: false,
         listed: 0,
         listed_cmds: 0,
     });
@@ -391,7 +397,22 @@ mod image {
     /// commands). Tens of thousands of lines: the emulator's only (R281).
     const READS_WORD: &[u8] = b"-rpreads";
 
+    /// A test run's word for a line in the log for every file opened once
+    /// the game plays (step 4 on): `open in play: 5 sound/x.wav at 41234
+    /// ms` (the owner, 2026-11-19: "find what's loading from the card
+    /// mid-fight"; R335's run 265 read 372 KiB in 32 reads during the
+    /// fight's second half). Tens of lines, so the X51v's log holds them.
+    const PLAY_OPENS_WORD: &[u8] = b"-rpplayopens";
+
     fn opened(fd: i32, path: &[u8]) {
+        if CARD.with(|c| c.play_opens && c.playing) {
+            let _ = writeln!(
+                Out,
+                "open in play: {fd} {} at {} ms",
+                core::str::from_utf8(path).unwrap_or("?"),
+                rt::ticks() / TICKS_1MS
+            );
+        }
         if CARD.with(|c| c.each_read) {
             let _ = writeln!(
                 Out,
@@ -413,12 +434,22 @@ mod image {
     }
 
     fn read(fd: i32, at: u64, asked: usize, _got: usize, reads: u32) {
-        let each = CARD.with(|c| {
+        let (each, in_play) = CARD.with(|c| {
             c.file_reads = c.file_reads.wrapping_add(1);
             c.file_bytes = c.file_bytes.wrapping_add(asked as u64);
             c.file_cmds = c.file_cmds.wrapping_add(reads);
-            c.each_read
+            (c.each_read, c.play_opens && c.playing && reads > 0)
         });
+        // -rpplayopens: a read that went to the card once the game plays
+        // (run 268 opened nothing in the fight's second half, yet run 265
+        // read 372 KiB then: from files already open)
+        if in_play {
+            let _ = writeln!(
+                Out,
+                "read in play: {fd} at {at} {asked} bytes, {reads} card commands, at {} ms",
+                rt::ticks() / TICKS_1MS
+            );
+        }
         if each {
             let _ = writeln!(Out, "read: {fd} {at} {asked} {reads}");
         }
@@ -572,6 +603,9 @@ mod image {
             "runner: step {n} of {of} at {at} s on the screen's clock"
         );
         card_count(format_args!("at step {n}"));
+        if n >= 4 {
+            CARD.with(|c| c.playing = true);
+        }
     }
 
     /// Pairs the float routines are timed on.
@@ -1771,6 +1805,7 @@ mod image {
         CARD.with(|c| {
             c.each = args[..arg_count].iter().any(|a| a.to_bytes() == LOOKS_WORD);
             c.each_read = args[..arg_count].iter().any(|a| a.to_bytes() == READS_WORD);
+            c.play_opens = args[..arg_count].iter().any(|a| a.to_bytes() == PLAY_OPENS_WORD);
         });
         s.set_looks(Looks {
             reads: card_reads,

@@ -187,6 +187,13 @@ void RP_EmitInit( void )
 
 /* The port layer's clock (ports/include/retropane.h; the runner's). */
 uint64_t rp_time_us( void );
+/* R335: the frame-by-frame record (RP_HitchFrame) */
+extern uint32_t rp_tex_rebuilds, rp_tex_rebuild_us_max;
+static struct
+{
+	uint32_t worst_us, over50, over50_tex, over100, rebuilds;
+} rp_hitch;
+
 
 /*
 The counts over the last five seconds, one plain line in the run log (the
@@ -374,6 +381,18 @@ static void RP_EmitReport( void )
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	if( rp_emit_on == 2 )
+	{
+		char line[512];
+
+		R_TexRingStats( line, sizeof( line ), true ); /* R335: the 8-bit textures and their ring */
+		fprintf( stderr, "rp-emit: %s\n", line );
+		fprintf( stderr, "rp-emit: R335 frame by frame: the slowest %u.%u ms, %u over 50 ms (%u of them rebuilt a texture), %u over 100 ms; %u rebuilds, the slowest %u us\n",
+			rp_hitch.worst_us / 1000u, rp_hitch.worst_us / 100u % 10u, rp_hitch.over50, rp_hitch.over50_tex, rp_hitch.over100,
+			rp_hitch.rebuilds, rp_tex_rebuild_us_max );
+		memset( &rp_hitch, 0, sizeof( rp_hitch ));
+		rp_tex_rebuild_us_max = 0;
+	}
+	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: R309: the sky in %u of %u frames (%u sides a frame, %u not drawn: no room), %u water faces a frame in %u cells (%u not drawn), %u conveyor faces a frame\n",
 			rp_count.sky_frames, f, rp_count.sky_sides / f, rp_count.sky_missed, rp_count.water_faces / f, rp_count.water_cells / f,
 			rp_count.water_missed, rp_count.conveyors / f );
@@ -492,9 +511,38 @@ static void RP_CodeHint( void )
 	rp_code_hint( hot );
 }
 
+/* R335 (the owner: "are there hitches in the fight scene?"): each frame's
+   time from one RP_EmitFrame to the next, the slowest and those over 50
+   and 100 ms, and which of the slow ones rebuilt a texture (r_image.c). */
+static void RP_HitchFrame( void )
+{
+	static uint64_t last;
+	static uint32_t seen;
+	uint64_t        now = rp_time_us();
+
+	if( last )
+	{
+		uint32_t dt = (uint32_t)( now - last );
+
+		if( dt > rp_hitch.worst_us )
+			rp_hitch.worst_us = dt;
+		if( dt > 50000u )
+		{
+			rp_hitch.over50++;
+			rp_hitch.over50_tex += rp_tex_rebuilds != seen;
+		}
+		rp_hitch.over100 += dt > 100000u;
+	}
+	rp_hitch.rebuilds += rp_tex_rebuilds - seen;
+	last = now;
+	seen = rp_tex_rebuilds;
+}
+
 void RP_EmitFrame( void )
 {
 	int want = rp_emit ? (int)rp_emit->value : 0;
+
+	RP_HitchFrame( );
 
 	/* step 4f: the last frame's words are still being read */
 	if( rp_keep > 0 )
@@ -630,7 +678,7 @@ void RP_EmitTriangle( void )
 	int su = sw > 0 ? 31 - __builtin_clz( (uint32_t)sw ) : 0;
 	int tu = sh > 0 ? 31 - __builtin_clz( (uint32_t)sh ) : 0;
 
-	RP_State( r_affinetridesc.pskin, (uint32_t)(uintptr_t)d_pdrawspans );
+	RP_State( r_skin_img, (uint32_t)(uintptr_t)d_pdrawspans ); /* R335: the bound image, not its pixels */
 	RP_Put( RP_TA_STRIP );
 	for( int i = 0; i < 3; i++ )
 	{
@@ -1527,7 +1575,7 @@ lit surface), so nothing is ever left out.
 
 typedef struct
 {
-	const image_t *image;
+	uint32_t       serial; /* the image's upload (R335: never reused, unlike its slot) */
 	uint32_t       tex0, tex1;
 	int            gen; /* rp_tex_gen when it was written */
 	int            sky; /* a skybox side: one level, at most 256 a side */
@@ -1691,8 +1739,9 @@ static uint32_t RP_TexSample( const pixel_t *src, int sw, int sh, int x, int y, 
 
 static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 {
-	uint32_t  h = (uint32_t)(( (uintptr_t)image >> 3 ) * 2654435761u ) >> 23;
+	uint32_t  h = (uint32_t)(( image ? image->rp_serial : 0u ) * 2654435761u ) >> 23;
 	rp_tex_t *t = NULL;
+	pixel_t *const *src;
 	uint16_t *chain = (uint16_t *)rp_scratch_buf.more;
 	int       W, H, levels = 0, sb, plw = 1, plh = 1;
 	uint32_t  bytes = 0, at, off = 0, prev = 0;
@@ -1701,7 +1750,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 	{
 		rp_tex_t *e = &rp_tex[( h + i ) & ( RP_TEX_SLOTS - 1 )];
 
-		if( e->gen == rp_tex_gen && e->image == image && e->sky == sky )
+		if( e->gen == rp_tex_gen && image && e->serial == image->rp_serial && e->sky == sky )
 			return e;
 		if( e->gen != rp_tex_gen )
 		{
@@ -1709,7 +1758,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 			break;
 		}
 	}
-	if( !t || rp_tex_full || !image || !image->pixels[0] || image->width < 1 || image->height < 1 )
+	if( !t || rp_tex_full || !image || !R_TexLoaded( image ) || image->width < 1 || image->height < 1 )
 		return NULL;
 	W = RP_Pow2( image->width );
 	H = RP_Pow2( image->height );
@@ -1739,13 +1788,16 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 		rp_tex_full = 1;
 		return NULL;
 	}
+	/* R335: its four levels, rebuilt from its 8 bits when it keeps those
+	   (read here and let go: r_image.c R_TexLevels) */
+	src = R_TexLevels( (image_t *)image, 1 );
 
 	for( int l = 0, lw = W, lh = H; l < levels; l++ )
 	{
 		uint16_t *lv = chain + off / 2;
 
 		sb = 31 - __builtin_clz((uint32_t)( lw < lh ? lw : lh ));
-		if( l < 4 && image->pixels[l] )
+		if( l < 4 && src[l] )
 		{
 			/* the map's own level (a quarter of the area each) */
 			int sw = image->width >> l, sh = image->height >> l;
@@ -1756,7 +1808,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 				sh = 1;
 			for( int y = 0; y < lh; y++ )
 				for( int x = 0; x < lw; x++ )
-					lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexSample( image->pixels[l], sw, sh, x, y, lw, lh );
+					lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexSample( src[l], sw, sh, x, y, lw, lh );
 		}
 		else
 		{
@@ -1785,7 +1837,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 	/* one copy of the whole chain (whole words: the last texel padded) */
 	memcpy((uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES + at, chain, ( bytes + 3u ) & ~3u );
 	rp_tex_used = at + (( bytes + 3u ) & ~3u );
-	t->image = image;
+	t->serial = image->rp_serial;
 	t->gen = rp_tex_gen;
 	t->sky = sky;
 	/* wrap (repeat 0) both ways, the sizes, RGB565, the chain's last level */
@@ -4380,12 +4432,16 @@ void RP_StudioVertsFixed( int count, const byte *bones, const float ( *bm )[3][4
 	}
 }
 
-/* The skins in the atlas, found by their texels' address. */
+/* The skins in the atlas, found by their image's upload and place
+   (R335: the texels' address was the key, but the 8-bit textures' 16-bit
+   pixels move when rebuilt, and a freed address could come back as
+   another texture's). */
 #define RP_SKINS 512
 
 typedef struct
 {
-	const pixel_t *pixels;
+	uint32_t       key; /* RP_SkinKey's; 0 an empty slot */
+	uint32_t       off; /* a picture tile's first texel in the image */
 	uint16_t       w, h;
 	uint8_t        pg, qx, qy, masked;
 	int            gen;
@@ -4477,10 +4533,23 @@ void RP_StudioMeshFlags( int flags )
 	rp_mesh_flags = flags;
 }
 
+/* An image's upload, what it is drawn as (0 a skin, 1 a picture) and which
+   of its copies (1 the alpha one), as one number never 0. */
+static inline uint32_t RP_SkinKey( const image_t *img, int kind, int alpha )
+{
+	return img->rp_serial << 2 | (uint32_t)kind << 1 | (uint32_t)( alpha != 0 );
+}
+
+static inline uint32_t RP_SkinSlot( uint32_t key, uint32_t off )
+{
+	return ( key * 2654435761u ^ off * 40503u ) % RP_SKINS;
+}
+
 int RP_StudioSkin( void )
 {
-	const pixel_t *px = r_affinetridesc.pskin;
+	image_t       *img = r_skin_img;
 	int            w = r_affinetridesc.skinwidth, h = r_affinetridesc.skinheight;
+	uint32_t       key;
 	uint32_t       slot;
 	rp_skin_t     *e;
 	const void    *what;
@@ -4489,7 +4558,7 @@ int RP_StudioSkin( void )
 	uint32_t       tsp;
 
 	rp_cur_skin = NULL;
-	if( !px || w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE )
+	if( !img || !R_TexLoaded( img ) || w < 1 || h < 1 || w > RP_PAGE_SIDE || h > RP_PAGE_SIDE )
 	{
 		rp_count.meshes_skipped++;
 		return 0;
@@ -4510,11 +4579,12 @@ int RP_StudioSkin( void )
 		memset( rp_skin, 0, sizeof( rp_skin ));
 		rp_skin_world = WORLDMODEL;
 	}
-	slot = (uint32_t)( (uintptr_t)px >> 4 ) % RP_SKINS;
+	key = RP_SkinKey( img, 0, r_skin_alpha );
+	slot = RP_SkinSlot( key, 0 );
 	for( int i = 0;; i++ )
 	{
 		e = &rp_skin[( slot + i ) % RP_SKINS];
-		if( !e->pixels || ( e->pixels == px && e->w == w && e->h == h ))
+		if( !e->key || ( e->key == key && e->off == 0 && e->w == w && e->h == h ))
 			break;
 		if( i == RP_SKINS - 1 )
 		{
@@ -4523,10 +4593,11 @@ int RP_StudioSkin( void )
 		}
 	}
 
-	if( !e->pixels || e->gen != rp_page[e->pg].gen )
+	if( !e->key || e->gen != rp_page[e->pg].gen )
 	{
 		int x, y, pg, masked = 0;
 		uint64_t t0 = rp_time_us();
+		const pixel_t *px;
 
 		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &x, &y );
 		if( pg < 0 )
@@ -4534,10 +4605,17 @@ int RP_StudioSkin( void )
 			rp_count.meshes_skipped++;
 			return 0;
 		}
+		px = R_SkinPix( ); /* R335: its pixels only now, to write them */
+		if( !px )
+		{
+			rp_count.meshes_skipped++;
+			return 0;
+		}
 		for( int i = 0; i < w * h && !masked; i++ )
 			masked = px[i] == TRANSPARENT_COLOR;
 		RP_SkinUpload( px, w, h, pg, x, y, masked );
-		e->pixels = px;
+		e->key = key;
+		e->off = 0;
 		e->w = (uint16_t)w;
 		e->h = (uint16_t)h;
 		e->pg = (uint8_t)pg;
@@ -5755,12 +5833,14 @@ static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, 
 		}
 }
 
-/* A picture tile's place in the atlas (the skins' table, keyed by its first
-   texel's address), uploaded when new or its page was dropped; NULL when
-   there is no room (the tile not drawn this frame, counted). */
-static const rp_skin_t *RP_PicPlace( const pixel_t *src, int stride, int w, int h, int fmt )
+/* A picture tile's place in the atlas (the skins' table, keyed by its
+   image's upload and its first texel `off` there), uploaded when new or its
+   page was dropped; NULL when there is no room (the tile not drawn this
+   frame, counted). */
+static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int w, int h, int fmt )
 {
-	uint32_t   slot = (uint32_t)( (uintptr_t)src >> 1 ) % RP_SKINS;
+	uint32_t   key = RP_SkinKey( img, 1, fmt );
+	uint32_t   slot = RP_SkinSlot( key, off );
 	rp_skin_t *e;
 
 	if( rp_skin_world != WORLDMODEL )
@@ -5771,21 +5851,25 @@ static const rp_skin_t *RP_PicPlace( const pixel_t *src, int stride, int w, int 
 	for( int i = 0;; i++ )
 	{
 		e = &rp_skin[( slot + i ) % RP_SKINS];
-		if( !e->pixels || ( e->pixels == src && e->w == w && e->h == h ))
+		if( !e->key || ( e->key == key && e->off == off && e->w == w && e->h == h ))
 			break;
 		if( i == RP_SKINS - 1 )
 			return NULL;
 	}
-	if( !e->pixels || e->gen != rp_page[e->pg].gen )
+	if( !e->key || e->gen != rp_page[e->pg].gen )
 	{
 		int      x, y, pg;
 		uint64_t t0 = rp_time_us();
+		const pixel_t *src = fmt ? R_TexAlpha( img ) : R_TexPix( img, 0 ); /* R335: only now */
 
+		if( !src )
+			return NULL;
 		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &x, &y );
 		if( pg < 0 )
 			return NULL;
-		RP_PicUpload( src, stride, w, h, pg, x, y, fmt );
-		e->pixels = src;
+		RP_PicUpload( src + off, stride, w, h, pg, x, y, fmt );
+		e->key = key;
+		e->off = off;
 		e->w = (uint16_t)w;
 		e->h = (uint16_t)h;
 		e->pg = (uint8_t)pg;
@@ -5867,14 +5951,12 @@ static void RP_2DQuad( float x0, float y0, float x1, float y1, float u0, float v
 /* R_DrawStretchPic: the picture's (s1, t1)-(s2, t2) (0 to 1) at (x, y), w x h. */
 void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const image_t *pic )
 {
-	const pixel_t *src;
 	int            fmt, pw, ph, tile;
 	float          S1, T1, S2, T2;
 
-	if( rp_emit_on != 2 || !pic || !pic->pixels[0] || w <= 0.0f || h <= 0.0f || s1 >= s2 || t1 >= t2 )
+	if( rp_emit_on != 2 || !pic || !R_TexLoaded( pic ) || w <= 0.0f || h <= 0.0f || s1 >= s2 || t1 >= t2 )
 		return;
-	fmt = pic->alpha_pixels != NULL;
-	src = fmt ? pic->alpha_pixels : pic->pixels[0];
+	fmt = R_TexHasAlpha( pic );
 	pw = pic->width;
 	ph = pic->height;
 	if( pw < 1 || ph < 1 )
@@ -5896,7 +5978,7 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 
 			if( a0 >= a1 || b0 >= b1 )
 				continue;
-			e = RP_PicPlace( src + (size_t)ty * pw + tx, pw, tw, th, fmt );
+			e = RP_PicPlace( (image_t *)pic, (uint32_t)( ty * pw + tx ), pw, tw, th, fmt );
 			if( !e )
 			{
 				rp_count.pics_skipped++;
@@ -6021,11 +6103,11 @@ static int RP_FxSetup( rp_fxctx_t *c )
 	const rp_skin_t *e = NULL;
 	int              fmt = 0, pg;
 
-	if( img && img->pixels[0] && img->width >= 1 && img->height >= 1
+	if( img && R_TexLoaded( img ) && img->width >= 1 && img->height >= 1
 		&& img->width <= RP_PAGE_SIDE && img->height <= RP_PAGE_SIDE )
 	{
-		fmt = mode != kRenderTransAdd && mode != kRenderGlow && img->alpha_pixels;
-		e = RP_PicPlace( fmt ? img->alpha_pixels : img->pixels[0], img->width, img->width, img->height, fmt );
+		fmt = mode != kRenderTransAdd && mode != kRenderGlow && R_TexHasAlpha( img );
+		e = RP_PicPlace( (image_t *)img, 0, img->width, img->width, img->height, fmt );
 	}
 	if( e )
 	{

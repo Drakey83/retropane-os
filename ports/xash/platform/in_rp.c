@@ -401,16 +401,45 @@ static void RP_WalkScore( void )
 	RP_ScoreAs( "rp-walk" );
 }
 
+/* R335 (the owner, 2026-11-19: "are there hitches in the fight scene?"):
+   each frame's own time beside the window's: the slowest frame and the
+   frames over 50 and 100 ms (ref_rp's R335 line says which of its own slow
+   frames rebuilt a texture: that counter is in another module). */
 /* The walk's score under another yardstick's name (kit 78: the cascade). */
 static void RP_ScoreAs( const char *what )
 {
-	static uint32_t frames;
-	static uint64_t t0, from;
+	static uint32_t frames, worst_us, worst_at, over50, over100;
+	static uint64_t t0, from, last;
 	uint64_t        now = rp_time_us();
 
 	if( !frames )
-		t0 = from = now;
+		t0 = from = last = now;
+	else
+	{
+		uint32_t dt = (uint32_t)( now - last );
+
+		if( dt > worst_us )
+		{
+			worst_us = dt;
+			worst_at = frames + 1;
+		}
+		/* each hitch on its own line, in the log's order with the
+		   runner's card lines (-rpplayopens): what fell inside it */
+		if( dt > 50000u )
+			fprintf( stderr, "%s: frame %u took %u ms (%u to %u ms on rp_time_us)\n", what, frames + 1, dt / 1000u,
+				(uint32_t)( last / 1000u ), (uint32_t)( now / 1000u ));
+		over50 += dt > 50000u;
+		over100 += dt > 100000u;
+	}
+	last = now;
 	frames++;
+	if( frames % RP_WALK_WINDOW == 0 )
+	{
+		fprintf( stderr, "%s: frames %u-%u one by one: the slowest %u.%u ms (frame %u), %u over 50 ms, %u over 100 ms; the window ends at %u ms on rp_time_us (the samples' step mark)\n",
+			what, frames - RP_WALK_WINDOW + 1, frames, worst_us / 1000u, worst_us / 100u % 10u, worst_at, over50, over100,
+			(uint32_t)( now / 1000u ));
+		worst_us = worst_at = over50 = over100 = 0;
+	}
 	if( frames % RP_WALK_WINDOW == 0 )
 	{
 		uint32_t ms = (uint32_t)(( now - from ) / 1000u ), all = (uint32_t)(( now - t0 ) / 1000u );

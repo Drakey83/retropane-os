@@ -1757,6 +1757,67 @@ keeps the local matrices of every model with no blends or controllers:
 the gibs and shells; the soldiers animate). What it means: the exact
 levers left in the fight are each under ~1%.
 
+**Kit 120, texture memory (R335; the owner: "memory first").** Run 259,
+the owner's free play on c2a5f, ran out of the 38 MiB heap 7 s in; run
+260's `rp_memsum` put 12.4 MiB of it in the textures' pixels
+(`r_image.c`: every texture, skin, sprite and HUD picture as 16-bit
+`pixel_t` at four mip levels, plus an alpha copy). Who reads them once
+the 2700G holds a texture (proven by reading every use): ref_rp's texture
+pool when it writes a texture's chain at first use or after a pool reset
+(`RP_TexPlace`), the atlas when it writes a skin or a picture at first
+use or after its page was dropped (`RP_StudioSkin`, `RP_PicPlace`), and
+ref_soft's own paths: the surface cache for faces still lit on the CPU
+(decals, see-through, conveyors, no room: `R_DrawSurface`, any level),
+the software triangles (`rp_both`, `-rpendshot`'s software frame, sprites
+and skins through `GL_Bind`), the 2D pictures, the software sky and
+water. So the pixels can't simply go after the upload, and reading the
+WAD or map again (ref_gl's way when its context is lost) would put card
+reads into play frames.
+
+| | The vendor's or the textbook's way | Ours | Why ours wins |
+|---|---|---|---|
+| A texture's pixels in RAM | Quake and GoldSrc: 8-bit texels and a palette, read through the palette on every texel; Xash's `ref_soft`: 16-bit at four levels plus an alpha copy (2.7-3.7 bytes a texel); `ref_gl`: given to GL, read from the file again when needed | a texture of at most 256 colours (found from its own RGBA texels at upload, so any source and any processing before the upload counts) keeps its 8-bit indices and those exact colours; its 16-bit levels are rebuilt only when a reader asks, by the upload's own code on the same bytes (level 0 a 256-entry table made by that code, the coarser levels by `GL_BuildMipMap` on the expanded colours), into a 1 MiB ring made once (Quake's surface-cache allocator: the oldest blocks give way, a block handed out this frame never does; a heap block only when the ring can't, freed the next frame); the atlas and the pool keyed by a number for each upload, not by the pixels' address | ~1 byte a texel instead of ~2.7; the picture cannot change (the same code on the same bytes: `-rptexcheck` rebuilt all 851 of c2a5f's and compared them with the old way's: 0 differ); no card reads in play; one block for the game's life, so no new holes (R310); the 37 textures with more colours, or too small to gain, stay 16-bit; `-rpnotexpal` the A/B |
+
+GL_Bind no longer fetches a skin's pixels on every bind (the 2700G draws
+from its own copy): the software rasteriser asks for them when it starts
+a triangle (`R_SkinPix`). A texture uploaded again (a remap, an update)
+now frees its old pixels (the old way kept them).
+Runs 261-272 (2026-11-19, the X51v): the heap's peak on c2a5f **31 MiB**
+(run 257's 37 of 38; run 261 with `-rpmemlist`, the ref_soft zone 6.9
+MiB where it was ~12.8), the cascade's **26 MiB** (run 255's 32). Of
+c2a5f's 898 textures 861 keep 8 bits (4,644 KiB, 7,270 KiB saved before
+the ring's 1,024), 37 stay 16-bit (1,034 KiB). The pictures: the cascade
+**0 pixels** from run 255's (run 263); the fight 0 pixels from run 258's
+(run 264), 123 in run 265 (as between runs 257 and 258); run 261 with
+`-rpmemlist` byte for byte run 260's. The frame rate: fight **24.5 /
+27.7** (run 264; kit 119 24.6 / 27.7, 10,167 ms for the first 250 frames
+against 10,151 and kit 118's 10,135), cascade 36.6 / 31.4 (36.7 / 31.7;
+none of its 74 extra samples in the new code: spread). Run 262 rebuilt all
+four levels for skins and pictures that read only level 0 (fight 24.4):
+level 0 is now the table, the coarser levels only when asked. The ring in
+play: ~178 rebuilds while the fight's models first appear (the slowest
+10.3 ms, in 9 of the 39 frames over 50 ms of frames 1-250), none after;
+nothing went to the heap after that fix.
+
+**The fight's hitches (the owner: "are there hitches in the fight
+scene?").** Each frame now timed (`rp-fight: frame N took ...` over 50
+ms, the window's slowest; `rp-emit: R335 frame by frame` beside it):
+frames 1-250 have 39 over 50 ms and 2 over 100 (frame 157: 266 ms),
+frames 251-500 17 and 3 (frame 433: 258 ms, 301: 193 ms), the same frames
+in every run, old textures (run 269) or new (runs 265, 270, 272): they
+are not R335's. `-rpplayopens` (the runner: each file opened and each
+card read once the game plays) shows the card is not it either: the
+fight reads only spoken words (the HEV suit's `fvox/*`, the soldiers'
+`hgrunt/*`, `aslave/*`; GoldSrc's `VOX_FreeWord` frees a word not marked
+cached after it plays, so `fvox/_comma.wav` is read a dozen times), 2-18
+ms each, none of them inside the big frames. The samples of those frames
+(pinned to the clock by the windows' step marks) are the soldiers'
+planning: `CBaseMonster::FindCover`, `CGraph::FindShortestPath` and
+`CheckNode`, `FGetNodeRoute`, `CheckLocalMove`, `CHGrunt::
+CheckRangeAttack2`, each asking the engine for dozens of movement traces
+in one frame (`SV_Move`, `SV_ClipToLinks`, `SV_ClipToEntity`,
+`PM_RecursiveHullCheck`, `SV_WaterLinks`): R336.
+
 ## What ref_rp is
 
 - **One emitter replaces the rasterisers.** Every surface, triangle,
