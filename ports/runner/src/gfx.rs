@@ -797,14 +797,14 @@ const CURVES: [(&str, u32, [u8; 17]); 4] = [
     ),
 ];
 
-/// R343: the look a game gets without the picker: M70 with Half-Life's
+/// R343: the look a game gets without the picker: M75 with Half-Life's
 /// `brightness` 1 (the light lifted, not the picture), the owner's pick
-/// from run 291 ("m70 looks best"); before it M60, his pick from run 290 ("m60 looks the best too me with the highlights and
+/// from run 292 ("i think i like m75"); M70 his pick from run 291; before it M60, his pick from run 290 ("m60 looks the best too me with the highlights and
 /// viewability but the midtones are now lost"): a whole-picture curve
 /// trades the midtones' separation for the darks' lift; the next step
 /// lifts the light, not the picture (Half-Life's own split: its
 /// `brightness` lifts the lightmaps and keeps the textures' contrast).
-const LOOK_DEFAULT: usize = 1;
+const LOOK_DEFAULT: usize = 3;
 
 /// R341/R343: the backlight while a game plays and its registers as found
 /// (`CR`, `PCR`, `DCR`, put back at the close): each look of [`CURVES`]
