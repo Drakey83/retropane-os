@@ -120,8 +120,8 @@ pub fn args() -> String {
 /// The owner, run 46: "i would like the flashlight key and the secondary
 /// fire keys to be on the screen like i originally read, home to bring up
 /// the menu, and wifi/record to switch through weapons": Home (Y_BUTTON)
-/// `togglemenu`, Record (L1_BUTTON) the next weapon, the wireless button
-/// (R1_BUTTON) the one before; the two touch keys (`rp_hl_keys.h`) send
+/// `togglemenu`, Record (L1_BUTTON) the weapon before, the wireless button
+/// (R1_BUTTON) the next (swapped by the owner, 2026-11-20, run 277); the two touch keys (`rp_hl_keys.h`) send
 /// C_BUTTON (the flashlight, `impulse 100`) and Z_BUTTON (the second
 /// fire). Every one an engine key, so the game's Controls menu remaps it.
 /// `sensitivity 12.8` (the owner, run 46: the stylus look "not nearly
@@ -138,8 +138,8 @@ bind A_BUTTON +jump
 bind B_BUTTON +use
 bind X_BUTTON +duck
 bind Y_BUTTON togglemenu
-bind L1_BUTTON invnext
-bind R1_BUTTON invprev
+bind L1_BUTTON invprev
+bind R1_BUTTON invnext
 bind C_BUTTON impulse 100
 bind Z_BUTTON +attack2
 unbind MOUSE1
