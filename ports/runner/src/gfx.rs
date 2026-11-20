@@ -701,6 +701,22 @@ const TA_LIMIT_US: u32 = 500_000;
 /// none finish late (most 16.4 ms at 136.50), so a hang costs 50 ms, not
 /// 200.
 const RENDER_LIMIT_US: u32 = 50_000;
+/// The cores' clock [`RENDER_LIMIT_US`] was set for: the game step's
+/// 125.67 / 1.
+const LIMIT_CORE_KHZ: u32 = 125_667;
+
+/// A render's limit at the rung the 2700G runs (`None`: Windows Mobile's,
+/// 99.67 / 2): [`RENDER_LIMIT_US`] times how much slower the cores run
+/// than at the game step, never less. Run 280: after R344's rebuild at
+/// Windows Mobile's clock (the cores at ~50 MHz) renders took 35-46 ms on
+/// average where they took 15-22 at 117.00 / 1, and every one past 50 ms
+/// was called a hang (832 of them, the frame thrown away: the owner's
+/// flashing, 19 fps).
+fn render_limit_us(rung: Option<clock::Rung>) -> u32 {
+    let core = rung.map_or(clock::Speed::WM.khz() / 2, clock::Rung::core_khz).max(1);
+    let scaled = u64::from(RENDER_LIMIT_US) * u64::from(LIMIT_CORE_KHZ) / u64::from(core);
+    scaled.clamp(u64::from(RENDER_LIMIT_US), 400_000) as u32
+}
 /// R343 (the owner, 2026-11-20: the dark areas muddy, the panel's black a
 /// grey): tone curves for the display's gamma table (`GFXGAM0`-`16`, 17
 /// points, applied at scan-out: no cost a frame), as the mock-up
@@ -894,6 +910,10 @@ fn rebuild_chip(regs: &mut Mmio) -> rp_drv_mbx_display::rebuild::Rebuilt {
     set_cs3(clock::CS3_LONG);
     let r = rp_drv_mbx_display::rebuild::run(regs, rt::delay_us);
     set_cs3(clock::CS3_WM);
+    // our time-out, not Linux's longest the rebuild leaves (run 280: 8.9 s
+    // an access to a wedged chip)
+    let cfg = regs.read32(SYSCFG);
+    regs.write32(SYSCFG, syscfg_timeout_on(cfg));
     let clk = regs.read32(MBXCLK);
     clock::restore(regs, with_3d(clk));
     rt::delay_us(1_000);
@@ -1791,6 +1811,7 @@ impl Open {
     fn rebuild(&mut self, regs: &mut Mmio) -> (bool, rp_drv_mbx_display::rebuild::Rebuilt) {
         let r = rebuild_chip(regs);
         self.cur = None;
+        self.limit_us = render_limit_us(None);
         self.rendering = None;
         self.pending = None;
         self.render_b = false;
@@ -2239,7 +2260,7 @@ impl Screen for Chip {
             lay: &LAY_SDRAM,
             words: NONE,
             words_on: true,
-            limit_us: RENDER_LIMIT_US,
+            limit_us: render_limit_us(if stepped { self.rung } else { None }),
             hang_block: None,
             marking: false,
             hang_marks: 0,

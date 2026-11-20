@@ -338,13 +338,27 @@ fn walk(
 /// `0xFFFFFF0C`; ours sets only the field, the low byte (Linux's drive
 /// strength) as found, and puts the found word back at the close.
 pub const SYSCFG: usize = 0x000;
-/// [`SYSCFG`]'s time-out field, at its longest (Dell's and Linux's).
-pub const SYSCFG_TIMEOUT: u32 = 0xFFFF_FF00;
+/// [`SYSCFG`]'s time-out field at its longest (Dell's and Linux's):
+/// measured on the X51v (run 280, 2026-11-20), one access to a wedged
+/// chip ended after ~8.9 s at it (the chain's failure first seen 8.89 s
+/// after its arm: the CPU held in one write, the 1 ms tick unable to run;
+/// the frame froze 17 s over two such accesses before R344's rebuild):
+/// ~530 ns a count of the field, if linear.
+pub const SYSCFG_TIMEOUT_LONGEST: u32 = 0xFFFF_FF00;
+/// Ours: field `0x010000`, ~35 ms by run 280's measure. Every access the
+/// chip answers takes under a microsecond (the slowest status read under
+/// DMA, 2 us in runs 279-280), and the longest wait it may hold the bus
+/// for on purpose, a full TA FIFO, is bounded by a whole scene's TA time
+/// (14 ms at the most in runs 279-280); so 35 ms ends only a wedge, two
+/// hundred and fifty times sooner. Rule 0: Dell and Linux set the longest
+/// because their drivers never meet a wedged chip mid-game.
+pub const SYSCFG_TIMEOUT: u32 = 0x0100_0000;
+const SYSCFG_FIELD: u32 = 0xFFFF_FF00;
 
-/// [`SYSCFG`] with the time-out on and the rest as `found`.
+/// [`SYSCFG`] with our time-out and the rest as `found`.
 #[must_use]
 pub const fn syscfg_timeout_on(found: u32) -> u32 {
-    found | SYSCFG_TIMEOUT
+    (found & !SYSCFG_FIELD) | SYSCFG_TIMEOUT
 }
 
 /// R340: a status read the chip answers takes well under a microsecond
@@ -366,14 +380,17 @@ pub const fn bus_timed_out(ticks: u32) -> bool {
 mod tests {
     use super::*;
 
-    /// R340's guard: the time-out on keeps the low byte, is the field at
-    /// its longest, and is the same if set twice.
+    /// R340's guard: the time-out on keeps the low byte, is ours (never
+    /// the longest, run 280's 8.9 s an access), replaces any field found
+    /// (Linux's after a rebuild), and is the same if set twice.
     #[test]
     fn syscfg_timeout_on_sets_the_field_only() {
-        assert_eq!(syscfg_timeout_on(0), 0xFFFF_FF00);
-        assert_eq!(syscfg_timeout_on(0x0C), 0xFFFF_FF0C);
-        assert_eq!(syscfg_timeout_on(syscfg_timeout_on(0x0C)), 0xFFFF_FF0C);
+        assert_eq!(syscfg_timeout_on(0), 0x0100_0000);
+        assert_eq!(syscfg_timeout_on(0x0C), 0x0100_000C);
+        assert_eq!(syscfg_timeout_on(0xFFFF_FF0C), 0x0100_000C);
+        assert_eq!(syscfg_timeout_on(syscfg_timeout_on(0x0C)), 0x0100_000C);
         assert_eq!(syscfg_timeout_on(0x1234_56AB) & 0xFF, 0xAB);
+        assert_ne!(SYSCFG_TIMEOUT, SYSCFG_TIMEOUT_LONGEST);
     }
 
     /// R340's guard: a read the chip answers is never a time-out (a
