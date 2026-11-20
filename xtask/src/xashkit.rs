@@ -92,7 +92,7 @@ pub const LOW_MEMORY: u8 = 1;
 pub fn args() -> String {
     with_extra(
         format!(
-            "+map {} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {} -console +cl_nopred 0 +cl_lw 0 +rp_defaults {LAYOUT}",
+            "+map {} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {} -console +cl_nopred 0 +cl_lw 1 +rp_defaults {LAYOUT}",
             map(),
             play_secs(),
             limit_secs(),
@@ -688,7 +688,7 @@ engine c
     }
 
     fn base_for_test() -> String {
-        "+map c2a5f -rpfps -rpend 900 -rplimit 4500 -rpendshot -rpsample -rpfloat -rpbase /rp-xash/game -rodir /Ports -rpclock 29 3 0 1 -console +cl_nopred 0 +cl_lw 0 +rp_defaults 3".to_string()
+        "+map c2a5f -rpfps -rpend 900 -rplimit 4500 -rpendshot -rpsample -rpfloat -rpbase /rp-xash/game -rodir /Ports -rpclock 29 3 0 1 -console +cl_nopred 0 +cl_lw 1 +rp_defaults 3".to_string()
     }
 
     #[test]
