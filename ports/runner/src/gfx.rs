@@ -858,6 +858,26 @@ const GFX_UNDERRUN: u32 = 1 << 4;
 /// there) and the timed status read.
 use rp_port::gfx::{SYSCFG, bus_timed_out, syscfg_timeout_on};
 
+/// R340: the 3D core's events Dell's interrupt handler acts on and ours
+/// never did (`ddi_2700g` `0x021192b4`, read 2026-11-20; Windows Mobile
+/// enables them all, `0x130` = `0x87F5`; `0x12c` reads raw whatever the
+/// enables, run FI, so ours enables them only to match): bit 5, after which Dell writes `0x804` = 1 at once if the 3D
+/// stage is idle, else as soon as its render ends (`0x02119088`); bits 7
+/// and 8 (the manager's and a context store's done); bit 9, after which
+/// Dell's GLES writes `0x834` = 1 and waits for bits 6 and 7. The reading:
+/// bit 5 is the TA asking for parameter memory back, which kit 113's
+/// overlap (two scenes in one parameter memory) makes possible in a heavy
+/// scene: unanswered, the TA stops taking words, the chain's DMA into it
+/// never ends and the chip's host path wedges (R340: every free play with
+/// overlap stalled at 1-11 minutes, run 279 without it none in 11.5).
+const EV_TA_MEM: u32 = 1 << 5;
+const EV_7: u32 = 1 << 7;
+const EV_8: u32 = 1 << 8;
+const EV_9: u32 = 1 << 9;
+const EVENTS: u32 = EV_TA_MEM | EV_7 | EV_8 | EV_9;
+/// The TA block's word Dell writes 1 to after bit 5.
+const TA_MEM_BACK: usize = 0x804;
+
 /// R340: the slowest status read since the last report (OS timer ticks),
 /// and the reads ended by the time-out.
 static READS: rt::Global<(u32, u32)> = rt::Global::new((0, 0));
@@ -1060,6 +1080,10 @@ struct Counts {
     /// across the reports).
     chain_fails_row: u32,
     cpu_fails_row: u32,
+    /// R340: events seen since the screen opened (bits 5, 7, 8, 9), and
+    /// `0x804` writes made for bit 5.
+    ev: [u32; 4],
+    ev_answered: u32,
     /// R344: full resets and rebuilds since the screen opened, and those
     /// after which the TA's memory manager came up.
     rebuilds: u32,
@@ -1124,6 +1148,8 @@ struct Open {
     curve: Option<(usize, u32, [u32; 17], u32)>,
     /// R343: the Record presses already stepped ([`CURVE_KEY`]).
     curve_seen: u32,
+    /// R340: bit 5 seen while a render ran: `0x804` owed at its end.
+    mem_owed: bool,
     bar_hangs: u32,
     /// Kit 113 (ref-rp.md): the TA takes frame N + 1 while the 3D stage
     /// draws frame N, the two scenes in two tail buffers and region
@@ -1220,6 +1246,8 @@ impl Chip {
                 run_hangs: 0,
                 chain_fails_row: 0,
                 cpu_fails_row: 0,
+                ev: [0; 4],
+                ev_answered: 0,
                 rebuilds: 0,
                 rebuilds_ok: 0,
                 gap_us: 0,
@@ -1331,6 +1359,15 @@ impl Chip {
                 }
             }
             Settled::Failed { dma } => {
+                if c.run_hangs < HANGS_SAID {
+                    let st = regs.read32(MBX + reg::STATUS);
+                    let en = regs.read32(MBX + reg::ENABLE);
+                    log(format_args!(
+                        "rp-gfx: R340: at the failed chain the core's status 0x{st:08x}, enables 0x{en:08x}; bit 5 {}, owed {}",
+                        if st & EV_TA_MEM != 0 { "set" } else { "clear" },
+                        o.mem_owed
+                    ));
+                }
                 c.ta_hangs += 1;
                 c.run_hangs += 1;
                 c.chain_fails_row += 1;
@@ -1492,12 +1529,24 @@ impl Chip {
             c.rebuilds,
             c.rebuilds_ok
         ));
+        if c.ev.iter().any(|&e| e != 0) {
+            (self.log)(format_args!(
+                "rp-gfx: R340: the core's events since the open: bit 5 {} ({} answered with 0x804), bit 7 {}, bit 8 {}, bit 9 {}",
+                c.ev[0],
+                c.ev_answered,
+                c.ev[1],
+                c.ev[2],
+                c.ev[3]
+            ));
+        }
         self.counts = Counts {
             run_hangs: c.run_hangs,
             chain_fails_row: c.chain_fails_row,
             cpu_fails_row: c.cpu_fails_row,
             rebuilds: c.rebuilds,
             rebuilds_ok: c.rebuilds_ok,
+            ev: c.ev,
+            ev_answered: c.ev_answered,
             ..Counts::default()
         };
         self.since = rt::ticks();
@@ -1840,6 +1889,46 @@ impl Open {
             Err(_) => false,
         };
         (ok, r)
+    }
+
+    /// R340: Dell's answer to the core's events ([`EVENTS`]): each enabled,
+    /// acknowledged and counted; bit 5 answered with `0x804` = 1 at once
+    /// if no render runs, else once it has ended. Called from the 1 ms
+    /// pump and before each frame (one status read, ~1 us).
+    fn chip_events(&mut self, regs: &mut Mmio, c: &mut Counts, log: fn(Arguments<'_>)) {
+        let en = regs.read32(MBX + reg::ENABLE);
+        if en & EVENTS != EVENTS {
+            // a core reset clears the enables
+            regs.write32(MBX + reg::ENABLE, en | EVENTS);
+            self.en |= EVENTS;
+        }
+        let Some(st) = status(regs) else {
+            return;
+        };
+        let ev = st & EVENTS;
+        if ev != 0 {
+            regs.write32(MBX + reg::CLEAR, ev);
+            for (k, bit) in [EV_TA_MEM, EV_7, EV_8, EV_9].into_iter().enumerate() {
+                if ev & bit != 0 {
+                    c.ev[k] += 1;
+                    if c.ev[k] <= 3 {
+                        log(format_args!(
+                            "rp-gfx: R340: the core's event bit {} (status 0x{st:08x}, a render {})",
+                            bit.trailing_zeros(),
+                            if self.rendering.is_some() { "running" } else { "idle" }
+                        ));
+                    }
+                }
+            }
+            if ev & EV_TA_MEM != 0 {
+                self.mem_owed = true;
+            }
+        }
+        if self.mem_owed && (self.rendering.is_none() || st & m3::RENDER_DONE != 0) {
+            self.mem_owed = false;
+            regs.write32(MBX + TA_MEM_BACK, 1);
+            c.ev_answered += 1;
+        }
     }
 
     /// Waits for the render in flight, if any: how long it took to be seen
@@ -2278,6 +2367,7 @@ impl Screen for Chip {
             bar_frames: 0,
             curve: None,
             curve_seen: 0,
+            mem_owed: false,
             bar_hangs: 0,
             overlap: self.overlap
                 && self.chain.is_some()
@@ -2743,6 +2833,7 @@ impl Screen for Chip {
         else {
             return;
         };
+        o.chip_events(regs, &mut self.counts, self.log);
         if ch.busy() {
             let s = ch.pump(regs);
             Self::settled(
