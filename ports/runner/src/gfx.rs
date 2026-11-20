@@ -1558,6 +1558,9 @@ impl Chip {
     /// screen (R340's escalation, `why`); the frame not drawn, and the
     /// error the program gets: its textures are gone (`Errno::Stale`).
     fn rebuild_now(&mut self, why: &str) -> Errno {
+        // ADR-0035 rule 6 as the owner changed it (2026-11-20): back to the
+        // game's clock after a rebuild, unless the last was within a minute
+        let recent = self.rebuilt_at.is_some_and(|(t, _)| us_since(t) < 60_000_000);
         let gap = self
             .rebuilt_at
             .map_or(REBUILD_GAP_US, |(_, g)| (g * 2).min(REBUILD_GAP_MOST_US));
@@ -1575,7 +1578,29 @@ impl Chip {
         }
         let t0 = rt::ticks();
         let (ok, r) = o.rebuild(regs);
+        let mut back = "kept at Windows Mobile's (a second rebuild within a minute)";
+        if ok
+            && !recent
+            && let Some(rung) = self.rung.filter(|&g| rung_allowed(g))
+        {
+            back = match clock::step(regs, rung, rt::delay_us, set_cs3) {
+                Some(a) if a.unwritten == 0 => {
+                    o.cur = Some(rung);
+                    o.stepped = true;
+                    o.limit_us = render_limit_us(Some(rung));
+                    "stepped back to the game's"
+                }
+                _ => {
+                    let _ = clock::put_back(regs, rt::delay_us, set_cs3);
+                    "NOT taken: Windows Mobile's kept"
+                }
+            };
+            let _ = underrun_take(regs);
+        }
         let us = us_since(t0);
+        if n <= REBUILDS_SAID {
+            (self.log)(format_args!("rp-gfx: R344: after the rebuild the 2700G's clock {back}"));
+        }
         self.counts.rebuilds = n;
         self.counts.rebuilds_ok += u32::from(ok);
         if n <= REBUILDS_SAID {
