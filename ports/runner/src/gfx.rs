@@ -1034,6 +1034,50 @@ pub static QUIET: rt::Global<Quiet> = rt::Global::new(Quiet {
     cut_at: (0, 0),
 });
 
+/// R340 (2026-11-21): the core's event bit 9, the lead after runs
+/// 293-298. Counted since run 281 and never answered: 5 events in the run
+/// that never stalled (295, standing), 111 to 1,768 in the runs that did
+/// (298, 297, 293). Dell's handler turns it into a flag (`ddi_2700g`
+/// `0x021192b4`, `+0xc4`) that its GLES acts on before it feeds the TA
+/// again (`libGLES_CL` `0x0227038c`): the scene ended early (`0xF0000000`
+/// into the TA with `0x85C` bit 7), the TA's done waited for, `0x834` = 1,
+/// bits 6 and 7 waited for, then the render. Dell also asks the TA's FIFO
+/// for room before every word; ours feeds a whole frame by DMA and lets
+/// the chip hold the bus while its FIFO is full. The reading: a TA that
+/// raised bit 9 has stopped taking words until it is answered; the DMA
+/// fills the FIFO behind it (a stall begins 40 to 80 descriptors into
+/// the TA's words: runs 276, 278, 298), the next write holds the bus for
+/// good, and every other access, the status reads too, times out behind
+/// it: the silent chip. Unproven: what is kept here is where in a chain
+/// each event comes, and at a stall how long before it the last one was;
+/// and a lever (`-rpev9`): `0x834` = 1 once no render is in flight, as
+/// bit 5's `0x804`.
+#[derive(Clone, Copy)]
+pub struct Ev9 {
+    /// `-rpev9`: answered with `0x834` = 1.
+    pub answer: bool,
+    owed: bool,
+    answered: u32,
+    /// Events seen with no chain in flight, in a chain's first 128
+    /// descriptors, and later in it.
+    idle: u32,
+    early: u32,
+    late: u32,
+    /// The last event: when (OS timer ticks) and at which descriptor
+    /// (`u32::MAX`: no chain).
+    last: Option<(u32, u32)>,
+}
+pub static EV9: rt::Global<Ev9> = rt::Global::new(Ev9 {
+    answer: false,
+    owed: false,
+    answered: 0,
+    idle: 0,
+    early: 0,
+    late: 0,
+    last: None,
+});
+const TA_EV9_ANSWER: usize = 0x834;
+
 /// R340: the lever's write after a render seen ending.
 fn mem_back(regs: &mut Mmio, overlap: bool) {
     if overlap
@@ -1874,6 +1918,17 @@ impl Chip {
                 q.cut_at.1
             ));
         }
+        let e9 = EV9.with(|e| *e);
+        if e9.idle + e9.early + e9.late > 0 || e9.answer {
+            (self.log)(format_args!(
+                "rp-gfx: R340 event bit 9 since the open: {} with no chain in flight, {} in a chain's first 128 descriptors, {} later in a chain; {} answered with 0x834 ({})",
+                e9.idle,
+                e9.early,
+                e9.late,
+                e9.answered,
+                if e9.answer { "-rpev9" } else { "off" }
+            ));
+        }
         let (mb_on, mb) = MEM_BACK.with(|m| *m);
         if mb_on {
             (self.log)(format_args!(
@@ -2297,7 +2352,13 @@ impl Open {
     /// acknowledged and counted; bit 5 answered with `0x804` = 1 at once
     /// if no render runs, else once it has ended. Called from the 1 ms
     /// pump and before each frame (one status read, ~1 us).
-    fn chip_events(&mut self, regs: &mut Mmio, c: &mut Counts, log: fn(Arguments<'_>)) {
+    fn chip_events(
+        &mut self,
+        regs: &mut Mmio,
+        c: &mut Counts,
+        log: fn(Arguments<'_>),
+        at: Option<u32>,
+    ) {
         let en = regs.read32(MBX + reg::ENABLE);
         if en & EVENTS != EVENTS {
             // a core reset clears the enables
@@ -2329,6 +2390,24 @@ impl Open {
             if ev & EV_TA_MEM != 0 {
                 self.mem_owed = true;
             }
+            if ev & EV_9 != 0 {
+                EV9.with(|e| {
+                    match at {
+                        None => e.idle += 1,
+                        Some(d) if d < 128 => e.early += 1,
+                        Some(_) => e.late += 1,
+                    }
+                    e.last = Some((rt::ticks(), at.unwrap_or(u32::MAX)));
+                    e.owed = e.answer;
+                });
+            }
+        }
+        // the lever: bit 9 answered once no render is in flight
+        if (self.rendering.is_none() || st & m3::RENDER_DONE != 0)
+            && EV9.with(|e| core::mem::replace(&mut e.owed, false))
+        {
+            regs.write32(MBX + TA_EV9_ANSWER, 1);
+            EV9.with(|e| e.answered += 1);
         }
         if self.mem_owed && (self.rendering.is_none() || st & m3::RENDER_DONE != 0) {
             self.mem_owed = false;
@@ -3400,6 +3479,18 @@ impl Screen for Chip {
                     (self.log)(format_args!(
                         "rp-gfx: R340: the chip stopped answering: the frame's chain cut at descriptor {desc}, {us} us after its arm (cut {n})"
                     ));
+                    match EV9.with(|e| e.last) {
+                        Some((t, d)) => (self.log)(format_args!(
+                            "rp-gfx: R340: the last event bit 9 before it: {} us earlier, {}",
+                            us_since(t),
+                            if d == u32::MAX {
+                                "no chain in flight"
+                            } else {
+                                "in a chain"
+                            }
+                        )),
+                        None => (self.log)(format_args!("rp-gfx: R340: no event bit 9 before it")),
+                    }
                 }
             }
             return;
@@ -3409,7 +3500,7 @@ impl Screen for Chip {
         else {
             return;
         };
-        o.chip_events(regs, &mut self.counts, self.log);
+        o.chip_events(regs, &mut self.counts, self.log, ch.descriptor());
         if ch.busy() {
             let s = ch.pump(regs);
             Self::settled(

@@ -2027,6 +2027,13 @@ mod image {
                 "runner: R340 -rptexhold {s}: the program's texture writes wait while the TA and a render are both at work (the first {s} s; 0: the whole run)"
             );
         }
+        if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpev9") {
+            super::gfx::EV9.with(|e| e.answer = true);
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpev9: the core's event bit 9 answered with 0x834 = 1 once no render is in flight"
+            );
+        }
         if args[..arg_count]
             .iter()
             .any(|a| a.to_bytes() == b"-rpmemback")

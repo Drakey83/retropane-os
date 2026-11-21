@@ -167,6 +167,17 @@ impl Chain {
         })
     }
 
+    /// R340: the descriptor the DMA is at while a frame's chain runs (the
+    /// DMA's own registers: no chip access); `None` with no frame in
+    /// flight or the chain already ended.
+    pub fn descriptor(&self) -> Option<u32> {
+        let f = self.flight?;
+        if f.dma_done {
+            return None;
+        }
+        Some(self.dma.registers()[1].wrapping_sub(self.addr(DESC)) / 16)
+    }
+
     /// Whether a frame is in flight.
     pub const fn busy(&self) -> bool {
         self.flight.is_some()
