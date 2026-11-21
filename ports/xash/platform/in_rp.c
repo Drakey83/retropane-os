@@ -652,6 +652,23 @@ static void RP_End( void )
 			fprintf( stderr, "rp-step: 4/5 The map plays.|Its frame rate is|below, new every|5 seconds. It does|not end by itself:|soft reset to stop.\n" );
 	}
 
+	/* -rpmenu (R340, run 300: the game fell back to its menu, and there
+	   the 2700G's event bit 9 came about once a frame, 1,932 in under a
+	   minute, with a stall among them; no texture written, no model, no
+	   flashlight): the game left for its menu 3 s into the map, on
+	   purpose, the run ending by its clock as any: the stall's test bed
+	   with nobody playing. */
+	if( state == 1 && RP_Parm( "-rpmenu" ))
+	{
+		static int left;
+
+		if( !left && now - played_from > 3000000u )
+		{
+			left = 1;
+			fprintf( stderr, "rp-menu: the game left for its menu (-rpmenu)\n" );
+			Cbuf_AddText( "disconnect\n" );
+		}
+	}
 	if( state == 1 && RP_Parm( "-rpwalk" ))
 	{
 		RP_Walk( now - played_from );

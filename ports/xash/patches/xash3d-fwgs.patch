@@ -6326,10 +6326,28 @@ index 8a82400..0fb0ec5 100644
 +	r_ring_size = r_ring_head = 0;
  }
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..292344b 100644
+index 1a7efd6..82a78ac 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
-@@ -308,6 +308,17 @@ typedef struct image_s
+@@ -48,7 +48,16 @@ typedef int fixed16_t;
+ #if XASH_LOW_MEMORY
+ 	#undef MAX_TEXTURES
+ 	#undef MAX_DECAL_SURFS
+-	#define MAX_TEXTURES    1024
++	// RetroPane (run 300, 2026-11-21): 1024 ended a level change (c2a5f
++	// to c2a5e: "MAX_TEXTURES limit exceeds", the game back at its menu).
++	// The engine loads the next map's textures before it frees the last
++	// map's unused ones, so both sets are held for a moment: c2a5f alone
++	// has 893, the two together passed 1,122. A slot is 325 bytes of
++	// zeroed RAM (its name's 256 mostly), so 1536, not Xash's 8192 or a
++	// round 2048: 166 KiB more, with the heap at 34 of its 37.9 MiB in a
++	// level change. A shorter name field would give twice the slots in
++	// less than 1024 take now (R354).
++	#define MAX_TEXTURES    1536
+ 	#define MAX_DECAL_SURFS 256
+ #endif
+ 
+@@ -308,6 +317,17 @@ typedef struct image_s
  	pixel_t        *pixels[4];                              // mip levels
  	pixel_t        *alpha_pixels;                           // mip levels
  
@@ -6347,7 +6365,7 @@ index 1a7efd6..292344b 100644
  	uint           hashValue;
  	struct image_s *nextHash;
  } image_t;
-@@ -340,6 +351,20 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
+@@ -340,6 +360,20 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
  // gl_image.c
  //
  image_t *R_GetTexture( unsigned int texnum );
@@ -6368,7 +6386,7 @@ index 1a7efd6..292344b 100644
  #define GL_LoadTextureInternal( name, pic, flags )   GL_LoadTextureFromBuffer( name, pic, flags, false )
  #define GL_UpdateTextureInternal( name, pic, flags ) GL_LoadTextureFromBuffer( name, pic, flags, true )
  int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags );
-@@ -992,6 +1017,101 @@ typedef struct
+@@ -992,6 +1026,101 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
