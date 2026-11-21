@@ -145,6 +145,7 @@ static struct
 	uint32_t fx_fixed, fx_cut, fx_off, fx_behind; /* kit 114: fx_behind, wholly behind the near plane, dropped in integers; kit 77: the effects' triangles by the fixed-point corners, across the near plane (the software's way), off the screen */
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
+	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
@@ -392,8 +393,8 @@ static void RP_EmitReport( void )
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u\n",
-			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm );
+		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight\n",
+			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -1188,6 +1189,23 @@ least from (its places come back; the faces on it are placed again).
 */
 static int rp_atlas_short;
 
+/*
+R352 (the owner, runs 293-298: textures flashing; "it kinda reminds me of
+what the throwable weapon models were doing"): how many frames back a page
+may still be read by the chip. The rule here was written for one frame in
+flight (a page drawn from in the last frame: wait for its render before
+the page is dropped and written over). Kit 113's overlap keeps two: the
+frame before this one (its TA running or its render waiting) and the one
+before that (its render still drawing). A page last drawn from two frames
+ago was dropped and given to other faces while that render read it: a
+surface drawn for a frame with another surface's texels. Rule 0: a
+desktop driver copies or renames a texture that is in use (memory we do
+not have: 64 MB); ours keeps the cheap rule (the least recently drawn
+page is nearly always far older, so the wait is rare) and counts the
+frames the chip really holds.
+*/
+#define RP_IN_FLIGHT 2
+
 static void RP_AtlasUnjam( void )
 {
 	int least = -1;
@@ -1197,9 +1215,12 @@ static void RP_AtlasUnjam( void )
 		for( int pg = 0; pg < rp_pages; pg++ )
 			if( least < 0 || rp_page[pg].live < rp_page[least].live )
 				least = pg;
-		/* the last frame's render may still read it */
-		if( rp_page[least].used >= tr.framecount - 1 )
+		/* frames in flight may still read it (RP_IN_FLIGHT) */
+		if( rp_page[least].used >= tr.framecount - RP_IN_FLIGHT )
+		{
 			rp_gfx_wait();
+			rp_count.evict_waits++;
+		}
 		RP_PageDrop( &rp_page[least] );
 		rp_count.evicted++;
 		rp_count.unjams++;
@@ -1257,11 +1278,14 @@ static int RP_AtlasAlloc( int w, int h, int *x, int *y )
 		rp_atlas_short = 1;
 		return -1;
 	}
-	/* the render in flight (the last frame's) may read the page: waited for
-	   only then (it is up to a whole render: the hitches, run 41); the
-	   least recently drawn page is mostly older than that */
-	if( rp_page[oldest].used >= tr.framecount - 1 )
+	/* a frame in flight may read the page: waited for only then (it is up
+	   to a whole render: the hitches, run 41); the least recently drawn
+	   page is mostly older than that */
+	if( rp_page[oldest].used >= tr.framecount - RP_IN_FLIGHT )
+	{
 		rp_gfx_wait();
+		rp_count.evict_waits++;
+	}
 	RP_PageDrop( &rp_page[oldest] );
 	rp_count.evicted++;
 	return RP_ShelfFit( &rp_page[oldest], w, h, x, y ) ? oldest : -1;
