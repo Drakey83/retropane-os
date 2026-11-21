@@ -978,6 +978,21 @@ void Platform_RunEvents( void )
 			in_rp.x = ev.x;
 			in_rp.y = ev.y;
 
+			/* R351 (the owner, 2026-11-21: "i cant really select any
+			   different options in the menu"): the menu's cursor goes
+			   where the stylus is before the press reaches it. The engine
+			   asks the platform for a mouse position every frame
+			   (IN_MouseMove: Platform_GetMousePos, then UI_MouseMove), and
+			   a platform without a mouse answers (0, 0): every tap clicked
+			   the screen's corner. Rule 0: a mouse port would keep a cursor
+			   and report it; a touch screen has no cursor between touches,
+			   so ours tells the menu the touch's own place (as the
+			   engine's touch layer does for a finger, in_touch.c) and the
+			   press that follows lands on the control under the stylus;
+			   a drag moves it too (the sliders). */
+			if( cls.key_dest == key_menu )
+				UI_MouseMove( ev.x, ev.y );
+
 			if( ev.code == RP_PEN_DOWN )
 			{
 				in_rp.pen_down = true;
