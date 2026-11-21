@@ -668,6 +668,17 @@ static void RP_End( void )
 			fprintf( stderr, "rp-menu: the game left for its menu (-rpmenu)\n" );
 			Cbuf_AddText( "disconnect\n" );
 		}
+		/* -rpmenutext (run 302: the bare menu, 392 strips a frame, gave 4
+		   events in 3 minutes; run 300's, with the error's console text
+		   over it, 876 strips a frame, gave 70 a second): the console
+		   opened over the menu 2 s later, its text the many small
+		   see-through quads */
+		if( left == 1 && now - played_from > 5000000u && RP_Parm( "-rpmenutext" ))
+		{
+			left = 2;
+			fprintf( stderr, "rp-menu: the console opened over the menu (-rpmenutext)\n" );
+			Cbuf_AddText( "toggleconsole\n" );
+		}
 	}
 	if( state == 1 && RP_Parm( "-rpwalk" ))
 	{
