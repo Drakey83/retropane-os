@@ -504,12 +504,27 @@ the entities a frame; the hint every frame (the runner acts on a change).
 #define RP_HOT_OFF 24
 static int rp_code_hot;
 
-static void RP_CodeHint( void )
+/*
+The models the last scene drew, counted while its list is the scene's own
+(run 301, 2026-11-21: a data abort a frame after "disconnect"). The count
+used to be made at the next frame's start, from the last frame's list; but
+leaving a map frees the entities the list points at before any frame
+clears it, and the menu's frames draw no scene to refill it. Now it is
+taken as a scene is handed over (RP_EmitSubmit), only for a frame that
+drew one (tr.framecount moved), and a frame with no scene counts none.
+*/
+static int rp_hint_n, rp_hint_frame = -1;
+
+static void RP_HintCount( void )
 {
 	int n = 0;
 
-	if( !tr.draw_list )
+	if( !tr.draw_list || tr.framecount == rp_hint_frame )
+	{
+		rp_hint_n = 0; /* no scene this frame (the menu, the console) */
 		return;
+	}
+	rp_hint_frame = tr.framecount;
 	for( uint i = 0; i < tr.draw_list->num_solid_entities; i++ )
 	{
 		const cl_entity_t *e = tr.draw_list->solid_entities[i];
@@ -522,6 +537,13 @@ static void RP_CodeHint( void )
 
 		n += e && e->model && e->model->type == mod_studio;
 	}
+	rp_hint_n = n;
+}
+
+static void RP_CodeHint( void )
+{
+	int n = rp_hint_n;
+
 	int hot = rp_code_hot ? n >= RP_HOT_OFF : n >= RP_HOT_ON;
 
 	/* every frame (ADR-0040 step 7b): the runner also puts the hot code
@@ -5681,6 +5703,7 @@ static void RP_SoftShot( void )
 /* The frame's end (R_BlitScreen): its whole primitives to the 2700G. */
 void RP_EmitSubmit( void )
 {
+	RP_HintCount( );
 	if( rp_emit_on != 2 )
 		return;
 	RP_LmFlush();
