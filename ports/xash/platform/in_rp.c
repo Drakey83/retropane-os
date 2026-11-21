@@ -425,9 +425,19 @@ static void RP_ScoreAs( const char *what )
 		}
 		/* each hitch on its own line, in the log's order with the
 		   runner's card lines (-rpplayopens): what fell inside it */
-		if( dt > 50000u )
-			fprintf( stderr, "%s: frame %u took %u ms (%u to %u ms on rp_time_us)\n", what, frames + 1, dt / 1000u,
-				(uint32_t)( last / 1000u ), (uint32_t)( now / 1000u ));
+		/* (a run of them is said for its first 24 only: in the emulator
+		   every frame is one, and they filled its run log before a
+		   test's own lines; a fast frame starts the count again) */
+		{
+			static uint32_t row;
+
+			row = dt > 50000u ? row + 1 : 0;
+			if( row == 25 )
+				fprintf( stderr, "%s: frame %u: 24 slow frames in a row, the rest of the row not listed (the windows' counts have them)\n", what, frames + 1 );
+			if( dt > 50000u && row <= 24 )
+				fprintf( stderr, "%s: frame %u took %u ms (%u to %u ms on rp_time_us)\n", what, frames + 1, dt / 1000u,
+					(uint32_t)( last / 1000u ), (uint32_t)( now / 1000u ));
+		}
 		over50 += dt > 50000u;
 		over100 += dt > 100000u;
 	}
@@ -774,7 +784,12 @@ static void RP_End( void )
 			/* beside the soldiers at 402 339 -1805 and 368 305 -1806, above
 			   the floor, facing the ones to the south-east (416 -156, 982
 			   -574, 1024 -624) */
-			Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 10 -60\n" );
+			/* -rpdecalshot (R352's check): from the map's own start, no
+			   move: the shots land on what is ahead, their decals in view */
+			if( RP_Parm( "-rpdecalshot" ))
+				Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\n" );
+			else
+			Cbuf_AddText("sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 10 -60\n" );
 		}
 		else if( stage == 1 && ms > 4000.0 )
 		{

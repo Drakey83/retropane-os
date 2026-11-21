@@ -2052,7 +2052,15 @@ mod image {
                 .with_rebuild_at(seconds_after(&args[..arg_count], b"-rprebuild"))
                 .with_overlap_at(seconds_after(&args[..arg_count], b"-rpoverlapat"))
                 .with_report_every(
-                    if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpplay") {
+                    // -rpquiet: a minute apart, so the emulator's 64 KiB
+                    // run log (a frame every half second there, every
+                    // chain a failure) keeps room for a test's own lines
+                    if args[..arg_count]
+                        .iter()
+                        .any(|a| a.to_bytes() == b"-rpquiet")
+                    {
+                        60_000_000
+                    } else if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpplay") {
                         15_000_000
                     } else {
                         5_000_000

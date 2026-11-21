@@ -146,6 +146,7 @@ static struct
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
+	uint32_t decals, decal_cut; /* R352: decals drawn over their faces; a brush entity's triangles across the near plane not drawn */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
@@ -168,6 +169,8 @@ static uint32_t rp_nm_lazy, rp_nm_made;
 static uint32_t rp_b61_items, rp_b61_differ;
 static uint32_t rp_tex_used, rp_tex_room; /* R297 B: the texture pool's bytes */
 
+static int rp_decal_on = 1; /* -rpdecalsoft: 0, the old way (a decal face by its lit surface) */
+
 void RP_EmitInit( void )
 {
 	rp_emit = gEngfuncs.Cvar_Get( "rp_emit", "0", 0, "ref_rp: 1 the TA's words into RAM, no pixels (step 1); 2 the world drawn by the 2700G (step 3)" );
@@ -175,6 +178,8 @@ void RP_EmitInit( void )
 	rp_gpu = gEngfuncs.Cvar_Get( "rp_gpu", "0", 0, "ref_rp: 1 while the 2700G draws the frames" );
 	rp_fan = gEngfuncs.Cvar_Get( "rp_fan", "1", 0, "ref_rp: 1 a model's fans as the TA's fans, 0 as strips" );
 	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
+	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352's comparison: decal faces the old way */
+		rp_decal_on = 0;
 	if( gEngfuncs.Sys_CheckParm( "-rpfx0" )) /* R338's bisection: the float path, one word on the 31-word line */
 		gEngfuncs.Cvar_Set( "rp_fixed", "0" );
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
@@ -393,8 +398,8 @@ static void RP_EmitReport( void )
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight\n",
-			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits );
+		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u triangles of brush entities across the near plane not drawn)\n",
+			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -2094,6 +2099,9 @@ static __attribute__(( noinline )) int RP_ChipFaceLm1( int n, const uint32_t *zi
 }
 
 static int RP_ChipFaceLmTry( msurface_t *fa, int n, const uint32_t *zis, const int32_t *const *cxy, const int32_t *const *st );
+/* (out of line: RP_ChipFaceFixed is hot code kept in the on-chip SRAM, and
+   the decals' code inlined into it took the hot set past the SRAM's size) */
+static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t o[3] ) __attribute__(( noinline ));
 
 /*
 R352 (the owner, run 293: a patch on a ledge flashing bright and back):
@@ -2132,9 +2140,14 @@ static int RP_ChipFaceLmTry( msurface_t *fa, int n, const uint32_t *zis, const i
 
 	uintptr_t  fi = (uintptr_t)( fa - WORLDMODEL->surfaces );
 
-	if( rp_face_blend || rp_face_masked || fa->pdecals )
+	/* R352: a face with decals stays on this path (RP_FaceDecals draws
+	   them over it); -rpdecalsoft sends it the lit surface's way as
+	   before, counted */
+	if( rp_face_blend || rp_face_masked )
+		return 0;
+	if( fa->pdecals && !rp_decal_on )
 	{
-		rp_count.why_decal += fa->pdecals != NULL;
+		rp_count.why_decal++;
 		return 0;
 	}
 	/* kit 103: the face's fixed facts from the cooked map (one byte), not
@@ -3078,7 +3091,11 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	sx = RP_DivN( sx, n ) * 4;
 	sy = RP_DivN( sy, n ) * 4;
 	if( rp_lm_on && RP_ChipFaceLm( fa, n, zis, cxy, st ))
+	{
+		if( fa->pdecals )
+			RP_FaceDecals( fa, m, o );
 		return 1;
+	}
 
 	/* the software renderer's mip level for the nearest corner (positive
 	   floats compare as their bits) */
@@ -6446,6 +6463,168 @@ static void RP_TriCorner( rp_tv_t *v, const int32_t p[3], int s, int t )
 	v->front = q[2] >= ALIAS_Z_CLIP_PLANE * RP_ONE16; /* the software's near plane */
 	if( v->front )
 		RP_ProjectS( q, v->w, v->st );
+}
+
+/*
+R352 (the owner, runs 293-298: wall patches flashing bright and back,
+worst in fire fights; run 297's log: 35 faces changed drawing way between
+two frames in a row, decal faces drawn the other way in 13 of 20 reports).
+A face with a decal (a bullet hole, blood, a scorch) used to leave the
+texture-and-lightmap path for the lit surface, the only place a decal
+could be baked in, and the two paths do not look alike: the face's whole
+rectangle changed look the frame a decal landed on it and back when the
+decal was retired.
+
+Iterate, don't imitate (rule 0). ref_soft bakes each decal into the
+face's cached surface (the surface built again whenever its light
+changes); ref_gl draws the decal as its own blended polygon over the
+face. Ours: the face always by the one path, and each decal as a
+see-through fan over it by the effects' own words (kit 74: the decal's
+picture once in the atlas as ARGB4444, source alpha over one minus it,
+depth compared and not written), its corners the engine's own clipped
+ones (clipped to its picture here: RP_DecalPoly) through the face's view in fixed point. No face
+changes way, no surface is rebuilt for a decal, and a decal costs its few
+corners a frame. The decal's depth is nudged toward the eye (its 1/z up
+by 2^-9 of itself: a polygon offset), since its corners are not the
+wall's and equal depths would speckle. The colour is the picture's own,
+unlit, as ref_soft's baked decals are.
+*/
+#define RP_DECAL_BIAS 0x4000u /* float bits: 2^14 of the mantissa's 2^23 steps */
+
+/*
+A decal's polygon on its face: the face's own corners in the decal's
+texture space (0 to 1 across the picture), clipped to the picture's
+square. The engine's R_DecalSetupVerts cannot serve here: it clips the
+GL renderer's per-face polygon (`surf->polys`), which the software
+renderer never builds, and with none it reads a count nobody set (the
+emulator's walk hung in its lighting loop). Ours takes the corners from
+the map's edges, as every world face here does, with the same basis and
+scale (R_DecalComputeBasis; the decal's scale over the picture's size),
+and clips by Sutherland and Hodgman's four passes in place. `out`: x, y,
+z, s, t a corner; the count (0: nothing of the decal on the face).
+*/
+#define RP_DECAL_CORNERS 72 /* a face's 64 at most, four clips each adding one */
+
+static int RP_DecalClipEdge( const float ( *in )[5], int n, float ( *out )[5], int axis, float sign, float limit )
+{
+	int k = 0;
+
+	for( int i = 0; i < n && k < RP_DECAL_CORNERS - 1; i++ )
+	{
+		const float *a = in[i], *b = in[( i + 1 ) % n];
+		float        da = ( a[axis] - limit ) * sign, db = ( b[axis] - limit ) * sign;
+
+		if( da >= 0.0f )
+			memcpy( out[k++], a, sizeof( out[0] ));
+		if(( da >= 0.0f ) != ( db >= 0.0f ))
+		{
+			float f = da / ( da - db );
+
+			for( int j = 0; j < 5; j++ )
+				out[k][j] = a[j] + ( b[j] - a[j] ) * f;
+			k++;
+		}
+	}
+	return k;
+}
+
+static int RP_DecalPoly( decal_t *d, const msurface_t *fa, const image_t *img, float ( *out )[5] )
+{
+	static float tmp[RP_DECAL_CORNERS][5];
+	const model_t *mod = RI.currentmodel ? RI.currentmodel : WORLDMODEL;
+	vec3_t         basis[3];
+	float          sx = d->scale / (float)img->width, sy = d->scale / (float)img->height, dx, dy;
+	int            n = fa->numedges;
+
+	if( n < 3 || n > 64 || fa->firstedge < 0 || fa->firstedge + n > mod->numsurfedges )
+		return 0;
+	R_DecalComputeBasis( (msurface_t *)fa, d->flags, basis );
+	VectorScale( basis[0], sx, basis[0] );
+	VectorScale( basis[1], sy, basis[1] );
+	dx = DotProduct( d->position, basis[0] );
+	dy = DotProduct( d->position, basis[1] );
+	for( int i = 0; i < n; i++ )
+	{
+		int            lindex = mod->surfedges[fa->firstedge + i];
+		const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
+		const float     *p = mod->vertexes[lindex > 0 ? e->v[0] : e->v[1]].position;
+
+		VectorCopy( p, out[i] );
+		out[i][3] = DotProduct( p, basis[0] ) - dx + 0.5f;
+		out[i][4] = DotProduct( p, basis[1] ) - dy + 0.5f;
+	}
+	n = RP_DecalClipEdge( (const float( * )[5])out, n, tmp, 3, 1.0f, 0.0f );
+	n = RP_DecalClipEdge( (const float( * )[5])tmp, n, out, 3, -1.0f, 1.0f );
+	n = RP_DecalClipEdge( (const float( * )[5])out, n, tmp, 4, 1.0f, 0.0f );
+	n = RP_DecalClipEdge( (const float( * )[5])tmp, n, out, 4, -1.0f, 1.0f );
+	return n >= 3 ? n : 0;
+}
+
+static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t o[3] )
+{
+	const int      mode_was = vid.rendermode;
+	const uint32_t colour_was = rp_2d_colour;
+	const image_t *image_was = rp_tri_image;
+	const int      world = m == (const int32_t( * )[3])rp_view.m;
+
+	vid.rendermode = kRenderTransTexture;
+	rp_2d_colour = 0xFFFFFFFFu;
+	for( decal_t *d = fa->pdecals; d; d = d->pnext )
+	{
+		const image_t *img = R_GetTexture( d->texture );
+		int            count = 0;
+		static float   poly[RP_DECAL_CORNERS][5];
+		const float   *v = poly[0];
+		rp_tv_t        c[3];
+
+		if( !img || !R_TexLoaded( img ) || img->width < 1 || img->height < 1 )
+			continue;
+		count = RP_DecalPoly( d, fa, img, poly );
+		if( !count )
+			continue;
+		rp_tri_image = img;
+		rp_count.decals++;
+		{
+			static int said; /* the first three, so a log has them by the frame */
+
+			if( said < 3 )
+			{
+				said++;
+				fprintf( stderr, "rp-emit: R352: a decal drawn over its face (%d of the first 3): picture %d x %d%s, %d corners, frame %d\n",
+					said, img->width, img->height, R_TexHasAlpha( img ) ? " with alpha" : " (no alpha)", count, tr.framecount );
+			}
+		}
+		for( int i = 0; i < count; i++, v += 5 )
+		{
+			rp_tv_t *t = &c[i < 2 ? i : 2];
+			int32_t  q[3];
+
+			t->p[0] = RP_Fix16( v[0] );
+			t->p[1] = RP_Fix16( v[1] );
+			t->p[2] = RP_Fix16( v[2] );
+			t->s = RP_TriCoord( v[3], img->width );
+			t->t = RP_TriCoord( v[4], img->height );
+			RP_ViewPoint( m, o, t->p, q );
+			t->front = q[2] >= ALIAS_Z_CLIP_PLANE * RP_ONE16;
+			if( t->front )
+			{
+				RP_ProjectS( q, t->w, t->st );
+				t->w[2] += RP_DECAL_BIAS;
+			}
+			if( i < 2 )
+				continue;
+			if( !world && ( !c[0].front || !c[1].front || !c[2].front ))
+				/* a brush entity's decal across the near plane: the
+				   software clip works in the world's space only */
+				rp_count.decal_cut++;
+			else
+				RP_TriEmit( &c[0], &c[1], &c[2] );
+			c[1] = c[2];
+		}
+	}
+	vid.rendermode = mode_was;
+	rp_2d_colour = colour_was;
+	rp_tri_image = image_was;
 }
 
 /* Kit 114: R_DrawSpriteQuad's four corners (down-left, up-left, up-right,
