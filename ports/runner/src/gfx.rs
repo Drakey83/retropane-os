@@ -1078,6 +1078,42 @@ pub static EV9: rt::Global<Ev9> = rt::Global::new(Ev9 {
 });
 const TA_EV9_ANSWER: usize = 0x834;
 
+/// R340, the rule run 310 measured (the console over the menu, each frame
+/// fed its first N strips): the 2700G's event bit 9 comes exactly when
+/// the TA runs longer than the render in flight has left (none while the
+/// TA took 7.5 ms or less, in every frame from 8.8 ms, the render there
+/// about 7.7 ms; the text's half alone, a 6.8 ms TA, none): a render
+/// ending under a running TA. The stalls are that moment going wrong (one
+/// in a few hundred of them in play: runs 297 and 305). Iterate, don't
+/// imitate (rule 0): Dell's driver never has the two together (one scene
+/// at a time through its queue: the TA, then its render), which costs the
+/// overlap's 12 fps (run 279); kit 113 ran them together always. Ours
+/// keeps them together wherever the render will outlast the TA (the
+/// common case in a game: the TA's 7 to 10 ms inside a 10 to 25 ms
+/// render) and, only when the render in flight would end first, waits
+/// those few milliseconds for it before arming the TA. The two times are
+/// the last frame's own, measured (frames follow each other closely); the
+/// events left over are the rule's misses, counted as before.
+/// `-rpnoholdend`: kit 113 as it was.
+#[derive(Clone, Copy)]
+pub struct HoldEnd {
+    pub on: bool,
+    /// Frames whose TA waited for the render to end, and the time waited.
+    held: u32,
+    held_us: u32,
+    /// Frames armed beside a render that would outlast the TA.
+    beside: u32,
+}
+pub static HOLD_END: rt::Global<HoldEnd> = rt::Global::new(HoldEnd {
+    on: true,
+    held: 0,
+    held_us: 0,
+    beside: 0,
+});
+/// The margin on the estimate: the pump sees a render's end up to 1 ms
+/// late, and a frame's TA may run a little longer than the last one's.
+const END_MARGIN_US: u32 = 2_500;
+
 /// R340 (run 305): a frame's primitives fed by class, solid first, then
 /// blended ([`chain::Chain`]'s build); `-rpnosort` the program's order.
 pub static CLASS_SORT: rt::Global<bool> = rt::Global::new(true);
@@ -1096,6 +1132,14 @@ pub struct Bisect {
     pub on: bool,
     /// Strips of a frame fed (`u32::MAX`: all).
     pub limit: u32,
+    /// Strips skipped at a frame's start (the search's last steps: which
+    /// strips, not how many).
+    pub skip: u32,
+    /// Since the step began: the TA's time summed and counted (arm to
+    /// done), and frames armed with a render still in flight.
+    pub ta_us: u32,
+    pub ta_n: u32,
+    pub over: u32,
     /// A frame's strips, as the last build counted them.
     pub total: u32,
     /// The last strip fed and the state block over it, as built.
@@ -1110,6 +1154,10 @@ pub struct Bisect {
 pub static BISECT: rt::Global<Bisect> = rt::Global::new(Bisect {
     on: false,
     limit: u32::MAX,
+    skip: 0,
+    ta_us: 0,
+    ta_n: 0,
+    over: 0,
     total: 0,
     last: [0; 28],
     lo: 0,
@@ -1146,12 +1194,50 @@ fn bisect_step(ev9: u32, pages: [u32; 2], log: fn(Arguments<'_>)) {
         b.n += 1;
         if b.n == 8 {
             b.ev0 = ev9;
+            b.ta_us = 0;
+            b.ta_n = 0;
+            b.over = 0;
         }
         if b.n < 72 {
             return;
         }
         let ev = ev9.wrapping_sub(b.ev0);
         b.n = 0;
+        let ta = b.ta_us / b.ta_n.max(1);
+        if b.phase >= 4 {
+            // which strips, not how many
+            log(format_args!(
+                "rp-gfx: R340 bisect: strips {} to {} of {} fed ({}): {ev} events in 64 frames; the TA {ta} us a frame, a render in flight at {} of 64 arms; scenes {} and {} pages",
+                b.skip + 1,
+                b.limit.min(b.total),
+                b.total,
+                match b.phase {
+                    4 => "the second half",
+                    5 => "the last 300: text",
+                    _ => "the first 300: the menu",
+                },
+                b.over,
+                pages[0],
+                pages[1]
+            ));
+            match b.phase {
+                4 => {
+                    b.phase = 5;
+                    b.skip = b.total.saturating_sub(300);
+                }
+                5 => {
+                    b.phase = 6;
+                    b.skip = 0;
+                    b.limit = 300;
+                }
+                _ => {
+                    b.phase = 3;
+                    b.skip = 0;
+                    b.limit = u32::MAX;
+                }
+            }
+            return;
+        }
         if b.phase == 2 {
             // the last step fed strips up to `hi`: its last one is the one
             let l = b.last;
@@ -1160,13 +1246,14 @@ fn bisect_step(ev9: u32, pages: [u32; 2], log: fn(Arguments<'_>)) {
                 b.hi, b.total, l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], l[8], l[9], l[10], l[11],
                 l[12], l[13], l[14], l[15], l[16], l[17], l[18], l[19], l[20], l[21], l[22], l[23], l[24], l[25], l[26], l[27]
             ));
-            b.phase = 3;
-            b.limit = u32::MAX;
+            b.phase = 4;
+            b.limit = b.total;
+            b.skip = b.total / 2;
             return;
         }
         log(format_args!(
-            "rp-gfx: R340 bisect: {} of {} strips fed: {ev} events in 64 frames; the last two scenes took {} and {} pages",
-            b.limit, b.total, pages[0], pages[1]
+            "rp-gfx: R340 bisect: {} of {} strips fed: {ev} events in 64 frames; the TA {ta} us a frame, a render in flight at {} of 64 arms; the last two scenes took {} and {} pages",
+            b.limit, b.total, b.over, pages[0], pages[1]
         ));
         let present = ev >= 8;
         if b.limit == b.total && b.lo == 0 && b.hi == b.total && !present {
@@ -1556,6 +1643,11 @@ struct Open {
     /// most (decaying).
     arm_cursor: Option<u32>,
     scene_pages: [u32; 2],
+    /// R340 (run 310): the last render's time from its start to being
+    /// seen done, and the last TA's from its arm to its done (the next
+    /// frame's are taken to be alike).
+    render_us: u32,
+    ta_us: u32,
     pages_recent: u32,
     /// R340's measure (`-rpoverlapat S`): kit 113's overlap off until S
     /// seconds after the open, then on (one run, both ways, the manager
@@ -1773,6 +1865,11 @@ impl Chip {
         match s {
             Settled::Idle => {}
             Settled::Done(us) => {
+                BISECT.with(|b| {
+                    b.ta_us = b.ta_us.wrapping_add(us);
+                    b.ta_n += 1;
+                });
+                o.ta_us = us;
                 c.chain_fails_row = 0;
                 c.chain_us += us;
                 c.gap_us += gap;
@@ -2031,6 +2128,16 @@ impl Chip {
                 q.cut_at.1
             ));
         }
+        let he = HOLD_END.with(|h| *h);
+        (self.log)(format_args!(
+            "rp-gfx: R340 a render never ending under a TA ({}): {} frames' TA waited for the render in flight ({} ms in all), {} armed beside one that would outlast it; the last render {} us, the last TA {} us",
+            if he.on { "on" } else { "-rpnoholdend" },
+            he.held,
+            he.held_us / 1000,
+            he.beside,
+            self.open.as_ref().map_or(0, |o| o.render_us),
+            self.open.as_ref().map_or(0, |o| o.ta_us)
+        ));
         let e9 = EV9.with(|e| *e);
         if e9.idle + e9.early + e9.late > 0 || e9.answer {
             (self.log)(format_args!(
@@ -2556,6 +2663,7 @@ impl Open {
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en);
         if ok {
+            self.render_us = us;
             mem_back(regs, self.overlap);
             Ok(us)
         } else {
@@ -2727,7 +2835,9 @@ impl Open {
         if status(regs).is_none_or(|s| s & m3::RENDER_DONE == 0) {
             return false;
         }
-        self.rendering = None;
+        if let Some(t0) = self.rendering.take() {
+            self.render_us = us_since(t0);
+        }
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en);
         mem_back(regs, self.overlap);
@@ -3019,6 +3129,8 @@ impl Screen for Chip {
             overlap_from: self.overlap_at.filter(|_| overlap_ok),
             arm_cursor: None,
             scene_pages: [0; 2],
+            render_us: 0,
+            ta_us: 0,
             pages_recent: 0,
         });
         if let (Some(o), Some(regs)) = (self.open.as_ref(), self.regs.as_mut()) {
@@ -3335,6 +3447,27 @@ impl Screen for Chip {
                 self.report();
                 return Ok(());
             }
+            // R340 (run 310): a render must not end under a running TA.
+            if o.overlap
+                && HOLD_END.with(|h| h.on)
+                && let Some(t0) = o.rendering
+                && !o.render_done_now(regs)
+            {
+                let left = o.render_us.saturating_sub(us_since(t0));
+                if left < o.ta_us + END_MARGIN_US {
+                    let t1 = rt::ticks();
+                    let _ = o.wait_render(regs);
+                    if o.pending.is_some() {
+                        o.start_pending(regs);
+                    }
+                    HOLD_END.with(|h| {
+                        h.held += 1;
+                        h.held_us = h.held_us.wrapping_add(us_since(t1));
+                    });
+                } else {
+                    HOLD_END.with(|h| h.beside += 1);
+                }
+            }
             // R340's fits check: the next scene's TA starts beside the
             // scenes the chip still holds only when its pages provably fit
             if o.overlap && (o.rendering.is_some() || o.pending.is_some()) {
@@ -3357,6 +3490,9 @@ impl Screen for Chip {
             let into = o.overlap && o.next_b;
             match ch.start(regs, &o.ta_lay(into), &bg, parts) {
                 Ok(true) => {
+                    if o.rendering.is_some() || o.pending.is_some() {
+                        BISECT.with(|b| b.over += 1);
+                    }
                     bisect_step(c.ev[3], o.scene_pages, self.log);
                     o.armed_b = into;
                     o.next_b = o.overlap && !into;

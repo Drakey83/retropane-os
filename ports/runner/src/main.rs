@@ -2029,6 +2029,16 @@ mod image {
         }
         if args[..arg_count]
             .iter()
+            .any(|a| a.to_bytes() == b"-rpnoholdend")
+        {
+            super::gfx::HOLD_END.with(|h| h.on = false);
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpnoholdend: a TA armed beside any render (kit 113 as it was)"
+            );
+        }
+        if args[..arg_count]
+            .iter()
             .any(|a| a.to_bytes() == b"-rpbisect")
         {
             super::gfx::BISECT.with(|b| b.on = true);

@@ -288,7 +288,7 @@ impl Chain {
         // picture is the same; a state block goes ahead of the first
         // primitive of each run that needs it, again by pointer.
         // (`-rpnosort`: the program's order, as before.)
-        let limit = super::BISECT.with(|b| b.limit);
+        let (limit, skip) = super::BISECT.with(|b| (b.limit, b.skip));
         let mut strips = 0u32;
         let sort = super::CLASS_SORT.with(|s| *s) && limit == u32::MAX;
         for pass in 0..2u8 {
@@ -338,7 +338,7 @@ impl Chain {
                                 super::BISECT.with(|b| b.last = keep);
                             }
                         }
-                        if strips <= limit && (!sort || blended == (pass == 1)) {
+                        if strips > skip && strips <= limit && (!sort || blended == (pass == 1)) {
                             if let Some((at, bytes, ..)) = cur.filter(|_| !sent) {
                                 if !self.to_window(at, bytes) {
                                     return false;
