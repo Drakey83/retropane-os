@@ -50,8 +50,8 @@ mod chain;
 mod pmwatch;
 mod probe4f;
 use chain::Settled;
-pub use pmwatch::{FILE as PM_WATCH_FILE, PmWatch, ROOM as PM_WATCH_ROOM};
 use pmwatch::{F_OVERLAP, F_RENDERING, F_TA_BUSY, Moment};
+pub use pmwatch::{FILE as PM_WATCH_FILE, PmWatch, ROOM as PM_WATCH_ROOM};
 
 /// R340's measure ([`PmWatch`]): the runner puts it in before the program
 /// runs and takes it back after, for the card.
@@ -65,7 +65,11 @@ fn pm_snap(m: Moment, regs: &mut Mmio, o: &Open, flags: u32, log: fn(Arguments<'
     };
     if w.wants(m) {
         let flags = flags
-            | if o.rendering.is_some() { F_RENDERING } else { 0 }
+            | if o.rendering.is_some() {
+                F_RENDERING
+            } else {
+                0
+            }
             | if o.overlap { F_OVERLAP } else { 0 };
         w.take(
             m,
@@ -768,7 +772,9 @@ const LIMIT_CORE_KHZ: u32 = 125_667;
 /// was called a hang (832 of them, the frame thrown away: the owner's
 /// flashing, 19 fps).
 fn render_limit_us(rung: Option<clock::Rung>) -> u32 {
-    let core = rung.map_or(clock::Speed::WM.khz() / 2, clock::Rung::core_khz).max(1);
+    let core = rung
+        .map_or(clock::Speed::WM.khz() / 2, clock::Rung::core_khz)
+        .max(1);
     let scaled = u64::from(RENDER_LIMIT_US) * u64::from(LIMIT_CORE_KHZ) / u64::from(core);
     scaled.clamp(u64::from(RENDER_LIMIT_US), 400_000) as u32
 }
@@ -801,22 +807,30 @@ const CURVES: [(&str, u32, [u8; 17]); 4] = [
     (
         "NOW",
         100,
-        [0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255],
+        [
+            0, 16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255,
+        ],
     ),
     (
         "M70",
         100,
-        [0, 31, 55, 75, 94, 110, 126, 141, 155, 169, 182, 195, 208, 220, 232, 244, 255],
+        [
+            0, 31, 55, 75, 94, 110, 126, 141, 155, 169, 182, 195, 208, 220, 232, 244, 255,
+        ],
     ),
     (
         "M65",
         100,
-        [0, 36, 61, 82, 100, 117, 133, 147, 161, 174, 187, 199, 211, 222, 233, 244, 255],
+        [
+            0, 36, 61, 82, 100, 117, 133, 147, 161, 174, 187, 199, 211, 222, 233, 244, 255,
+        ],
     ),
     (
         "M75",
         100,
-        [0, 26, 49, 69, 87, 104, 120, 135, 150, 164, 178, 192, 205, 218, 230, 243, 255],
+        [
+            0, 26, 49, 69, 87, 104, 120, 135, 150, 164, 178, 192, 205, 218, 230, 243, 255,
+        ],
     ),
 ];
 
@@ -990,9 +1004,46 @@ const TA_MEM_BACK: usize = 0x804;
 /// let its scene go is what this run asks); the writes counted.
 pub static MEM_BACK: rt::Global<(bool, u32)> = rt::Global::new((false, 0));
 
+/// R340 (run 297's findings): what the texture-write guard counted since
+/// the open ([`Screen::quiet`], `rp_gfx_quiet`).
+#[derive(Clone, Copy)]
+pub struct Quiet {
+    /// `-rptexhold S`: the program's texture writes held while the TA and
+    /// a render are both at work, for the first S seconds after the open
+    /// (0: the whole run); `None`: never held.
+    pub hold_s: Option<u32>,
+    /// Writes that waited for the render, and the time waited.
+    held: u32,
+    held_us: u32,
+    /// Looks with the hold on, and those that found both at work.
+    looks: u32,
+    /// Writes skipped (the chip lost: each word would wait a time-out).
+    skipped: u32,
+    /// Chains cut by the pump at a silent chip; the last one's descriptor
+    /// and time since its arm.
+    cuts: u32,
+    cut_at: (u32, u32),
+}
+pub static QUIET: rt::Global<Quiet> = rt::Global::new(Quiet {
+    hold_s: None,
+    held: 0,
+    held_us: 0,
+    looks: 0,
+    skipped: 0,
+    cuts: 0,
+    cut_at: (0, 0),
+});
+
 /// R340: the lever's write after a render seen ending.
 fn mem_back(regs: &mut Mmio, overlap: bool) {
-    if overlap && MEM_BACK.with(|m| { if m.0 { m.1 += 1; } m.0 }) {
+    if overlap
+        && MEM_BACK.with(|m| {
+            if m.0 {
+                m.1 += 1;
+            }
+            m.0
+        })
+    {
         regs.write32(MBX + TA_MEM_BACK, 1);
     }
 }
@@ -1032,13 +1083,17 @@ fn reads() -> (u32, u32) {
 /// R340: the 3D core's status word, or `None` if the read was ended by
 /// the bus time-out (the chip did not answer: the word is no answer, and
 /// the waits' own limits decide the hang).
-fn status(regs: &mut Mmio) -> Option<u32> {
+fn status_word(regs: &mut Mmio) -> (u32, bool) {
     let t0 = rt::ticks();
     let v = regs.read32(MBX + reg::STATUS);
     let d = rt::ticks().wrapping_sub(t0);
     let slow = bus_timed_out(d);
     MUTE.with(|m| {
-        m.1 = if d >= MUTE_SLOW_TICKS { m.1.saturating_add(1) } else { 0 };
+        m.1 = if d >= MUTE_SLOW_TICKS {
+            m.1.saturating_add(1)
+        } else {
+            0
+        };
         if m.1 >= MUTE_ROW {
             m.0 = true;
         }
@@ -1047,6 +1102,13 @@ fn status(regs: &mut Mmio) -> Option<u32> {
         r.0 = r.0.max(d);
         r.1 = r.1.wrapping_add(u32::from(slow));
     });
+    (v, slow)
+}
+
+/// R340: the 3D core's status word, or `None` if the read was ended by
+/// the bus time-out ([`status_word`]).
+fn status(regs: &mut Mmio) -> Option<u32> {
+    let (v, slow) = status_word(regs);
     (!slow).then_some(v)
 }
 
@@ -1104,7 +1166,11 @@ fn rebuilt_line(
         r.lmpwrstat,
         r.off_by,
         r.dintrs,
-        if r.sending() { "sending" } else { "NOT sending" },
+        if r.sending() {
+            "sending"
+        } else {
+            "NOT sending"
+        },
         r.dsig.0,
         r.dsig.1,
         if ok { "ready" } else { "NOT ready" }
@@ -1589,14 +1655,17 @@ impl Chip {
                 // the status each tick, and the program starved until the
                 // run limit (30 s). So such a failure goes straight to the
                 // full rebuild (run 280: 445 ms), no core reset first.
-                let t0 = rt::ticks();
-                let st = regs.read32(MBX + reg::STATUS);
-                let mute = bus_timed_out(rt::ticks().wrapping_sub(t0));
+                // (the word kept for the log even when no answer)
+                let (st, mute) = status_word(regs);
                 if dma || mute || st & EV_TA_MEM != 0 {
                     c.rebuild_owed = true;
                 }
                 if c.run_hangs < HANGS_SAID {
-                    let en = if mute { 0 } else { regs.read32(MBX + reg::ENABLE) };
+                    let en = if mute {
+                        0
+                    } else {
+                        regs.read32(MBX + reg::ENABLE)
+                    };
                     log(format_args!(
                         "rp-gfx: R340: at the failed chain the core's status 0x{st:08x}, enables 0x{en:08x}; bit 5 {}, owed {}",
                         if st & EV_TA_MEM != 0 { "set" } else { "clear" },
@@ -1616,7 +1685,11 @@ impl Chip {
                         } else {
                             "the TA never said done"
                         },
-                        if c.rebuild_owed { "the full rebuild next" } else { "the core reset" },
+                        if c.rebuild_owed {
+                            "the full rebuild next"
+                        } else {
+                            "the core reset"
+                        },
                     ));
                     if let Some((r, after, desc, us)) = fail {
                         log(format_args!(
@@ -1643,13 +1716,18 @@ impl Chip {
                         }
                     ));
                 }
-                log(format_args!(
-                    "rp-gfx: R340 fits at the failed chain: scene A {} pages, B {}, a recent scene's most {}, the cursor now 0x{:x}",
-                    o.scene_pages[0],
-                    o.scene_pages[1],
-                    o.pages_recent,
-                    if mute { 0 } else { pm_cursor(o).unwrap_or(0) }
-                ));
+                // (said for the first hangs only, as the lines above: the
+                // emulator's chains all fail, and these filled its run log)
+                let said = c.run_hangs <= HANGS_SAID;
+                if said {
+                    log(format_args!(
+                        "rp-gfx: R340 fits at the failed chain: scene A {} pages, B {}, a recent scene's most {}, the cursor now 0x{:x}",
+                        o.scene_pages[0],
+                        o.scene_pages[1],
+                        o.pages_recent,
+                        if mute { 0 } else { pm_cursor(o).unwrap_or(0) }
+                    ));
+                }
                 if c.rebuild_owed {
                     log(format_args!(
                         "rp-gfx: R340: {}: the full rebuild owed (no core reset)",
@@ -1662,7 +1740,9 @@ impl Chip {
                         }
                     ));
                 } else {
-                    pm_snap(Moment::Failed, regs, o, F_TA_BUSY, log);
+                    if said {
+                        pm_snap(Moment::Failed, regs, o, F_TA_BUSY, log);
+                    }
                     o.recover(regs);
                 }
             }
@@ -1776,9 +1856,29 @@ impl Chip {
                 c.check_failed
             ));
         }
+        let q = QUIET.with(|q| *q);
+        if q.hold_s.is_some() || q.skipped > 0 || q.cuts > 0 {
+            (self.log)(format_args!(
+                "rp-gfx: R340 texture writes since the open: {} looks with the hold on ({}), {} waited for the render ({} ms in all); {} skipped at a silent chip; {} chains cut (the last at descriptor {}, {} us after its arm)",
+                q.looks,
+                match q.hold_s {
+                    None => "off",
+                    Some(0) => "-rptexhold, the whole run",
+                    Some(_) => "-rptexhold S, the first S seconds",
+                },
+                q.held,
+                q.held_us / 1000,
+                q.skipped,
+                q.cuts,
+                q.cut_at.0,
+                q.cut_at.1
+            ));
+        }
         let (mb_on, mb) = MEM_BACK.with(|m| *m);
         if mb_on {
-            (self.log)(format_args!("rp-gfx: R340 -rpmemback: 0x804 = 1 after {mb} renders since the open"));
+            (self.log)(format_args!(
+                "rp-gfx: R340 -rpmemback: 0x804 = 1 after {mb} renders since the open"
+            ));
         }
         if c.pages_most > 0 || c.held_for_room > 0 {
             (self.log)(format_args!(
@@ -1803,18 +1903,12 @@ impl Chip {
         READS.with(|r| *r = (0, 0));
         (self.log)(format_args!(
             "rp-gfx: R340: the slowest 2700G status read {slowest} us, {timeouts} ended by the bus time-out; {} hangs since the screen opened; R344: {} full resets ({} brought the TA back)",
-            c.run_hangs,
-            c.rebuilds,
-            c.rebuilds_ok
+            c.run_hangs, c.rebuilds, c.rebuilds_ok
         ));
         if c.ev.iter().any(|&e| e != 0) {
             (self.log)(format_args!(
                 "rp-gfx: R340: the core's events since the open: bit 5 {} ({} answered with 0x804), bit 7 {}, bit 8 {}, bit 9 {}",
-                c.ev[0],
-                c.ev_answered,
-                c.ev[1],
-                c.ev[2],
-                c.ev[3]
+                c.ev[0], c.ev_answered, c.ev[1], c.ev[2], c.ev[3]
             ));
         }
         self.counts = Counts {
@@ -1839,7 +1933,9 @@ impl Chip {
     fn rebuild_now(&mut self, why: &str) -> Errno {
         // ADR-0035 rule 6 as the owner changed it (2026-11-20): back to the
         // game's clock after a rebuild, unless the last was within a minute
-        let recent = self.rebuilt_at.is_some_and(|(t, _)| us_since(t) < 60_000_000);
+        let recent = self
+            .rebuilt_at
+            .is_some_and(|(t, _)| us_since(t) < 60_000_000);
         let gap = self
             .rebuilt_at
             .map_or(REBUILD_GAP_US, |(_, g)| (g * 2).min(REBUILD_GAP_MOST_US));
@@ -1878,7 +1974,9 @@ impl Chip {
         }
         let us = us_since(t0);
         if n <= REBUILDS_SAID {
-            (self.log)(format_args!("rp-gfx: R344: after the rebuild the 2700G's clock {back}"));
+            (self.log)(format_args!(
+                "rp-gfx: R344: after the rebuild the 2700G's clock {back}"
+            ));
         }
         self.counts.rebuilds = n;
         self.counts.rebuilds_ok += u32::from(ok);
@@ -2219,7 +2317,11 @@ impl Open {
                         log(format_args!(
                             "rp-gfx: R340: the core's event bit {} (status 0x{st:08x}, a render {})",
                             bit.trailing_zeros(),
-                            if self.rendering.is_some() { "running" } else { "idle" }
+                            if self.rendering.is_some() {
+                                "running"
+                            } else {
+                                "idle"
+                            }
                         ));
                     }
                 }
@@ -2348,8 +2450,18 @@ impl Open {
                 }
             }
             let f = fps.min(999) as u32;
-            let digits = [b'0' + (f / 100) as u8, b'0' + (f / 10 % 10) as u8, b'0' + (f % 10) as u8];
-            let skip = if f >= 100 { 0 } else if f >= 10 { 1 } else { 2 };
+            let digits = [
+                b'0' + (f / 100) as u8,
+                b'0' + (f / 10 % 10) as u8,
+                b'0' + (f % 10) as u8,
+            ];
+            let skip = if f >= 100 {
+                0
+            } else if f >= 10 {
+                1
+            } else {
+                2
+            };
             let n = core::str::from_utf8(&digits[skip..]).unwrap_or("");
             band_text(rows, (3, 384), 3, n, 0xFFFF, false);
             band_text(rows, (6, 420), 2, "FPS", 0xFFFF, false);
@@ -2598,7 +2710,11 @@ impl Screen for Chip {
             // then on (ADR-0035 rule 6), and the set-up again
             (self.log)(format_args!(
                 "rp-gfx: R344: the TA's set-up {} at the open: the 2700G's full reset and rebuild next",
-                if mute { "on a chip that does not answer (a status read took the whole bus time-out)" } else { "NotReady" }
+                if mute {
+                    "on a chip that does not answer (a status read took the whole bus time-out)"
+                } else {
+                    "NotReady"
+                }
             ));
             let t0 = rt::ticks();
             let r = rebuild_chip(regs);
@@ -2631,7 +2747,9 @@ impl Screen for Chip {
                 regs.write32(SYSCFG, syscfg0);
                 panel::give_back(vram);
                 // R344: never play with no picture unsaid
-                panel::note(b"2700G NOT READY, even after|a full reset: no picture.|Soft-reset the X51v.");
+                panel::note(
+                    b"2700G NOT READY, even after|a full reset: no picture.|Soft-reset the X51v.",
+                );
                 return Err(Errno::Io);
             }
         };
@@ -2733,8 +2851,7 @@ impl Screen for Chip {
             o.draw_band(true);
             (self.log)(format_args!(
                 "rp-gfx: R343: the picker: the Record button steps the curves (found GFXGAM0 0x{:x} .. GFXGAM16 0x{:x}, GSCTRL 0x{gs:x})",
-                table[0],
-                table[16]
+                table[0], table[16]
             ));
         } else if let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut()) {
             // R343: the owner's pick from run 289 ("bl60 looked the best"):
@@ -2753,8 +2870,7 @@ impl Screen for Chip {
             }
             (self.log)(format_args!(
                 "rp-gfx: R343: the game's look {} (backlight {}%, its table)",
-                CURVES[LOOK_DEFAULT].0,
-                CURVES[LOOK_DEFAULT].1
+                CURVES[LOOK_DEFAULT].0, CURVES[LOOK_DEFAULT].1
             ));
         }
         if self.bar
@@ -3030,7 +3146,9 @@ impl Screen for Chip {
             // R340's fits check: the next scene's TA starts beside the
             // scenes the chip still holds only when its pages provably fit
             if o.overlap && (o.rendering.is_some() || o.pending.is_some()) {
-                let live = o.rendering.map_or(0, |_| o.scene_pages[usize::from(o.render_b)])
+                let live = o
+                    .rendering
+                    .map_or(0, |_| o.scene_pages[usize::from(o.render_b)])
                     + o.pending.map_or(0, |b| o.scene_pages[usize::from(b)]);
                 c.live_most = c.live_most.max(live);
                 if live + o.pages_recent * 3 / 2 + PM_MARGIN > PM_PAGES {
@@ -3269,6 +3387,21 @@ impl Screen for Chip {
             self.counts.rebuild_owed = true;
         }
         if self.counts.rebuild_owed {
+            // run 297: the chain in flight cut at once (its DMA would go
+            // on into the silent chip a time-out a descriptor, holding
+            // the bus the CPU's memory reads need: 7 to 11 s a stall)
+            if let Some((desc, us)) = self.chain.as_mut().and_then(chain::Chain::cut) {
+                let n = QUIET.with(|q| {
+                    q.cuts += 1;
+                    q.cut_at = (desc, us);
+                    q.cuts
+                });
+                if n <= HANGS_SAID {
+                    (self.log)(format_args!(
+                        "rp-gfx: R340: the chip stopped answering: the frame's chain cut at descriptor {desc}, {us} us after its arm (cut {n})"
+                    ));
+                }
+            }
             return;
         }
         let (Some(o), Some(regs), Some(ch)) =
@@ -3293,6 +3426,44 @@ impl Screen for Chip {
         if o.pending.is_some() {
             o.start_pending(regs);
         }
+    }
+
+    fn quiet(&mut self, hold: bool) -> bool {
+        if mute_take() {
+            self.counts.rebuild_owed = true;
+        }
+        if self.counts.rebuild_owed {
+            QUIET.with(|q| q.skipped += 1);
+            return false;
+        }
+        let Some(s) = QUIET.with(|q| q.hold_s).filter(|_| hold) else {
+            return true;
+        };
+        if s != 0 && us_since(self.opened) / 1_000_000 >= s {
+            return true;
+        }
+        let (Some(o), Some(regs), Some(ch)) =
+            (self.open.as_mut(), self.regs.as_mut(), self.chain.as_ref())
+        else {
+            return true;
+        };
+        QUIET.with(|q| q.looks += 1);
+        // The lever: a write only while the TA and a render are not both
+        // at work (either alone is the serial path's case, which never
+        // stalled: run 279). The render is the one waited for: it ends
+        // by itself, and the chain goes on feeding the TA meanwhile.
+        if !o.overlap || !ch.busy() || o.render_done_now(regs) {
+            return true;
+        }
+        let t0 = rt::ticks();
+        // (a render that hung is reset there, as a frame's wait does: the
+        // write goes on either way)
+        let _ = o.wait_render(regs);
+        QUIET.with(|q| {
+            q.held += 1;
+            q.held_us = q.held_us.wrapping_add(us_since(t0));
+        });
+        true
     }
 
     fn wait(&mut self) -> Result<(), Errno> {
@@ -3327,7 +3498,7 @@ impl Screen for Chip {
                 s,
                 false,
                 ch.last_gap_us,
-            ch.last_fail.take(),
+                ch.last_fail.take(),
             );
         }
         let _ = o.wait_render(regs);
@@ -3367,7 +3538,9 @@ impl Screen for Chip {
             p.write32(pwm::CR, found[0]);
             p.write32(pwm::PCR, found[1]);
             p.write32(pwm::DCR, found[2]);
-            (self.log)(format_args!("runner: R341: the backlight put back as found"));
+            (self.log)(format_args!(
+                "runner: R341: the backlight put back as found"
+            ));
         }
         (self.log)(format_args!("rp-gfx: the screen given back"));
         panel::give_back(o.vram);

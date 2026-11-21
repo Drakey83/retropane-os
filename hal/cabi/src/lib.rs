@@ -494,6 +494,12 @@ pub trait Sys {
     fn gfx_wait(&mut self) -> Result<(), Errno> {
         Err(Errno::NoSys)
     }
+    /// Whether the program may write texture memory now (`rp_gfx_quiet`:
+    /// false once the chip stopped answering; `hold`: the screen may wait
+    /// for a safe moment first). True by default.
+    fn gfx_quiet(&mut self, _hold: bool) -> bool {
+        true
+    }
     /// The screen's pump alone (a frame fed by DMA: its render started
     /// once the chip has taken it), from the runner's tick; nothing else
     /// of the system runs. The default: nothing.
@@ -1551,6 +1557,13 @@ mod face {
             Ok(()) => 0,
             Err(e) => fail(e) as c_int,
         }
+    }
+
+    /// `rp_gfx_quiet`: 1 if texture memory may be written, 0 if the chip
+    /// is lost (or no system).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_gfx_quiet(hold: c_int) -> c_int {
+        c_int::from(with(|s| Ok(s.gfx_quiet(hold != 0))).unwrap_or(false))
     }
 
     /// `rp_code_hint`: [`Sys::code_hint`].

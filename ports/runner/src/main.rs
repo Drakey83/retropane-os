@@ -232,7 +232,10 @@ mod image {
     fn light_up(level: u32) -> Option<super::gfx::Light> {
         use rp_drv_pxa_pwm::reg;
         let Some(mut pwm) = rt::take_pwm0() else {
-            let _ = writeln!(Out, "runner: R341: the backlight not taken (PWM0 already taken)");
+            let _ = writeln!(
+                Out,
+                "runner: R341: the backlight not taken (PWM0 already taken)"
+            );
             return None;
         };
         let found = [reg::CR, reg::PCR, reg::DCR].map(|r| pwm.read32(r));
@@ -1877,7 +1880,9 @@ mod image {
         CARD.with(|c| {
             c.each = args[..arg_count].iter().any(|a| a.to_bytes() == LOOKS_WORD);
             c.each_read = args[..arg_count].iter().any(|a| a.to_bytes() == READS_WORD);
-            c.play_opens = args[..arg_count].iter().any(|a| a.to_bytes() == PLAY_OPENS_WORD);
+            c.play_opens = args[..arg_count]
+                .iter()
+                .any(|a| a.to_bytes() == PLAY_OPENS_WORD);
         });
         s.set_looks(Looks {
             reads: card_reads,
@@ -1921,7 +1926,10 @@ mod image {
         }
         // `-rpwmclock`: Windows Mobile's 2700G clock kept (R343's picker
         // run, where the chip never wedged), whatever `-rpclock` says
-        let rung = if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpwmclock") {
+        let rung = if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpwmclock")
+        {
             None
         } else {
             clock_rung(&args[..arg_count])
@@ -1931,7 +1939,9 @@ mod image {
             .any(|a| a.to_bytes() == LADDER_WORD);
         let bar = args[..arg_count].iter().any(|a| a.to_bytes() == BAR_WORD);
         // R343: the tone curves stepped through for the owner's pick
-        let curves = args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpcurves");
+        let curves = args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpcurves");
         if curves {
             super::gfx::curve_key_on();
         }
@@ -2005,9 +2015,27 @@ mod image {
         };
         // R341: the backlight for the game (the loader puts the board
         // back after every image, a crash's included: audit C39)
-        if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpmemback") {
+        if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rptexhold")
+        {
+            // (the bare word: the whole run; the line holds 31 words)
+            let s = seconds_after(&args[..arg_count], b"-rptexhold").unwrap_or(0);
+            super::gfx::QUIET.with(|q| q.hold_s = Some(s));
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rptexhold {s}: the program's texture writes wait while the TA and a render are both at work (the first {s} s; 0: the whole run)"
+            );
+        }
+        if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpmemback")
+        {
             super::gfx::MEM_BACK.with(|m| m.0 = true);
-            let _ = writeln!(uart, "runner: R340 -rpmemback: 0x804 = 1 after every render (the overlap on)");
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpmemback: 0x804 = 1 after every render (the overlap on)"
+            );
         }
         let light = light_up(
             seconds_after(&args[..arg_count], LIGHT_WORD)

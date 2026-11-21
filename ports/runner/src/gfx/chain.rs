@@ -436,6 +436,28 @@ impl Chain {
         Settled::Done(us_since(f.t0))
     }
 
+    /// R340 (run 297): the chip stopped answering with a frame's chain in
+    /// flight: the chain stopped at once, with no chip register touched
+    /// (the DMA's own registers only), and the flight dropped (the full
+    /// rebuild sets everything up again). `Some`: the descriptor the DMA
+    /// was at and the time since the arm; `None`: no frame in flight.
+    ///
+    /// Why: the PXA27x's DMA goes on to the next descriptor when a write
+    /// to the silent chip is ended by the bus time-out, so the whole
+    /// chain (1,000 to 2,200 descriptors) was sent into it at 4 to 9 ms a
+    /// descriptor, the external bus held for each: the CPU's own SDRAM
+    /// reads waited behind them and the game ran a cache line a time-out
+    /// (run 297's stall frames: 7.2 to 11.4 s, one sample a descriptor,
+    /// the rebuild itself 244 ms).
+    pub fn cut(&mut self) -> Option<(u32, u32)> {
+        let f = self.flight.take()?;
+        let r = self.dma.registers();
+        if !f.dma_done {
+            self.dma.abort();
+        }
+        Some((r[1].wrapping_sub(self.addr(DESC)) / 16, us_since(f.t0)))
+    }
+
     /// Waits for the frame in flight to end, up to the limits.
     pub fn settle(&mut self, regs: &mut Mmio) -> Settled {
         let Some(mut f) = self.flight.take() else {

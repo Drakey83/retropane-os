@@ -1299,10 +1299,31 @@ static inline uint32_t RP_FaceTexel( pixel_t p )
 	return 0x8000u | ( c >> 1 & 0x7FE0u ) | ( c & 0x1Fu );
 }
 
+/*
+R340 (run 297): asked before every write of ours into the 2700G's texture
+memory. Rule 0: a desktop driver hands texels to the vendor's upload call
+and never learns the chip died under it; Dell's GLES copies them with the
+chip idle (one scene at a time). Ours writes the chip's memory itself
+while it draws, so it asks the screen first (one call, no chip register
+read once the chip is lost): 0 means the 2700G stopped answering, and
+every word written now would wait out the bus time-out (4 to 9 ms a word:
+a face's lightmap seconds), so the write is skipped; the next frame call
+says ESTALE and RP_ChipLost places everything again. The same call is
+the owner's flashlight lead's lever (the runner's -rptexhold): the write
+held while the TA and a render are both at work.
+*/
+static inline int RP_ChipWrite( void )
+{
+	return rp_gfx_quiet( 1 );
+}
+
 static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy )
 {
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
 	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
+
+	if( !RP_ChipWrite( ))
+		return;
 
 	for( int sy = 0; sy < h8; sy++ )
 	{
@@ -1877,7 +1898,8 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 		lh = lh > 1 ? lh >> 1 : 1;
 	}
 	/* one copy of the whole chain (whole words: the last texel padded) */
-	memcpy((uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES + at, chain, ( bytes + 3u ) & ~3u );
+	if( RP_ChipWrite( ))
+		memcpy((uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES + at, chain, ( bytes + 3u ) & ~3u );
 	rp_tex_used = at + (( bytes + 3u ) & ~3u );
 	t->serial = image->rp_serial;
 	t->gen = rp_tex_gen;
@@ -4556,6 +4578,9 @@ static void RP_SkinUpload( const pixel_t *src, int w, int h, int pg, int qx, int
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
 	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
 
+	if( !RP_ChipWrite( ))
+		return;
+
 	for( int sy = 0; sy < h8; sy++ )
 	{
 		for( int sx = 0; sx < w8; sx++ )
@@ -5892,6 +5917,9 @@ static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, 
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
 	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
 
+	if( !RP_ChipWrite( ))
+		return;
+
 	for( int sy = 0; sy < h8; sy++ )
 		for( int sx = 0; sx < w8; sx++ )
 		{
@@ -6131,8 +6159,9 @@ static int RP_WhitePage( void )
 		if( pg < 0 )
 			return -1;
 		dst = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES ) + RP_Interleave( rp_white.qx, rp_white.qy ) * 32;
-		for( int k = 0; k < 32; k++ )
-			dst[k] = 0xFFFFFFFFu;
+		if( RP_ChipWrite( ))
+			for( int k = 0; k < 32; k++ )
+				dst[k] = 0xFFFFFFFFu;
 		rp_white.gen = rp_page[pg].gen;
 	}
 	rp_page[rp_white.pg].used = tr.framecount;
@@ -6503,8 +6532,9 @@ void RP_EmitFill( int x, int y, int w, int h )
 			return;
 		}
 		dst = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES ) + RP_Interleave( rp_white.qx, rp_white.qy ) * 32;
-		for( int k = 0; k < 32; k++ )
-			dst[k] = 0xFFFFFFFFu;
+		if( RP_ChipWrite( ))
+			for( int k = 0; k < 32; k++ )
+				dst[k] = 0xFFFFFFFFu;
 		rp_white.gen = rp_page[pg].gen;
 	}
 	rp_page[rp_white.pg].used = tr.framecount;

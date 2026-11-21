@@ -228,6 +228,13 @@ size_t rp_big_size(const void *p);
 int rp_gfx_wait(void);
 /* Gives the screen back: 0, or -1 with errno. */
 int rp_gfx_close(void);
+/* R340: before the program writes texture memory itself. 0: the chip
+ * stopped answering, skip the write (each word would wait out the bus
+ * time-out; the next frame call says ESTALE and everything is placed
+ * again). 1: write. hold 1: the screen may first wait for a moment its
+ * chip takes such writes safely (the runner's -rptexhold). Cheap: no chip
+ * register is read once the chip is lost. */
+int rp_gfx_quiet(int hold);
 /* R324: the program's hint that its next frames run much code a frame (1:
  * a game's many models) or not (0): the runner may keep its hottest code
  * locked in the I-cache meanwhile. Call it on a change, not every frame. */

@@ -236,6 +236,7 @@ watching.
   watchdog reset the device (Dell's restore screen). Rule: no MBX register
   access while its clock is off (audit C43).
 - **`SYSCFG`'s time-out at its longest ends an access to a wedged chip after ~8.9 s** (run 280, X51v, 2026-11-20: the CPU held that long in one write); the runner uses `0x010000` in the field (~35 ms). **Dell's interrupt handler answers status bits 5 (`0x804` = 1, after the render in flight), 7, 8 and 9 (`0x834` = 1)**, enabled by Windows Mobile's `0x130` = `0x87F5`; meanings readings, not yet seen (2700g.md "The 3D core's events", R340).
+- **A DMA chain into a silent 2700G does not stop by itself** (run 297's samples, X51v, 2026-11-21): each descriptor waits out the bus time-out (4-9 ms) and the next follows, the external bus held throughout, so the CPU runs a cache line a time-out (a stall frame 2.7-11.1 s for a 244 ms rebuild); cut the chain (the DMA's own registers) as soon as the chip is found silent (2700g.md "The 3D core's events", R340).
 - **MBX status `0x12c`** (`rp-gpubench` run FI, X51v, 2026-10-22): raw
   (the enables `0x130` don't change it); 2D sets no completion bit (bits
   16-23 hold the FIFO's fill while it works): 2D waits are polled; a

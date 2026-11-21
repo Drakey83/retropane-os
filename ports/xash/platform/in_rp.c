@@ -509,6 +509,21 @@ static void RP_Walk( uint64_t played_us )
 	}
 	/* -rpfx: the gluon gun's ammunition topped up every 4 s, so it never
 	   stops firing (its beam and sprites in every frame, the end shot too) */
+	/* R340 (the owner's lead, run 297: the stalls, the hitches and the
+	   flashing come most with the flashlight on): the walk keeps it lit.
+	   The game's battery lasts 120 s (1.2 s a unit) and fills in 20 s,
+	   and the light goes out by itself at empty, so one more impulse 100
+	   every 145 s of the game's clock lights it again: on for 120 s of
+	   every 145, the same frames every run. */
+	{
+		static uint64_t flash_next = 145000;
+
+		if( ms >= flash_next )
+		{
+			flash_next += 145000;
+			Cbuf_AddText( "impulse 100\n" );
+		}
+	}
 	if( ms >= fx_next && RP_Parm( "-rpfx" ))
 	{
 		fx_next = ms + 4000;

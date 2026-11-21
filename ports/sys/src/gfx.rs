@@ -124,6 +124,15 @@ pub trait Screen {
     /// never a wait: called from the program's clock reads, which a game
     /// makes many times a frame. Nothing by default.
     fn pump(&mut self) {}
+    /// Before the program writes texture memory itself (`rp_gfx_quiet`):
+    /// false if the chip stopped answering (the write is skipped: the
+    /// next frame says `ESTALE` and everything is placed again); with
+    /// `hold`, the screen may first wait for a moment its chip takes such
+    /// writes safely. A look that touches no chip register when the chip
+    /// is lost. True by default.
+    fn quiet(&mut self, _hold: bool) -> bool {
+        true
+    }
 }
 
 /// One thing for the tile accelerator.
@@ -413,8 +422,14 @@ mod tests {
     fn every_status_read_in_the_runner_is_timed() {
         for (name, text) in [
             ("gfx.rs", include_str!("../../runner/src/gfx.rs")),
-            ("gfx/chain.rs", include_str!("../../runner/src/gfx/chain.rs")),
-            ("gfx/probe4f.rs", include_str!("../../runner/src/gfx/probe4f.rs")),
+            (
+                "gfx/chain.rs",
+                include_str!("../../runner/src/gfx/chain.rs"),
+            ),
+            (
+                "gfx/probe4f.rs",
+                include_str!("../../runner/src/gfx/probe4f.rs"),
+            ),
         ] {
             let direct = text.matches("reg::STATUS)").count();
             let allowed = usize::from(name == "gfx.rs");
