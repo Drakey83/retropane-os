@@ -169,7 +169,14 @@ static uint32_t rp_nm_lazy, rp_nm_made;
 static uint32_t rp_b61_items, rp_b61_differ;
 static uint32_t rp_tex_used, rp_tex_room; /* R297 B: the texture pool's bytes */
 
-static int rp_decal_on = 1; /* -rpdecalsoft: 0, the old way (a decal face by its lit surface) */
+static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures under the plain TEX2 word */
+/* Run 305 (the owner's play with the decals drawn as polygons): 14 stalls
+   and 4,440 bit 9 events where run 297 had 6 and 1,329, and his video of
+   faces drawn with other pictures. Until R340's cause is found the
+   polygons are off by default (the old way: a decal face by its lit
+   surface, which flashes when a decal lands but adds no small blended
+   primitive to the frame); -rpdecalpoly turns them on. */
+static int rp_decal_on;
 
 void RP_EmitInit( void )
 {
@@ -178,8 +185,10 @@ void RP_EmitInit( void )
 	rp_gpu = gEngfuncs.Cvar_Get( "rp_gpu", "0", 0, "ref_rp: 1 while the 2700G draws the frames" );
 	rp_fan = gEngfuncs.Cvar_Get( "rp_fan", "1", 0, "ref_rp: 1 a model's fans as the TA's fans, 0 as strips" );
 	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
-	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352's comparison: decal faces the old way */
-		rp_decal_on = 0;
+	if( gEngfuncs.Sys_CheckParm( "-rptex2plain" ))
+		rp_tex2_plain = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rpdecalpoly" )) /* R352: decals as polygons over their faces */
+		rp_decal_on = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpfx0" )) /* R338's bisection: the float path, one word on the 31-word line */
 		gEngfuncs.Cvar_Set( "rp_fixed", "0" );
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
@@ -6096,7 +6105,7 @@ static void RP_2DState( int pg, int fmt )
 	RP_Put( RP_ISP_ALWAYS );
 	RP_Put( fmt ? ( RP_TEX0_PAGE & ~( 7u << 13 )) | 4u << 13 : RP_TEX0_PAGE );
 	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
-	RP_Put( fmt ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha (rp-glesfeat L) */
+	RP_Put( fmt && !rp_tex2_plain ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha (rp-glesfeat L) */
 	RP_Put( RP_CLIP );
 	RP_Put( 0 );
 	RP_Whole();
@@ -6261,7 +6270,7 @@ static void RP_FxState( int pg, int fmt, int mode )
 	RP_Put( RP_ISP_ALWAYS );
 	RP_Put( fmt ? ( RP_TEX0_PAGE & ~( 7u << 13 )) | 4u << 13 : RP_TEX0_PAGE );
 	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
-	RP_Put( fmt ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha */
+	RP_Put( fmt && !rp_tex2_plain ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha */
 	RP_Put( RP_CLIP );
 	RP_Put( 0 );
 	RP_Whole();

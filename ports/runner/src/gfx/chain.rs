@@ -288,7 +288,9 @@ impl Chain {
         // picture is the same; a state block goes ahead of the first
         // primitive of each run that needs it, again by pointer.
         // (`-rpnosort`: the program's order, as before.)
-        let sort = super::CLASS_SORT.with(|s| *s);
+        let limit = super::BISECT.with(|b| b.limit);
+        let mut strips = 0u32;
+        let sort = super::CLASS_SORT.with(|s| *s) && limit == u32::MAX;
         for pass in 0..2u8 {
             if !sort && pass == 1 {
                 break;
@@ -319,7 +321,24 @@ impl Chain {
                         let n = (w & 0xFF) as usize;
                         let (two, blended) = cur.map_or((false, false), |c| (c.2, c.3));
                         let cw = corner_words_in(w, two);
-                        if !sort || blended == (pass == 1) {
+                        if pass == 0 {
+                            strips += 1;
+                            if strips == limit {
+                                // R340's search: the last strip fed, as built
+                                let mut keep = [0u32; 28];
+                                if let Some((at, bytes, ..)) = cur {
+                                    let from = ((at - base) / 4) as usize;
+                                    let n = (bytes as usize / 4).min(12);
+                                    if at >= base && from + n <= words.len() {
+                                        keep[..n].copy_from_slice(&words[from..from + n]);
+                                    }
+                                }
+                                let m = (1 + n * cw).min(16).min(words.len() - k);
+                                keep[12..12 + m].copy_from_slice(&words[k..k + m]);
+                                super::BISECT.with(|b| b.last = keep);
+                            }
+                        }
+                        if strips <= limit && (!sort || blended == (pass == 1)) {
                             if let Some((at, bytes, ..)) = cur.filter(|_| !sent) {
                                 if !self.to_window(at, bytes) {
                                     return false;
@@ -352,6 +371,7 @@ impl Chain {
                 }
             }
         }
+        super::BISECT.with(|b| b.total = strips);
         let (g, e) = (self.addr(T_GRID), self.addr(T_END));
         if !(self.push(g, REGS_PHYS + (MBX + GRID) as u32, 4) && self.to_window(e, 4)) {
             return false;

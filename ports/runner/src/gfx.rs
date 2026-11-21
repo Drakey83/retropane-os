@@ -1082,6 +1082,115 @@ const TA_EV9_ANSWER: usize = 0x834;
 /// blended ([`chain::Chain`]'s build); `-rpnosort` the program's order.
 pub static CLASS_SORT: rt::Global<bool> = rt::Global::new(true);
 
+/// R340's search (`-rpbisect`, runs 303-307: bit 9 comes once a frame
+/// while the console's text is drawn, and two guesses at why were wrong).
+/// Rule 0: a vendor would read the chip's documents for the event's
+/// meaning; ours, without them, lets the driver find the primitive: once
+/// the frames are steady (800 strips or more), each frame is fed only up
+/// to a limit, the limit halved by whether the events still come (72
+/// frames a step), down to the one primitive whose presence starts them;
+/// its words and its state block's are logged. Then the frames whole
+/// again.
+#[derive(Clone, Copy)]
+pub struct Bisect {
+    pub on: bool,
+    /// Strips of a frame fed (`u32::MAX`: all).
+    pub limit: u32,
+    /// A frame's strips, as the last build counted them.
+    pub total: u32,
+    /// The last strip fed and the state block over it, as built.
+    pub last: [u32; 28],
+    lo: u32,
+    hi: u32,
+    n: u32,
+    steady: u32,
+    ev0: u32,
+    phase: u8,
+}
+pub static BISECT: rt::Global<Bisect> = rt::Global::new(Bisect {
+    on: false,
+    limit: u32::MAX,
+    total: 0,
+    last: [0; 28],
+    lo: 0,
+    hi: 0,
+    n: 0,
+    steady: 0,
+    ev0: 0,
+    phase: 0,
+});
+
+/// One frame of the search: `ev9` the events so far.
+fn bisect_step(ev9: u32, pages: [u32; 2], log: fn(Arguments<'_>)) {
+    BISECT.with(|b| {
+        if !b.on || b.phase == 3 {
+            return;
+        }
+        if b.phase == 0 {
+            // steady frames first (the console over the menu)
+            b.steady = if b.total >= 800 { b.steady + 1 } else { 0 };
+            if b.steady < 300 {
+                return;
+            }
+            b.phase = 1;
+            b.lo = 0;
+            b.hi = b.total;
+            b.limit = b.total;
+            b.n = 0;
+            log(format_args!(
+                "rp-gfx: R340 bisect: steady frames of {} strips; the search begins (whole frames first)",
+                b.total
+            ));
+            return;
+        }
+        b.n += 1;
+        if b.n == 8 {
+            b.ev0 = ev9;
+        }
+        if b.n < 72 {
+            return;
+        }
+        let ev = ev9.wrapping_sub(b.ev0);
+        b.n = 0;
+        if b.phase == 2 {
+            // the last step fed strips up to `hi`: its last one is the one
+            let l = b.last;
+            log(format_args!(
+                "rp-gfx: R340 bisect: the events begin with strip {} of {} ({ev} events in 64 frames with it): its state block {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}; the strip {:08x}, its first words {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                b.hi, b.total, l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7], l[8], l[9], l[10], l[11],
+                l[12], l[13], l[14], l[15], l[16], l[17], l[18], l[19], l[20], l[21], l[22], l[23], l[24], l[25], l[26], l[27]
+            ));
+            b.phase = 3;
+            b.limit = u32::MAX;
+            return;
+        }
+        log(format_args!(
+            "rp-gfx: R340 bisect: {} of {} strips fed: {ev} events in 64 frames; the last two scenes took {} and {} pages",
+            b.limit, b.total, pages[0], pages[1]
+        ));
+        let present = ev >= 8;
+        if b.limit == b.total && b.lo == 0 && b.hi == b.total && !present {
+            log(format_args!("rp-gfx: R340 bisect: no events with whole frames: nothing to search"));
+            b.phase = 3;
+            b.limit = u32::MAX;
+            return;
+        }
+        if b.limit != b.total || b.hi != b.total || b.lo != 0 {
+            if present {
+                b.hi = b.limit;
+            } else {
+                b.lo = b.limit;
+            }
+        }
+        if b.hi - b.lo <= 1 {
+            b.phase = 2;
+            b.limit = b.hi;
+        } else {
+            b.limit = (b.lo + b.hi) / 2;
+        }
+    });
+}
+
 /// R340: the lever's write after a render seen ending.
 fn mem_back(regs: &mut Mmio, overlap: bool) {
     if overlap
@@ -3248,6 +3357,7 @@ impl Screen for Chip {
             let into = o.overlap && o.next_b;
             match ch.start(regs, &o.ta_lay(into), &bg, parts) {
                 Ok(true) => {
+                    bisect_step(c.ev[3], o.scene_pages, self.log);
                     o.armed_b = into;
                     o.next_b = o.overlap && !into;
                     c.frames += 1;

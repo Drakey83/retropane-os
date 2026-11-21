@@ -2029,6 +2029,16 @@ mod image {
         }
         if args[..arg_count]
             .iter()
+            .any(|a| a.to_bytes() == b"-rpbisect")
+        {
+            super::gfx::BISECT.with(|b| b.on = true);
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpbisect: once the frames are steady, the strip whose presence starts the event bit 9 searched for"
+            );
+        }
+        if args[..arg_count]
+            .iter()
             .any(|a| a.to_bytes() == b"-rpnosort")
         {
             super::gfx::CLASS_SORT.with(|s| *s = false);
