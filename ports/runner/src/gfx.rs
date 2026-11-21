@@ -1078,6 +1078,10 @@ pub static EV9: rt::Global<Ev9> = rt::Global::new(Ev9 {
 });
 const TA_EV9_ANSWER: usize = 0x834;
 
+/// R340 (run 305): a frame's primitives fed by class, solid first, then
+/// blended ([`chain::Chain`]'s build); `-rpnosort` the program's order.
+pub static CLASS_SORT: rt::Global<bool> = rt::Global::new(true);
+
 /// R340: the lever's write after a render seen ending.
 fn mem_back(regs: &mut Mmio, overlap: bool) {
     if overlap

@@ -2027,6 +2027,16 @@ mod image {
                 "runner: R340 -rptexhold {s}: the program's texture writes wait while the TA and a render are both at work (the first {s} s; 0: the whole run)"
             );
         }
+        if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpnosort")
+        {
+            super::gfx::CLASS_SORT.with(|s| *s = false);
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpnosort: a frame's primitives fed in the program's order (not solid first, then blended)"
+            );
+        }
         if args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpev9") {
             super::gfx::EV9.with(|e| e.answer = true);
             let _ = writeln!(

@@ -49,6 +49,9 @@ const ZERO_WORDS: usize = 2048;
 /// Bytes a clear's descriptor moves: whole 32-byte bursts, under
 /// [`MOST`].
 const ZERO_CHUNK: u32 = 8160;
+/// A state block's second word (the TSP) with blending on (bit 13): the
+/// TA files what follows as see-through.
+const BLEND: u32 = 1 << 13;
 const DESC: usize = ZERO + ZERO_WORDS;
 const _: () = assert!(DESC % 4 == 0 && ZERO_CHUNK as usize <= 4 * ZERO_WORDS);
 /// The 2700G's local memory as the DMA sees it (CS3 from 0).
@@ -266,49 +269,86 @@ impl Chain {
         if !(self.to_window(self.addr(T_BG), 4 * bg.len() as u32) && self.end()) {
             return false;
         }
-        let mut two = false;
-        for words in parts {
-            let base = words.as_ptr().addr() as u32;
-            let mut k = 0;
-            while k < words.len() {
-                let w = words[k];
-                let src = base + 4 * k as u32;
-                if w == STATE || w == STATE2 {
-                    // kit 112: a two-texture block's corners carry u1, v1
-                    let sw = if w == STATE2 {
-                        STATE2_WORDS
+        // R340 (run 305, 2026-11-21): the frame's primitives by class,
+        // the solid ones first and the blended ones after, each class in
+        // the program's own order. The 2700G's event bit 9 follows the
+        // blended primitives a frame holds (the console's text: 70 a
+        // second; run 305, with a decal's polygon after each face: 4,440
+        // events and 14 stalls where run 297 had 1,329 and 6), and every
+        // stall begins in a chain's first hundred or so descriptors,
+        // where those polygons lay between the walls. Iterate, don't
+        // imitate (rule 0): a GL driver takes draws in the program's
+        // order and leaves the sorting to the program; Dell's GLES feeds
+        // the TA as the calls come and answers bit 9 by stopping the
+        // scene. Ours reads every word of a frame anyway (the check, the
+        // chain), and a chain is pointers into the program's buffers: so
+        // the order the TA sees costs nothing to choose. The TA files a
+        // primitive by its own class whatever the order (solid: hidden
+        // surfaces by depth; blended: drawn after, in order), so the
+        // picture is the same; a state block goes ahead of the first
+        // primitive of each run that needs it, again by pointer.
+        // (`-rpnosort`: the program's order, as before.)
+        let sort = super::CLASS_SORT.with(|s| *s);
+        for pass in 0..2u8 {
+            if !sort && pass == 1 {
+                break;
+            }
+            // the state block in force as the words are read: where it
+            // lies, its bytes, two texture units, blended; and whether
+            // this pass has sent it
+            let mut cur: Option<(u32, u32, bool, bool)> = None;
+            let mut sent = false;
+            for words in parts {
+                let base = words.as_ptr().addr() as u32;
+                let mut k = 0;
+                while k < words.len() {
+                    let w = words[k];
+                    let src = base + 4 * k as u32;
+                    if w == STATE || w == STATE2 {
+                        // kit 112: a two-texture block's corners carry u1, v1
+                        let sw = if w == STATE2 {
+                            STATE2_WORDS
+                        } else {
+                            STATE_WORDS
+                        };
+                        let blended = words.get(k + 1).is_some_and(|t| t & BLEND != 0);
+                        cur = Some((src, 4 * (1 + sw) as u32, w == STATE2, blended));
+                        sent = false;
+                        k += 1 + sw;
                     } else {
-                        STATE_WORDS
-                    };
-                    two = w == STATE2;
-                    if !self.to_window(src, 4 * (1 + sw) as u32) {
-                        return false;
-                    }
-                    k += 1 + sw;
-                } else {
-                    let n = (w & 0xFF) as usize;
-                    let fan = w & !NO_Z & !CULL & 0xFFFF_FF00 == FAN;
-                    let cull = (w & CULL) >> 18;
-                    let head = match (fan, w & NO_Z != 0) {
-                        _ if cull != 0 => {
-                            T_CULL
-                                + 4 * (cull as usize - 1)
-                                + 2 * usize::from(fan)
-                                + usize::from(w & NO_Z != 0)
+                        let n = (w & 0xFF) as usize;
+                        let (two, blended) = cur.map_or((false, false), |c| (c.2, c.3));
+                        let cw = corner_words_in(w, two);
+                        if !sort || blended == (pass == 1) {
+                            if let Some((at, bytes, ..)) = cur.filter(|_| !sent) {
+                                if !self.to_window(at, bytes) {
+                                    return false;
+                                }
+                                sent = true;
+                            }
+                            let fan = w & !NO_Z & !CULL & 0xFFFF_FF00 == FAN;
+                            let cull = (w & CULL) >> 18;
+                            let head = match (fan, w & NO_Z != 0) {
+                                _ if cull != 0 => {
+                                    T_CULL
+                                        + 4 * (cull as usize - 1)
+                                        + 2 * usize::from(fan)
+                                        + usize::from(w & NO_Z != 0)
+                                }
+                                (true, false) => T_FAN,
+                                (true, true) => T_FAN_NO_Z,
+                                (false, false) => T_STRIP,
+                                (false, true) => T_STRIP_NO_Z,
+                            };
+                            let ok = self.to_window(self.addr(head), 4)
+                                && self.to_window(src + 4, (4 * n * cw) as u32)
+                                && self.end();
+                            if !ok {
+                                return false;
+                            }
                         }
-                        (true, false) => T_FAN,
-                        (true, true) => T_FAN_NO_Z,
-                        (false, false) => T_STRIP,
-                        (false, true) => T_STRIP_NO_Z,
-                    };
-                    let cw = corner_words_in(w, two);
-                    let ok = self.to_window(self.addr(head), 4)
-                        && self.to_window(src + 4, (4 * n * cw) as u32)
-                        && self.end();
-                    if !ok {
-                        return false;
+                        k += 1 + n * cw;
                     }
-                    k += 1 + n * cw;
                 }
             }
         }
