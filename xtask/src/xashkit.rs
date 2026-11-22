@@ -209,7 +209,10 @@ fn clock() -> String {
             let n: Vec<&str> = v.split_whitespace().collect();
             n.len() == 4 && n.iter().all(|w| w.parse::<u32>().is_ok())
         })
-        .map_or_else(|| CLOCK.to_string(), |v| v.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map_or_else(
+            || CLOCK.to_string(),
+            |v| v.split_whitespace().collect::<Vec<_>>().join(" "),
+        )
 }
 
 /// The variable naming an experiment's extra words for the command line.
@@ -668,7 +671,11 @@ engine c
         for b in BINDS.bytes() {
             c ^= u32::from(b);
             for _ in 0..8 {
-                c = if c & 1 != 0 { c >> 1 ^ 0xEDB8_8320 } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    c >> 1 ^ 0xEDB8_8320
+                } else {
+                    c >> 1
+                };
             }
         }
         assert_eq!(
@@ -680,7 +687,10 @@ engine c
 
     #[test]
     fn a_line_past_the_runners_31_words_is_refused_at_build() {
-        let line = with_extra(base_for_test(), Some("-a -b -c -d -e -f -g -h -i -j -k -l -m -n -o -p"));
+        let line = with_extra(
+            base_for_test(),
+            Some("-a -b -c -d -e -f -g -h -i -j -k -l -m -n -o -p"),
+        );
         assert!(args_fit(&line).is_err());
         let long = format!("+map {}", "x".repeat(520));
         assert!(args_fit(&long).is_err());
@@ -825,5 +835,51 @@ engine c
             }
         }
         assert!(tests > 0, "the guard found no bone mask tests to check");
+    }
+
+    /// R352's class guard: whatever our client patch keeps for a model by
+    /// its slot's address (kit 81's bone matrices, kit 110's needed-bones
+    /// list) is also checked against the model's name on the same test.
+    /// The engine gives a freed slot to the next model loaded, so the
+    /// address alone handed one model another's bones (parts drawn
+    /// stretched to where they were).
+    #[test]
+    fn what_the_client_keeps_by_a_model_s_slot_is_checked_by_its_name_too() {
+        let patch = include_str!("../../ports/xash/patches/hlsdk-portable.patch");
+        let lines: Vec<&str> = patch.lines().filter(|l| l.starts_with('+')).collect();
+        let mut tests = 0;
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("mdl == m_pRenderModel") || line.contains("mdl != m_pRenderModel") {
+                tests += 1;
+                // the test's own statement: this line and the two after
+                let whole = lines[i..(i + 3).min(lines.len())].join(" ");
+                assert!(
+                    whole.contains("strncmp(") && whole.contains("m_pRenderModel->name"),
+                    "a model's slot compared with no look at its name (R352): {line}"
+                );
+            }
+        }
+        assert!(
+            tests >= 2,
+            "the guard found {tests} slot tests, not kit 81's and kit 110's"
+        );
+    }
+
+    /// R356's guard: the map loader clears every edge's kept place in the
+    /// software renderer's edge list (`cachededgeoffset`), for both edge
+    /// sizes. Upstream leaves it as the allocation found it; the software
+    /// pass's first frame followed an odd value into an unaligned load
+    /// (run 315's fault at the end shot).
+    #[test]
+    fn the_map_loader_clears_every_edge_s_kept_place() {
+        let patch = include_str!("../../ports/xash/patches/xash3d-fwgs.patch");
+        let cleared = patch
+            .lines()
+            .filter(|l| l.starts_with('+') && l.contains("out->cachededgeoffset = 0;"))
+            .count();
+        assert_eq!(
+            cleared, 2,
+            "the 16-bit and the 32-bit edges, each cleared at the load"
+        );
     }
 }
