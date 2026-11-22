@@ -265,6 +265,44 @@ pub fn report(s: &Samples, code: &Code, top: usize) -> String {
                 slow.len()
             );
             profile(&mut out, &slow, code, top);
+            // RETROPANE_PROFILE_FRAMES=N: the stretch's N slowest frames,
+            // each by itself in the order they came (the owner, run 316:
+            // "a hitch i had during the initial fire fight": the slow
+            // frames' sum says what slow frames cost, not what one was)
+            let each: usize = std::env::var("RETROPANE_PROFILE_FRAMES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let mut worst: Vec<(usize, u32)> = slow_frames
+                .iter()
+                .filter(|(k, _)| (from..to).contains(k))
+                .copied()
+                .collect();
+            worst.sort_by_key(|f| core::cmp::Reverse(f.1));
+            worst.truncate(each);
+            worst.sort_by_key(|f| f.0);
+            for (k, took) in worst {
+                let one: Vec<(u32, u32)> = (k + 1..s.pairs.len())
+                    .take_while(|&j| kind[j].0 == 1)
+                    .map(|j| s.pairs[j])
+                    .collect();
+                // (the run's samples are one in `keep`, a slow frame's all)
+                let before = (from..k)
+                    .map(|j| match kind[j].0 {
+                        0 => keep,
+                        1 => 1,
+                        _ => 0,
+                    })
+                    .sum::<u64>();
+                let _ = writeln!(
+                    out,
+                    "
+== one slow frame of {what}: {took} ms, about {} ms of samples into the stretch, {} samples",
+                    ms(before),
+                    one.len()
+                );
+                profile(&mut out, &one, code, top.min(14));
+            }
         }
     }
     out

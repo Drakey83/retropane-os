@@ -1338,10 +1338,32 @@ GAMEDIR=valve # Gamedir path
         assert_eq!(answer("vtable for CCrowbar"), Answer::Missing);
     }
 
+    /// A root with nothing in it but the SDK's options file, for the tests
+    /// that read the parts' lists alone. `parts` stops a build whose
+    /// options file cannot be read (R345), so a root with none at all
+    /// (these tests' "nowhere" until 4020e46f) panicked in it: the two
+    /// tests failed from that commit on, wherever no sources were fetched
+    /// (GitHub's CI among them).
+    fn lists_root(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("rp-xash-lists-{name}-{}", std::process::id()));
+        let sdk = root.join("target").join("ports-src").join("hlsdk-portable");
+        std::fs::create_dir_all(&sdk).unwrap();
+        std::fs::write(
+            sdk.join("mod_options.txt"),
+            "CLIENT_WEAPONS=ON # as the SDK has it
+",
+        )
+        .unwrap();
+        root
+    }
+
     #[test]
     fn a_part_linked_inside_another_is_built_before_it() {
         // The lists alone (no sources fetched): the order and the flags.
-        let all = parts(Path::new("nowhere"), 0);
+        let root = lists_root("order");
+        let all = parts(&root, 0);
+        let _ = std::fs::remove_dir_all(&root);
         let names: Vec<&str> = all.iter().map(|p| p.name).collect();
         let mut once = names.clone();
         once.sort_unstable();
@@ -1381,7 +1403,9 @@ GAMEDIR=valve # Gamedir path
 
     #[test]
     fn the_modules_follow_the_licence_line_and_the_engine_is_placed_last() {
-        let all = parts(Path::new("nowhere"), 0);
+        let root = lists_root("licence");
+        let all = parts(&root, 0);
+        let _ = std::fs::remove_dir_all(&root);
         let part = |n: &str| all.iter().find(|p| p.name == n);
         // Three modules: the game's two libraries alone, then the program
         // with the engine's own parts inside (ADR-0039 rule 5).
