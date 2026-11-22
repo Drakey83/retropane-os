@@ -500,6 +500,12 @@ pub trait Sys {
     fn gfx_quiet(&mut self, _hold: bool) -> bool {
         true
     }
+    /// The picture's brightness (`rp_gfx_look`): step `level` of the
+    /// screen's own path from dark to bright (0 to 8, 4 the default).
+    /// False where there is no screen that has one.
+    fn gfx_look(&mut self, _level: u8) -> bool {
+        false
+    }
     /// The screen's pump alone (a frame fed by DMA: its render started
     /// once the chip has taken it), from the runner's tick; nothing else
     /// of the system runs. The default: nothing.
@@ -1564,6 +1570,18 @@ mod face {
     #[unsafe(no_mangle)]
     pub extern "C" fn rp_gfx_quiet(hold: c_int) -> c_int {
         c_int::from(with(|s| Ok(s.gfx_quiet(hold != 0))).unwrap_or(false))
+    }
+
+    /// `rp_gfx_look`: the picture's brightness, step `level` (0 to 8, 4
+    /// the default) of the screen's path from dark to bright, at once (the
+    /// scan-out's table: no frame is drawn again). 1 if the screen took
+    /// it, 0 if not (no screen, or a level off the path).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn rp_gfx_look(level: c_int) -> c_int {
+        let Ok(level) = u8::try_from(level) else {
+            return 0;
+        };
+        c_int::from(with(|s| Ok(s.gfx_look(level))).unwrap_or(false))
     }
 
     /// `rp_code_hint`: [`Sys::code_hint`].

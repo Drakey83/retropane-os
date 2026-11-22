@@ -558,6 +558,10 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
         self.screen.as_mut().is_none_or(|s| s.quiet(hold))
     }
 
+    fn gfx_look(&mut self, level: u8) -> bool {
+        self.screen.as_mut().is_some_and(|s| s.look(level))
+    }
+
     fn code_hint(&mut self, hot: bool) {
         if let Some(l) = self.library.as_ref() {
             (l.hint)(hot);

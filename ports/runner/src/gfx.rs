@@ -843,6 +843,43 @@ const CURVES: [(&str, u32, [u8; 17]); 4] = [
 /// `brightness` lifts the lightmaps and keeps the textures' contrast).
 const LOOK_DEFAULT: usize = 3;
 
+/// R343, the owner's ruling (2026-11-20: "do the smart slider"): one
+/// "Picture brightness" setting in the game's options, each step moving
+/// the light and the screen's curve together. Iterate, don't imitate
+/// (rule 0): Half-Life has two sliders, gamma and brightness, that bake a
+/// 1998 formula into every lightmap and need a restart on some renderers,
+/// and a player can set them to a muddy or washed-out pair; a phone has
+/// one brightness. Ours is one path with no bad place on it: the dark end
+/// is the picture as the game made it (a straight table), the middle is
+/// the owner's pick on the X51v (M75), the bright end a stronger curve
+/// for daylight (gamma 0.55), every step between a blend of its two
+/// neighbours; the 2700G's scan-out applies it, so a step shows at once
+/// and costs no frame time. The game lifts its light with the same step
+/// (ref_rp: `rp_picture`). The two ends are a first fit: the owner's eye
+/// on the X51v judges them.
+pub const PICTURE_STEPS: u8 = 8;
+const PICTURE_MID: u8 = 4;
+const PICTURE_DAY: [u8; 17] = [
+    0, 55, 81, 102, 119, 134, 149, 162, 174, 186, 197, 208, 218, 227, 237, 246, 255,
+];
+/// The step's table, once the game has asked for one ([`picture_table`]).
+static PICTURE: rt::Global<Option<[u8; 17]>> = rt::Global::new(None);
+
+/// Step `level`'s table: between the straight table and the default
+/// look's below the middle, between the default look's and the daylight
+/// one's above it.
+#[must_use]
+pub fn picture_table(level: u8) -> [u8; 17] {
+    let level = level.min(PICTURE_STEPS);
+    let (a, b, t) = if level <= PICTURE_MID {
+        (&CURVES[0].2, &CURVES[LOOK_DEFAULT].2, level)
+    } else {
+        (&CURVES[LOOK_DEFAULT].2, &PICTURE_DAY, level - PICTURE_MID)
+    };
+    let (t, n) = (u32::from(t), u32::from(PICTURE_MID));
+    core::array::from_fn(|i| ((u32::from(a[i]) * (n - t) + u32::from(b[i]) * t + n / 2) / n) as u8)
+}
+
 /// R341/R343: the backlight while a game plays and its registers as found
 /// (`CR`, `PCR`, `DCR`, put back at the close): each look of [`CURVES`]
 /// sets its level.
@@ -1410,7 +1447,10 @@ fn status(regs: &mut Mmio) -> Option<u32> {
 /// R343: look `k`: its backlight level and its gamma table, each point
 /// grey (`0x00RRGGBB`); look 0 is the table as found, word for word.
 fn curve_set(regs: &mut Mmio, k: usize, found: &[u32; 17]) {
-    for (i, &v) in CURVES[k].2.iter().enumerate() {
+    // the game's own step of the brightness path in the default look's place
+    let picture = PICTURE.with(|p| *p).filter(|_| k == LOOK_DEFAULT);
+    let points = picture.as_ref().unwrap_or(&CURVES[k].2);
+    for (i, &v) in points.iter().enumerate() {
         let w = if k == 0 {
             found[i]
         } else {
@@ -3919,6 +3959,28 @@ impl Screen for Chip {
         if o.pending.is_some() {
             o.start_pending(regs);
         }
+    }
+
+    fn look(&mut self, level: u8) -> bool {
+        if level > PICTURE_STEPS {
+            return false;
+        }
+        PICTURE.with(|p| *p = Some(picture_table(level)));
+        // on the screen now, unless the picker has the table (its looks
+        // are the owner's to step) or the chip is lost (the rebuild sets
+        // the look again, this step with it)
+        if !self.curves
+            && !self.counts.rebuild_owed
+            && let (Some(o), Some(regs)) = (self.open.as_mut(), self.regs.as_mut())
+            && let Some((k, _, table, _)) = o.curve
+            && k == LOOK_DEFAULT
+        {
+            curve_set(regs, LOOK_DEFAULT, &table);
+        }
+        (self.log)(format_args!(
+            "rp-gfx: R343: the picture's brightness at step {level} of {PICTURE_STEPS}"
+        ));
+        true
     }
 
     fn quiet(&mut self, hold: bool) -> bool {

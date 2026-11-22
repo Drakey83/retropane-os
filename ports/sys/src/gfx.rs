@@ -133,6 +133,12 @@ pub trait Screen {
     fn quiet(&mut self, _hold: bool) -> bool {
         true
     }
+    /// The picture's brightness (`rp_gfx_look`): step `level` (0 to 8, 4
+    /// the default) of this screen's path from dark to bright, at once.
+    /// False by default (no such path).
+    fn look(&mut self, _level: u8) -> bool {
+        false
+    }
 }
 
 /// One thing for the tile accelerator.

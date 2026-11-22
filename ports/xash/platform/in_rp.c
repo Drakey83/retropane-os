@@ -646,6 +646,29 @@ static void RP_End( void )
 		Cbuf_AddText( "quit\n" );
 		return;
 	}
+	/* The owner, run 316 ("one or two major hitches"; runs 314 and 316: the
+	   first opening of the menu a frame of 1.8 s, the heap 3 MiB larger
+	   after it): the menu makes its fonts and loads its pictures the first
+	   time it is drawn. Rule 0: upstream pays that when the player first
+	   asks for the menu, in the middle of play; ours pays it once as the
+	   map starts, where the loading has the player waiting anyway: the
+	   menu opened for two frames and closed again (-rpnomenuwarm: not). */
+	{
+		static int warm;
+
+		/* (-rpmenuhold: left open, a test's look at the menu in a game) */
+		if( warm > 0 && ++warm > 3 && !RP_Parm( "-rpmenuhold" ))
+		{
+			warm = -1;
+			UI_SetActiveMenu( false );
+		}
+		if( state == 0 && CL_Active( ) && !warm && !RP_Parm( "-rpmenu" ) && !RP_Parm( "-rpnomenuwarm" )
+			&& !RP_Parm( "-rpwalk" ) && !RP_Parm( "-rpcascade" ) && !RP_Parm( "-rpfight" )) /* the scripted runs keep their frames */
+		{
+			warm = 1;
+			UI_SetActiveMenu( true );
+		}
+	}
 	if( state == 0 && CL_Active( ))
 	{
 		state = 1;

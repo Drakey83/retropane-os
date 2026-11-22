@@ -235,6 +235,11 @@ int rp_gfx_close(void);
  * chip takes such writes safely (the runner's -rptexhold). Cheap: no chip
  * register is read once the chip is lost. */
 int rp_gfx_quiet(int hold);
+
+/* The picture's brightness: step `level` (0 to 8, 4 the default) of the
+ * screen's own path from dark to bright, applied at once by the scan-out
+ * (no frame drawn again). 1 if the screen took it, 0 if not. */
+int rp_gfx_look(int level);
 /* R324: the program's hint that its next frames run much code a frame (1:
  * a game's many models) or not (0): the runner may keep its hottest code
  * locked in the I-cache meanwhile. Call it on a change, not every frame. */

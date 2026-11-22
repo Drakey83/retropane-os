@@ -567,7 +567,17 @@ impl<P: Pad> Events for Input<P> {
 
     fn poll(&mut self, now_us: u64) -> Result<Option<Event>, Errno> {
         let turn = self.turn.ok_or(Errno::BadHandle)?;
-        if self.len == 0 || now_us.saturating_sub(self.read_at) >= READ_EVERY_US {
+        // The pad is read once an interval, by whoever comes first (this
+        // poll or the clock's pump), never once a poll. Run 316's samples,
+        // frame by frame: eight of its forty slowest frames of play (101
+        // to 245 ms) were 49% to 66% inside this call. A game drains its
+        // events in a loop until none is left; a poll that found the queue
+        // empty used to read the pad again (a millisecond with the stylus
+        // down), and a moving stylus gave that reading a new event, so the
+        // loop went round for as long as the stylus kept moving: the look
+        // itself froze the frame. Now the loop ends when the queue is
+        // empty; what it hands out is never more than an interval old.
+        if now_us.saturating_sub(self.read_at) >= READ_EVERY_US {
             self.read(turn, now_us);
         }
         if self.len == 0 {
@@ -922,15 +932,42 @@ pub(crate) mod tests {
         assert_eq!(i.pad().reads, opened);
         i.pump(READ_EVERY_US);
         assert_eq!(i.pad().reads, opened + 1);
-        // A poll with nothing queued always reads (the game asks now).
+        // A poll inside the interval reads nothing again, queue empty or
+        // not (run 316: a game's drain loop read the pad at every turn).
         assert_eq!(i.poll(READ_EVERY_US + 1), Ok(None));
-        assert_eq!(i.pad().reads, opened + 2);
-        // With events queued and the interval not over, it hands them out
-        // without reading again.
+        assert_eq!(i.pad().reads, opened + 1);
+        // Once the interval is over a poll reads, and hands out what it
+        // read without reading again.
         i.pad().pressed = Pressed::NONE.with(Button::Up).with(Button::Down);
-        assert!(i.poll(READ_EVERY_US + 2).unwrap().is_some());
+        assert!(i.poll(2 * READ_EVERY_US).unwrap().is_some());
         let reads = i.pad().reads;
-        assert!(i.poll(READ_EVERY_US + 3).unwrap().is_some());
+        assert_eq!(reads, opened + 2);
+        assert!(i.poll(2 * READ_EVERY_US + 1).unwrap().is_some());
         assert_eq!(i.pad().reads, reads);
+    }
+
+    /// Run 316's class guard: a game that drains its events in a loop
+    /// while the stylus moves gets out of the loop: one reading of the pad
+    /// for the whole drain, however many polls it takes.
+    #[test]
+    fn a_drain_loop_under_a_moving_stylus_reads_the_pad_once() {
+        let mut i = Input::new(Fake::default(), Calibration::X51V_DEFAULT);
+        assert_eq!(i.open(Turn::None, 0), Ok(()));
+        let mut now = 0;
+        let down = hold(&mut i, 1_500, 2_000, &mut now);
+        assert_eq!(down.len(), 1, "{down:?}");
+        for k in 1..=100u16 {
+            now += 5_000;
+            // the stylus somewhere new at every look at the pad
+            i.pad().pen = touch(1_500 + 8 * k, 2_000);
+            let before = i.pad().reads;
+            let mut polls = 0;
+            while i.poll(now).unwrap().is_some() {
+                polls += 1;
+                assert!(polls < 8, "the drain goes on at reading {k}");
+                i.pad().pen = touch(1_500 + 8 * k + polls, 2_000);
+            }
+            assert_eq!(i.pad().reads, before + 1, "one reading a drain");
+        }
     }
 }

@@ -93,11 +93,39 @@ int rp_emit_on;
    2700G draws the frames. */
 int rp_both;
 static cvar_t *rp_near; /* R347: the near plane (1 ref_rp, 4 Half-Life GL) */
+static cvar_t *rp_picture; /* R343: the picture's brightness, 0 to 8 */
 /* R347 (the owner's ladder smear, run 280): the near plane in 16.16 view
    units, `rp_near` (1 by default, ref_rp's since step 4b; Half-Life's GL
    draws at 4): the world's faces, the water's cells and the models' and
    effects' corners cut against it. Read once a frame (RP_EmitFrame). */
 static int32_t rp_near16 = 65536 /* RP_ONE16 */;
+
+/* The owner, run 316 (2026-11-21, his clip): "when i am holding a shotgun and
+   moving around it looks like a shotgun shell pops up huge in front of my
+   face as I walk": a pale faceted shape at the lower left for single frames.
+   The run's count: 68 of the models' commands a frame clipped at the near
+   plane, 211 triangles wholly behind it: the weapon in the hands keeps
+   parts at the eye (the shells in the left hand, for the reload). Half-Life
+   draws with the near plane at 4 units, so its weapon models were made to
+   hide those parts inside it; ours is 1 (the world seen closer to a wall),
+   and the walk's bob brought a shell between 1 and 4 into view, as large as
+   anything that near. Rule 0: one near plane for everything is the vendor's
+   way (GL's 4) or ours (1); here each takes the one it was made for: the
+   world ours, the weapon in the hands Half-Life's 4. */
+#define RP_VIEWMODEL_NEAR16 ( 4 * 65536 )
+static int32_t rp_near16_world;
+
+void RP_ViewModelNear( int on )
+{
+	if( on )
+	{
+		rp_near16_world = rp_near16;
+		if( rp_near16 < RP_VIEWMODEL_NEAR16 )
+			rp_near16 = RP_VIEWMODEL_NEAR16;
+	}
+	else if( rp_near16_world )
+		rp_near16 = rp_near16_world;
+}
 static cvar_t *rp_report; /* kit 80: a report at the next frame (rp_report 1) */
 static cvar_t *rp_both_var, *rp_gpu, *rp_fan, *rp_fixed, *rp_mip, *rp_cull, *rp_holes, *rp_lm, *rp_lit;
 static void RP_LmFlush( void );
@@ -206,6 +234,7 @@ void RP_EmitInit( void )
 		rp_facecull = 0; /* kit 104's control: off-screen faces sent as kit 103 did */
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
+	rp_picture = gEngfuncs.Cvar_Get( "rp_picture", "4", FCVAR_ARCHIVE, "ref_rp: R343: the picture's brightness, 0 (the game's own dark look) to 8 (daylight), 4 the default: the screen's curve and the light together" );
 	rp_near = gEngfuncs.Cvar_Get( "rp_near", "1", 0, "ref_rp: R347: the near plane in units, 1 to 8 (1 ref_rp's own, 4 Half-Life GL's); a ladder's look" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
 	RP_FixedInit();
@@ -624,6 +653,52 @@ void RP_EmitFrame( void )
 		float n = rp_near->value;
 
 		rp_near16 = n >= 1.0f && n <= 8.0f ? (int32_t)( n * 16.0f ) << 12 : 65536;
+	}
+	{
+		/* R343, the owner's ruling ("do the smart slider"): `rp_picture`,
+		   the one picture-brightness setting (0 to 8, 4 the default; the
+		   menu's Video options slider; saved with the game's options).
+		   A step moves two things together: the screen's curve (the
+		   runner's path, rp_gfx_look: the scan-out's table, at once) and
+		   the light (Half-Life's own `brightness` on the lightmaps: 0 at
+		   the dark end, 1 at the default as the owner picked in run 292,
+		   2 at the bright end), so no step is a muddy or washed-out pair.
+		   Set when it changes and at the first frame (a config read later
+		   may have put `brightness` elsewhere).
+		   The curve is set at once (it costs nothing); the light once the
+		   step has rested for a quarter of a second, since it has every
+		   lightmap lit again (run 316: the owner dragging Valve's own
+		   brightness slider, each move 0.12 s, the menu at 8 frames a
+		   second). */
+		static int      rp_picture_set = -1, rp_light_set = -1;
+		static uint64_t rp_picture_at;
+		static cvar_t  *rp_world;
+		int             level = (int)( rp_picture->value + 0.5f );
+
+		if( level < 0 )
+			level = 0;
+		if( level > 8 )
+			level = 8;
+		if( level != rp_picture_set )
+		{
+			int first = rp_picture_set < 0;
+
+			rp_picture_set = level;
+			rp_picture_at = first ? 0 : rp_time_us( );
+			rp_gfx_look( level );
+		}
+		if( level != rp_light_set && ( !rp_picture_at || rp_time_us( ) - rp_picture_at > 250000u ))
+		{
+			rp_light_set = level;
+			gEngfuncs.Cvar_SetValue( "brightness", (float)level * 0.25f );
+		}
+		/* behind a menu opened in a game: the paused game (the menu dims
+		   it), not a picture that pushes the map's textures out of the
+		   2700G's memory (mainui's BackgroundBitmap.cpp has the numbers) */
+		if( !rp_world )
+			rp_world = gEngfuncs.Cvar_Get( "ui_renderworld", "1", 0, "render world when UI is visible" );
+		if( rp_world && rp_world->value == 0.0f )
+			gEngfuncs.Cvar_SetValue( "ui_renderworld", 1.0f );
 	}
 	RP_LmFrame();
 	RP_CodeHint();
@@ -1856,6 +1931,39 @@ static uint32_t RP_TexSample( const pixel_t *src, int sw, int sh, int x, int y, 
 	return ( r + 32768 ) >> 16 << 11 | ( g + 32768 ) >> 16 << 5 | ( b + 32768 ) >> 16;
 }
 
+/* RP_TexSample's source column (or row) for each of a level's `l` columns
+   of a source `s` wide: the two texels blended and the second's weight,
+   by RP_TexSample's own formulas. */
+static void RP_TexAxis( int l, int s, int16_t *i0, int16_t *i1, uint8_t *a )
+{
+	for( int i = 0; i < l; i++ )
+	{
+		int32_t f = (int32_t)((( (int64_t)( 2 * i + 1 ) * s ) << 15 ) / l ) - 32768;
+		int32_t k = f >> 16;
+
+		a[i] = (uint8_t)( f >> 8 & 255 );
+		k = ( k % s + s ) % s;
+		i0[i] = (int16_t)k;
+		i1[i] = (int16_t)(( k + 1 ) % s );
+	}
+}
+
+/* RP_TexSample's blend of the four texels, their places from RP_TexAxis. */
+static inline uint32_t RP_TexBlend( const pixel_t *src, int sw, int x0, int x1, int ax, int y0, int y1, int ay )
+{
+	const uint32_t c[4] = { vid.screen[src[y0 * sw + x0]], vid.screen[src[y0 * sw + x1]], vid.screen[src[y1 * sw + x0]], vid.screen[src[y1 * sw + x1]] };
+	const uint32_t wgt[4] = { (uint32_t)(( 256 - ax ) * ( 256 - ay )), (uint32_t)( ax * ( 256 - ay )), (uint32_t)(( 256 - ax ) * ay ), (uint32_t)( ax * ay ) };
+	uint32_t       r = 0, g = 0, b = 0;
+
+	for( int k = 0; k < 4; k++ )
+	{
+		r += ( c[k] >> 11 ) * wgt[k];
+		g += ( c[k] >> 5 & 63 ) * wgt[k];
+		b += ( c[k] & 31 ) * wgt[k];
+	}
+	return ( r + 32768 ) >> 16 << 11 | ( g + 32768 ) >> 16 << 5 | ( b + 32768 ) >> 16;
+}
+
 /* The texture in the pool (written at its first use), or NULL: no room
    (the pool empties at the next frame) or a shape it doesn't take. */
 #define RP_TEX0_CLAMP 0xA0000000u /* clamped both ways (RP_TEX0_PAGE's) */
@@ -1929,9 +2037,51 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 				sw = 1;
 			if( sh < 1 )
 				sh = 1;
-			for( int y = 0; y < lh; y++ )
-				for( int x = 0; x < lw; x++ )
-					lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexSample( src[l], sw, sh, x, y, lw, lh );
+			if( sw == lw && sh == lh )
+			{
+				for( int y = 0; y < lh; y++ )
+					for( int x = 0; x < lw; x++ )
+						lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexSample( src[l], sw, sh, x, y, lw, lh );
+			}
+			else
+			{
+				/* Run 316's samples, frame by frame: placing a texture whose
+				   size is not a power of two took frames of 106 and 161 ms, up
+				   to 45% of them in the division helpers: RP_TexSample works a
+				   texel's source column and row with two 64-bit divisions and
+				   four remainders, and the X51v's CPU has no divide. A texel's
+				   column depends on x alone and its row on y alone, so each is
+				   worked once (lw + lh times, not lw x lh) by the same formulas,
+				   and a texel is four lookups and the blend: the same bits. */
+				static int16_t tx0[1024], tx1[1024], ty0[1024], ty1[1024];
+				static uint8_t tax[1024], tay[1024];
+
+				RP_TexAxis( lw, sw, tx0, tx1, tax );
+				RP_TexAxis( lh, sh, ty0, ty1, tay );
+				for( int y = 0; y < lh; y++ )
+					for( int x = 0; x < lw; x++ )
+						lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexBlend( src[l], sw, tx0[x], tx1[x], tax[x], ty0[y], ty1[y], tay[y] );
+				/* -rptexcheck (the emulator's check of the above): every texel
+				   against RP_TexSample's own answer */
+				{
+					static int      check = -1;
+					static uint32_t texels, differ, levels_checked;
+
+					if( check < 0 )
+						check = gEngfuncs.Sys_CheckParm( "-rptexcheck" ) != 0;
+					if( check )
+					{
+						for( int y = 0; y < lh; y++ )
+							for( int x = 0; x < lw; x++ )
+							{
+								texels++;
+								differ += lv[RP_TexAt( x, y, lw, lh, sb )] != (uint16_t)RP_TexSample( src[l], sw, sh, x, y, lw, lh );
+							}
+						if(( ++levels_checked & 15 ) == 1 )
+							fprintf( stderr, "rp-emit: -rptexcheck: %u resampled levels, %u texels against RP_TexSample, %u differ\n", levels_checked, texels, differ );
+					}
+				}
+			}
 		}
 		else
 		{

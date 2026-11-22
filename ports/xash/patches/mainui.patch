@@ -99,27 +99,25 @@ index ae05457..3a959c7 100755
  void UI_EnableAlphaFactor( float a );
  void UI_DisableAlphaFactor();
 diff --git a/controls/BackgroundBitmap.cpp b/controls/BackgroundBitmap.cpp
-index 0b087a4..5a9af84 100644
+index 0b087a4..a7319f7 100644
 --- a/controls/BackgroundBitmap.cpp
 +++ b/controls/BackgroundBitmap.cpp
-@@ -117,7 +117,16 @@ void CMenuBackgroundBitmap::Draw()
+@@ -117,6 +117,14 @@ void CMenuBackgroundBitmap::Draw()
  			return;
  		}
  
-+#if XASH_RETROPANE
-+		// RetroPane (the owner, 2026-11-21: "we agreed on this menu screen
-+		// and that is NOT what it looks like"): upstream dims the game's
-+		// picture behind a menu opened in a game; this port draws no world
-+		// under its menu, so that was a flat grey screen. The agreed
-+		// background (retropane/background.tga) is drawn there too.
-+		if( !s_SteamBackground.Count() && EngFuncs::GetCvarFloat( "ui_renderworld" ) )
-+#else
++		// RetroPane (the owner, 2026-11-21): behind a menu opened in a game
++		// the paused game, dimmed, as Half-Life itself shows it (ref_rp keeps
++		// ui_renderworld on, r_emit.c). Run 316 drew the agreed background
++		// picture here instead: its 640 x 480 took a twelfth of the 2700G's
++		// texture memory while the menu was up, the map's textures pushed out
++		// came back one by one after it (half of that run's 1,202 texture
++		// rebuilds, the frames over 50 ms from 170 to 275). The picture is
++		// the menu's own when no game runs.
  		if( EngFuncs::GetCvarFloat( "ui_renderworld" ) )
-+#endif
  		{
  			DrawInGameBackground();
- 			return;
-@@ -219,6 +228,26 @@ bool CMenuBackgroundBitmap::LoadSteamBackground( bool gamedirOnly )
+@@ -219,6 +227,26 @@ bool CMenuBackgroundBitmap::LoadSteamBackground( bool gamedirOnly )
  
  	bool loaded = false;
  
@@ -146,7 +144,7 @@ index 0b087a4..5a9af84 100644
  	// try 25'th anniversary update background first
  	if( FBitSet( gMenu.m_gameinfo.flags, GFL_HD_BACKGROUND ))
  		afile = (char *)EngFuncs::COM_LoadFile( "resource/HD_BackgroundLayout.txt" );
-@@ -348,8 +377,18 @@ void CMenuBackgroundBitmap::LoadBackground()
+@@ -348,8 +376,18 @@ void CMenuBackgroundBitmap::LoadBackground()
  	s_bGameHasSteamBackground = false;
  	s_bGameHasWONBackground = false;
  
@@ -165,7 +163,7 @@ index 0b087a4..5a9af84 100644
  
  	if( LoadSteamBackground( true ))
  	{
-@@ -359,7 +398,9 @@ void CMenuBackgroundBitmap::LoadBackground()
+@@ -359,7 +397,9 @@ void CMenuBackgroundBitmap::LoadBackground()
  	else if( LoadSteamBackground( false ))
  		Con_DPrintf( "%s: found %s background in %s directory\n", __func__, "steam", "base" );
  
@@ -348,6 +346,68 @@ index 1159ec9..50a02b9 100644
  
  
  	textHeight = m_scPos.y - (m_scChSize * 1.5f);
+diff --git a/menus/VideoOptions.cpp b/menus/VideoOptions.cpp
+index 69dd50a..0b4f03f 100644
+--- a/menus/VideoOptions.cpp
++++ b/menus/VideoOptions.cpp
+@@ -180,6 +180,18 @@ void CMenuVidOptions::_Init( void )
+ 	height += 60;
+ #endif
+ 
++#if XASH_RETROPANE
++	// RetroPane R343, the owner's ruling (2026-11-20: "do the smart
++	// slider"): one "Picture brightness" in place of Valve's gamma and
++	// brightness, which did nothing on this port. Nine steps of ref_rp's
++	// rp_picture: each moves the screen's curve and the light together
++	// (r_emit.c), shown at once behind the menu, saved with the options.
++	gammaIntensity.szName = "Picture brightness";
++	gammaIntensity.SetCoord( 72, height );
++	gammaIntensity.Setup( 0.0, 8.0, 1.0 );
++	gammaIntensity.onChanged = CMenuEditable::WriteCvarCb;
++	height += 60;
++#else
+ 	gammaIntensity.szName = L( "GameUI_Gamma" );
+ 	gammaIntensity.SetCoord( 72, height );
+ 	gammaIntensity.Setup( 0.0, 1.0, 0.025 );
+@@ -193,6 +205,7 @@ void CMenuVidOptions::_Init( void )
+ 	brightness.onChanged = VoidCb( &CMenuVidOptions::UpdateConfig );
+ 	brightness.onCvarGet = VoidCb( &CMenuVidOptions::GetConfig );
+ 	height += 60;
++#endif
+ 
+ 	done.szName = L( "GameUI_OK" );
+ 	done.SetCoord( 72, height );
+@@ -276,21 +289,29 @@ void CMenuVidOptions::_Init( void )
+ 	AddItem( screenSize );
+ #endif
+ 	AddItem( gammaIntensity );
++#if !XASH_RETROPANE
+ 	AddItem( brightness );
++#endif
+ 	AddItem( detailtex );
+ 	AddItem( vbo );
+ 	AddItem( swwater );
+ 	AddItem( overbright );
+ 	AddItem( filtering );
+ 	AddItem( hudscale );
+-	AddItem( testImage );
++#if !XASH_RETROPANE
++	AddItem( testImage ); // (the gamma test picture: not in the game's files, and the screen itself shows the step)
++#else
++	gammaIntensity.LinkCvar( "rp_picture" );
++#endif
+ 
+ #if LEGACY_VIEWSIZE
+ 	screenSize.LinkCvar( "viewsize" );
+ #endif
+ 
++#if !XASH_RETROPANE
+ 	gammaIntensity.LinkCvar( "gamma" );
+ 	brightness.LinkCvar( "brightness" );
++#endif
+ 
+ 	detailtex.LinkCvar( "r_detailtextures" );
+ 	swwater.LinkCvar( "r_ripple" );
 diff --git a/sdk_includes/public/build.h b/sdk_includes/public/build.h
 index b92c51e..8142856 100644
 --- a/sdk_includes/public/build.h

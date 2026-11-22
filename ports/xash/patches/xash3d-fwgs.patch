@@ -850,6 +850,42 @@ index 8ea38dc..5bcea01 100644
  };
  
  static void R_UnloadProgs( void )
+diff --git a/engine/client/gamma.c b/engine/client/gamma.c
+index 65d340c..fa0c21b 100644
+--- a/engine/client/gamma.c
++++ b/engine/client/gamma.c
+@@ -129,6 +129,31 @@ void V_CheckGamma( void )
+ 	{
+ 		V_ValidateGammaCvars();
+ 
++#if XASH_RETROPANE
++		// RetroPane (the owner, run 316: "one or two major hitches"; runs
++		// 314 and 316: every opening of the menu a frame of 0.33 to 0.40 s,
++		// the slow frames' samples 7.5% in pow's software doubles): a cvar
++		// set to the value it already has is "changed" too, and upstream
++		// then works its four tables again (3,328 pow calls, a moment with
++		// an FPU, a third of a second without) and has the renderer relight
++		// every lightmap. Rule 0: the tables are a function of four numbers;
++		// ours keeps the four they were made from and does nothing while
++		// they are the same.
++		{
++			static float rp_made[4];
++			static qboolean rp_have;
++			const float now[4] = { v_gamma.value, v_brightness.value, v_texgamma.value, v_lightgamma.value };
++
++			if( rp_have && !dirty && !memcmp( rp_made, now, sizeof( now )))
++			{
++				gamma_rebuilt = true; // V_CheckGammaEnd clears the flags
++				return;
++			}
++			memcpy( rp_made, now, sizeof( now ));
++			rp_have = true;
++		}
++#endif
++
+ 		dirty = false;
+ 		gamma_rebuilt = true;
+ 
 diff --git a/engine/client/input/input.c b/engine/client/input/input.c
 index 712a86e..bccf97f 100644
 --- a/engine/client/input/input.c
@@ -2571,10 +2607,102 @@ index 985e438..762f8d3 100644
  	Cvar_RegisterVariable( &sv_nat );
  	Cvar_RegisterVariable( &violence_ablood );
 diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
-index bfd679b..4c4ea3a 100644
+index bfd679b..9c37495 100644
 --- a/engine/server/sv_phys.c
 +++ b/engine/server/sv_phys.c
-@@ -1754,20 +1754,38 @@ static void SV_Physics_Entity( edict_t *ent )
+@@ -232,8 +232,91 @@ in a frame.  Not used for pushmove objects, because they must be exact.
+ Returns false if the entity removed itself.
+ =============
+ */
++#if XASH_RETROPANE
++/*
++RetroPane (the owner, run 316: "a hitch i had during the initial fire fight";
++that run's samples, frame by frame: its two worst frames of play, 281 and
++312 ms, 90% in the server's movement and collision: SV_ClipToEntity,
++SV_WaterLinks, PM_RecursiveHullCheck, pfnWalkMove). A squad that sees the
++player thinks in the same server frame, and each soldier's think then finds
++cover and walks a route by trial moves, each a hull trace in software
++floats: a moment on a 1998 PC with an FPU, a third of a second here.
++
++Rule 0: the engine runs every think that is due in the frame it is due (the
++vendor's way: Quake's since 1996), so the cost of a frame is whatever falls
++due together. Ours gives the monsters' thinks a time budget a frame: once
++it is spent, a monster whose think is due keeps it for the next frame (its
++nextthink untouched, so it is due first then), and one put off three frames
++running thinks whatever the budget, so none starves and each frame makes
++progress (the frame's first monster always thinks). The same thinks, in the
++same order for each monster, a few hundredths of a second apart instead of
++in one frozen frame. Only monsters: players, doors, triggers and timers are
++exact. -rpnothinkbudget: the engine's own way.
++*/
++#define RP_THINK_BUDGET_US 10000u
++#define RP_THINK_LATE_MOST 3
++uint64_t rp_time_us( void );
++static uint32_t rp_think_us, rp_think_late_count, rp_think_frames_over, rp_think_worst_us;
++static byte     rp_think_late[4096];
++
++static int RP_ThinkBudgetOn( void )
++{
++	static int on = -1;
++
++	if( on < 0 )
++		on = !Sys_CheckParm( "-rpnothinkbudget" ) /* (the scripted runs keep their frames: they are compared) */
++			&& !Sys_CheckParm( "-rpwalk" ) && !Sys_CheckParm( "-rpcascade" ) && !Sys_CheckParm( "-rpfight" );
++	return on;
++}
++
++/* A new server frame: the budget whole again; the count said now and then. */
++static void RP_ThinkFrame( void )
++{
++	static uint32_t frames, said_late;
++
++	if( rp_think_us > RP_THINK_BUDGET_US )
++		rp_think_frames_over++;
++	if( rp_think_us > rp_think_worst_us )
++		rp_think_worst_us = rp_think_us;
++	rp_think_us = 0;
++	if( ++frames % 1500 == 0 && ( rp_think_late_count != said_late || rp_think_worst_us > RP_THINK_BUDGET_US ))
++	{
++		Con_Printf( "rp-think: the monsters' thinks: %u put off a frame so far (budget %u ms a frame), %u frames over it, the most in one frame %u ms\n",
++			rp_think_late_count, RP_THINK_BUDGET_US / 1000u, rp_think_frames_over, rp_think_worst_us / 1000u );
++		said_late = rp_think_late_count;
++		rp_think_worst_us = 0;
++	}
++}
++#endif
++
+ static qboolean SV_RunThink( edict_t *ent )
+ {
++#if XASH_RETROPANE
++	if( FBitSet( ent->v.flags, FL_MONSTER ) && !FBitSet( ent->v.flags, FL_KILLME|FL_CLIENT ) && RP_ThinkBudgetOn( ))
++	{
++		const float thinktime = ent->v.nextthink;
++		const int   idx = NUM_FOR_EDICT( ent ) & 4095;
++
++		if( thinktime > 0.0f && thinktime <= ( sv.time + sv.frametime ))
++		{
++			uint64_t t0;
++
++			if( rp_think_us > RP_THINK_BUDGET_US && rp_think_late[idx] < RP_THINK_LATE_MOST )
++			{
++				rp_think_late[idx]++;
++				rp_think_late_count++;
++				return true; // due still: the next frame's
++			}
++			rp_think_late[idx] = 0;
++			t0 = rp_time_us( );
++			SV_TryThink( ent, sv.frametime, sv.time );
++			rp_think_us += (uint32_t)( rp_time_us( ) - t0 );
++		}
++		if( FBitSet( ent->v.flags, FL_KILLME ))
++			SV_FreeEdict( ent );
++		return !ent->free;
++	}
++#endif
+ 	if( !FBitSet( ent->v.flags, FL_KILLME ))
+ 	{
+ 		if( !SV_TryThink( ent, sv.frametime, sv.time ))
+@@ -1754,20 +1837,38 @@ static void SV_Physics_Entity( edict_t *ent )
  static void SV_RunLightStyles( void )
  {
  	// run lightstyles animation
@@ -2616,7 +2744,17 @@ index bfd679b..4c4ea3a 100644
  	}
  }
  
-@@ -1791,6 +1809,25 @@ void SV_Physics( void )
+@@ -1779,6 +1880,9 @@ SV_Physics
+ */
+ void SV_Physics( void )
+ {
++#if XASH_RETROPANE
++	RP_ThinkFrame( );
++#endif
+ 	SV_CheckAllEnts ();
+ 
+ 	svgame.globals->time = sv.time;
+@@ -1791,6 +1895,25 @@ void SV_Physics( void )
  	{
  		edict_t *ent = SV_EdictNum( i );
  
@@ -2723,6 +2861,121 @@ index 54975d6..c74f1d5 100644
  		pData += sizeof( short );
  
  		size = Q_min( nFieldSize, MAX_STRING );
+diff --git a/filesystem/dir.c b/filesystem/dir.c
+index 4541703..13fbea2 100644
+--- a/filesystem/dir.c
++++ b/filesystem/dir.c
+@@ -48,7 +48,15 @@ enum
+ 
+ typedef struct dir_s
+ {
++#if XASH_RETROPANE
++	// RetroPane: a name's own length, not 256 bytes an entry (the game's
++	// longest file name is 39 characters; the root's is its path): the
++	// whole read-only tree is kept from the start (RP_WarmDir below), 4,372
++	// entries in 0.6 MiB where upstream's would take 1.1
++	char name[128];
++#else
+ 	string name;
++#endif
+ 	int numentries;
+ 	struct dir_s *entries; // sorted
+ } dir_t;
+@@ -114,6 +122,8 @@ static void FS_InitDirEntries( dir_t *dir, const stringlist_t *list )
+ 	{
+ 		dir_t *entry = &dir->entries[i];
+ 
++		if( Q_strlen( list->strings[i] ) >= sizeof( entry->name ))
++			Con_Printf( S_ERROR "%s: a name too long for the folder's list, cut: %s\n", __func__, list->strings[i] );
+ 		Q_strncpy( entry->name, list->strings[i], sizeof( entry->name ));
+ 		entry->numentries = DIRENTRY_NOT_SCANNED;
+ 		entry->entries = NULL;
+@@ -239,11 +249,69 @@ static void FS_MergeDirEntries( dir_t *dir, const stringlist_t *list )
+ 	dir->entries = temp.entries;
+ }
+ 
++#if XASH_RETROPANE
++/*
++RetroPane (the owner, run 316: the hitches in play; that run's samples,
++frame by frame: frames of 117 and 195 ms in readdir, read and the list's
++string work: a folder listed in the middle of play). Upstream lists a
++folder the first time a file in it is asked for, and lists it again every
++time a name is not found in its list, in case the file has appeared since.
++
++Rule 0: on this port the game's own files are a read-only tree (-rodir:
++the card's Ports folder, checked byte for byte after every emulator run),
++so its listing can never go stale. Ours lists that whole tree once as the
++engine starts (83 folders, 4,372 names: under half a second of the load,
++where the player waits anyway) and never again: a name not in the list is
++not there. The folder the game writes to (saves, settings) keeps upstream's
++ways.
++*/
++static qboolean RP_InRodir( const char *path )
++{
++	const size_t n = Q_strlen( fs_rodir );
++
++	return n > 0 && !Q_strnicmp( path, fs_rodir, n );
++}
++
++static void FS_PopulateDirEntries( dir_t *dir, const char *path );
++
++/* `dir` (at `path`, which has room to `len`) and every folder under it
++   listed now. A name with a dot is taken for a file (no folder of the
++   game's has one), which saves asking the card about each of them. */
++static void RP_WarmDir( dir_t *dir, char *path, size_t len, int depth )
++{
++	const size_t n = Q_strlen( path );
++
++	if( dir->numentries == DIRENTRY_NOT_SCANNED )
++		FS_PopulateDirEntries( dir, path );
++	if( dir->numentries <= 0 || depth >= 6 )
++		return;
++	for( int i = 0; i < dir->numentries; i++ )
++	{
++		dir_t *e = &dir->entries[i];
++
++		if( Q_strchr( e->name, '.' ) || n + Q_strlen( e->name ) + 2 >= len )
++			continue;
++		Q_snprintf( path + n, len - n, "%s%s", n && path[n - 1] != '/' ? "/" : "", e->name );
++		if( FS_SysFolderExists( path ))
++			RP_WarmDir( e, path, len, depth + 1 );
++		else
++			e->numentries = DIRENTRY_EMPTY_DIRECTORY; // a file with no dot: nothing under it
++		path[n] = 0;
++	}
++}
++#endif
++
+ static int FS_MaybeUpdateDirEntries( dir_t *dir, const char *path, const char *entryname )
+ {
+ 	stringlist_t list;
+ 	int ret;
+ 
++#if XASH_RETROPANE
++	// the read-only tree's list is whole and final: not there
++	if( dir->numentries > DIRENTRY_EMPTY_DIRECTORY && RP_InRodir( path ))
++		return -1;
++#endif
++
+ 	stringlistinit( &list );
+ 	listdirectory( &list, path, false );
+ 
+@@ -535,6 +603,15 @@ void FS_InitDirectorySearchpath( searchpath_t *search, const char *path, int fla
+ 	search->dir = Mem_Malloc( fs_mempool, sizeof( dir_t ));
+ 	Q_strncpy( search->dir->name, search->filename, sizeof( search->dir->name ));
+ 	FS_PopulateDirEntries( search->dir, path );
++#if XASH_RETROPANE
++	if( RP_InRodir( search->filename ))
++	{
++		char walk[MAX_SYSPATH];
++
++		Q_strncpy( walk, search->filename, sizeof( walk ));
++		RP_WarmDir( search->dir, walk, sizeof( walk ), 0 );
++	}
++#endif
+ }
+ 
+ searchpath_t *FS_AddDir_Fullpath( const char *path, int flags )
 diff --git a/filesystem/io.c b/filesystem/io.c
 index d30047f..6128130 100644
 --- a/filesystem/io.c
@@ -6343,7 +6596,7 @@ index 8a82400..0fb0ec5 100644
 +	r_ring_size = r_ring_head = 0;
  }
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..82a78ac 100644
+index 1a7efd6..6c03402 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
 @@ -48,7 +48,16 @@ typedef int fixed16_t;
@@ -6403,7 +6656,7 @@ index 1a7efd6..82a78ac 100644
  #define GL_LoadTextureInternal( name, pic, flags )   GL_LoadTextureFromBuffer( name, pic, flags, false )
  #define GL_UpdateTextureInternal( name, pic, flags ) GL_LoadTextureFromBuffer( name, pic, flags, true )
  int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags );
-@@ -992,6 +1026,101 @@ typedef struct
+@@ -992,6 +1026,102 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  
@@ -6412,6 +6665,7 @@ index 1a7efd6..82a78ac 100644
 +void RP_EmitInit( void );
 +void RP_EmitFrame( void );
 +void RP_EmitNewMap( void );
++void RP_ViewModelNear( int on ); // the weapon in the hands at Half-Life's near plane
 +void RP_LightNewMap( void ); // ref/common/ref_light.c, kit 90
 +// ref_rp's 2D layer (the HUD, text, menus, the loading plaque)
 +struct image_s;
@@ -7046,7 +7300,7 @@ index 3d0f609..e7299f0 100644
  	VectorMA( org, frame->down * scale, v_up, point );
  	VectorMA( point, frame->left * scale, v_right, point );
 diff --git a/ref/soft/r_studio.c b/ref/soft/r_studio.c
-index 03790d8..c53d34b 100644
+index 03790d8..01f9cb2 100644
 --- a/ref/soft/r_studio.c
 +++ b/ref/soft/r_studio.c
 @@ -618,6 +618,10 @@ StudioFxTransform
@@ -7584,6 +7838,16 @@ index 03790d8..c53d34b 100644
  
  		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
  		{
+@@ -2979,7 +3332,9 @@ void R_DrawViewModel( void )
+ 		break;
+ 	case mod_studio:
+ 		R_StudioSetupTimings();
++		RP_ViewModelNear( 1 ); // RetroPane: Half-Life's near plane for the weapon in the hands (r_emit.c)
+ 		R_StudioDrawModelInternal( RI.currententity, STUDIO_RENDER );
++		RP_ViewModelNear( 0 );
+ 		break;
+ 	}
+ 
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
 index e47e115..bc9eb5f 100644
 --- a/ref/soft/r_surf.c
