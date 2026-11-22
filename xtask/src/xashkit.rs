@@ -866,8 +866,9 @@ engine c
     }
 
     /// R356's guard: the map loader clears every edge's kept place in the
-    /// software renderer's edge list (`cachededgeoffset`), for both edge
-    /// sizes. Upstream leaves it as the allocation found it; the software
+    /// software renderer's edge list (`cachededgeoffset`: the 16-bit edges
+    /// hold it; the 32-bit ones of the larger map format have no such
+    /// field). Upstream leaves it as the allocation found it; the software
     /// pass's first frame followed an odd value into an unaligned load
     /// (run 315's fault at the end shot).
     #[test]
@@ -878,8 +879,8 @@ engine c
             .filter(|l| l.starts_with('+') && l.contains("out->cachededgeoffset = 0;"))
             .count();
         assert_eq!(
-            cleared, 2,
-            "the 16-bit and the 32-bit edges, each cleared at the load"
+            cleared, 1,
+            "the 16-bit edges' kept places cleared at the load"
         );
     }
 }

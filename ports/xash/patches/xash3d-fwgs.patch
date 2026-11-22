@@ -1213,18 +1213,10 @@ index 8b43cfc..b51080a 100644
  #if !XASH_DEDICATED
  	Cmd_AddRestrictedCommand( "host_writeconfig", Host_WriteConfig, "save current configuration" );
 diff --git a/engine/common/mod_bmodel.c b/engine/common/mod_bmodel.c
-index d1fe48e..50e5446 100644
+index d1fe48e..8ce7262 100644
 --- a/engine/common/mod_bmodel.c
 +++ b/engine/common/mod_bmodel.c
-@@ -2538,6 +2538,7 @@ static void Mod_LoadEdges( model_t *mod, dbspmodel_t *bmod )
- 		{
- 			out->v[0] = in->v[0];
- 			out->v[1] = in->v[1];
-+			out->cachededgeoffset = 0; // RetroPane R356, as below
- 		}
- 	}
- 	else
-@@ -2550,6 +2551,16 @@ static void Mod_LoadEdges( model_t *mod, dbspmodel_t *bmod )
+@@ -2550,6 +2550,16 @@ static void Mod_LoadEdges( model_t *mod, dbspmodel_t *bmod )
  		{
  			out->v[0] = (word)in->v[0];
  			out->v[1] = (word)in->v[1];
@@ -1241,7 +1233,7 @@ index d1fe48e..50e5446 100644
  		}
  	}
  }
-@@ -4283,6 +4294,15 @@ static qboolean Mod_LoadBmodelLumps( model_t *mod, byte *mod_base, size_t buffer
+@@ -4283,6 +4293,15 @@ static qboolean Mod_LoadBmodelLumps( model_t *mod, byte *mod_base, size_t buffer
  	Mod_LoadClipnodes( mod, bmod );
  
  	// preform some post-initalization
