@@ -109,6 +109,9 @@ pub struct Chain {
     dma: Dma,
     mem: &'static mut [u32],
     flight: Option<Flight>,
+    /// R340's put-off arm: a frame built ([`Self::prepare`]) and not yet
+    /// armed ([`Self::arm`]): its grid word.
+    waiting: Option<u32>,
     /// Descriptors written for the frame being built.
     n: usize,
     /// The window offsets (bytes) the next words and the next end go to.
@@ -160,6 +163,7 @@ impl Chain {
             dma,
             mem: words,
             flight: None,
+            waiting: None,
             n: 0,
             at: 0,
             ends: 0,
@@ -181,9 +185,20 @@ impl Chain {
         Some(self.dma.registers()[1].wrapping_sub(self.addr(DESC)) / 16)
     }
 
-    /// Whether a frame is in flight.
+    /// Whether a frame is in flight, or built and waiting for its arm.
     pub const fn busy(&self) -> bool {
-        self.flight.is_some()
+        self.flight.is_some() || self.waiting.is_some()
+    }
+
+    /// Whether a frame is built and waiting for its arm ([`Self::prepare`]).
+    pub const fn waiting(&self) -> bool {
+        self.waiting.is_some()
+    }
+
+    /// The frame waiting for its arm dropped (never drawn): the chip is
+    /// about to be rebuilt.
+    pub const fn forget(&mut self) {
+        self.waiting = None;
     }
 
     fn addr(&self, word: usize) -> u32 {
@@ -382,15 +397,9 @@ impl Chain {
         true
     }
 
-    /// The whole frame as one chain armed (kit 63): the TA's tail buffer
-    /// and region array cleared in the 2700G's memory, its start table,
-    /// `bg` (the background strip), then `parts`, as `ta::clear`, the
-    /// table's writes and the background did by the CPU before (Dell's
-    /// way: ~21,000 single stores across the bus a frame, ~2.5 ms of
-    /// CPU). `Ok(true)`: the frame in flight. `Ok(false)`: the chain does
-    /// not fit, nothing started (the frame goes by the CPU, which clears
-    /// for itself). `Err(())`: the DMA refused the chain (the caller
-    /// resets the core; the frame is not drawn).
+    /// [`Self::prepare`] and [`Self::arm`] in one (a frame armed at its
+    /// call). `Ok(true)`: the frame in flight. `Ok(false)`: the chain does
+    /// not fit, nothing started. `Err(())`: the DMA refused the chain.
     pub fn start(
         &mut self,
         regs: &mut Mmio,
@@ -398,12 +407,30 @@ impl Chain {
         bg: &[u32],
         parts: &[&[u32]],
     ) -> Result<bool, ()> {
+        if !self.prepare(l, bg, parts) {
+            return Ok(false);
+        }
+        if self.arm(regs) { Ok(true) } else { Err(()) }
+    }
+
+    /// The whole frame as one chain built (kit 63): the TA's tail buffer
+    /// and region array cleared in the 2700G's memory, its start table,
+    /// `bg` (the background strip), then `parts`, as `ta::clear`, the
+    /// table's writes and the background did by the CPU before (Dell's
+    /// way: ~21,000 single stores across the bus a frame, ~2.5 ms of
+    /// CPU). No chip register is touched: the frame waits, built, for
+    /// [`Self::arm`] (R340: the arm put off to the moment the render in
+    /// flight has ended, the program let go meanwhile; the frame's words
+    /// stay the program's to keep until its next frame call, as an armed
+    /// chain's do). False: the chain does not fit, nothing waits (the
+    /// frame goes by the CPU, which clears for itself).
+    pub fn prepare(&mut self, l: &ta::Layout, bg: &[u32], parts: &[&[u32]]) -> bool {
         let table = l.start_table();
         let grid = table.iter().find(|p| p.0 == GRID).map_or(0, |p| p.1);
         let (cols, rows) = l.grid();
         let clears = [(l.tail, l.tail_bytes), (l.regions, 8 * (cols * rows + 1))];
         if !self.build(parts, &table, bg, &clears, grid) {
-            return Ok(false);
+            return false;
         }
         // The frame's words reach memory before the DMA reads them, and
         // the table of constants (the descriptors are cleaned by the arm).
@@ -411,6 +438,18 @@ impl Chain {
             cpu::clean_range(words.as_ptr().addr() as u32, 4 * words.len() as u32);
         }
         cpu::clean_range(self.addr(0), 4 * ZERO as u32);
+        self.last_descriptors = self.n as u32;
+        self.waiting = Some(grid);
+        true
+    }
+
+    /// The frame [`Self::prepare`] built armed: the TA's done bit set up
+    /// and the DMA started. False if nothing waited or the DMA refused
+    /// the chain (the caller resets the core; the frame is not drawn).
+    pub fn arm(&mut self, regs: &mut Mmio) -> bool {
+        let Some(grid) = self.waiting.take() else {
+            return false;
+        };
         // The done bit armed by the CPU (its own registers, not the TA's
         // memory); the rest of the scene's start is the chain's.
         let en = regs.read32(MBX + reg::ENABLE);
@@ -418,7 +457,6 @@ impl Chain {
         regs.write32(MBX + reg::ENABLE, en | ta::DONE);
         let t0 = rt::ticks();
         let n = 4 * self.n;
-        self.last_descriptors = self.n as u32;
         // The arm drains the CPU's writes first (its clean).
         if !self.dma.arm_chain(&self.mem[DESC..DESC + n]) {
             Self::finish(
@@ -431,7 +469,7 @@ impl Chain {
                     grid,
                 },
             );
-            return Err(());
+            return false;
         }
         self.flight = Some(Flight {
             t0,
@@ -440,7 +478,7 @@ impl Chain {
             en,
             grid,
         });
-        Ok(true)
+        true
     }
 
     /// The registers put back once the scene ended.
@@ -521,6 +559,7 @@ impl Chain {
     /// (run 297's stall frames: 7.2 to 11.4 s, one sample a descriptor,
     /// the rebuild itself 244 ms).
     pub fn cut(&mut self) -> Option<(u32, u32)> {
+        self.waiting = None;
         let f = self.flight.take()?;
         let r = self.dma.registers();
         if !f.dma_done {

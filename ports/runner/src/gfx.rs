@@ -1095,20 +1095,58 @@ const TA_EV9_ANSWER: usize = 0x834;
 /// the last frame's own, measured (frames follow each other closely); the
 /// events left over are the rule's misses, counted as before.
 /// `-rpnoholdend`: kit 113 as it was.
+///
+/// The wait itself (run 312: the rule waited inside the frame call in
+/// 16,524 of 23,750 frames, 4.6 ms each: 12.7% of the run, 40.0 fps where
+/// run 297 had 45.7). Iterate, don't imitate (rule 0): a driver that must
+/// order two chip stages blocks the caller until the first is over (Dell's
+/// queue does, and so did this rule's first build); but nothing in the
+/// wait needs the CPU: the frame's chain is pointers into buffers the
+/// program keeps until its next frame call anyway. So ours builds the
+/// chain at the call, touches no chip register, and returns; the pump
+/// (the 1 ms tick and the program's clock reads) arms it the moment the
+/// render in flight is seen ended, and the next frame call arms it first
+/// if no pump got there. The TA still never starts under a render that
+/// would end first, and the game's CPU makes its next frame meanwhile.
+/// `-rpnodefer`: the wait inside the call, as run 312 had it.
 #[derive(Clone, Copy)]
 pub struct HoldEnd {
     pub on: bool,
-    /// Frames whose TA waited for the render to end, and the time waited.
+    /// The arm put off to the pump (`-rpnodefer`: waited for in the call).
+    pub defer: bool,
+    /// Frames whose TA waited for the render to end, and the time waited
+    /// (from the frame call to the arm).
     held: u32,
     held_us: u32,
+    /// Of them: the frames the next frame call had to wait for (no pump
+    /// saw the render's end first), and that wait.
+    in_call: u32,
+    in_call_us: u32,
     /// Frames armed beside a render that would outlast the TA.
     beside: u32,
+    /// The margin's measure, each held frame judged once its own TA is
+    /// done: the render really ended `d` after the call, the TA then took
+    /// `ta`. `needed`: d < ta (armed at the call, the render would have
+    /// ended under it). `unsure`: within the pump's 1 ms of it.
+    /// `needless`: d >= ta + 1 ms (the render would have outlasted the
+    /// TA), and by how much in all.
+    needed: u32,
+    unsure: u32,
+    needless: u32,
+    needless_us: u32,
 }
 pub static HOLD_END: rt::Global<HoldEnd> = rt::Global::new(HoldEnd {
     on: true,
+    defer: true,
     held: 0,
     held_us: 0,
+    in_call: 0,
+    in_call_us: 0,
     beside: 0,
+    needed: 0,
+    unsure: 0,
+    needless: 0,
+    needless_us: 0,
 });
 /// The margin on the estimate: the pump sees a render's end up to 1 ms
 /// late, and a frame's TA may run a little longer than the last one's.
@@ -1648,6 +1686,11 @@ struct Open {
     /// frame's are taken to be alike).
     render_us: u32,
     ta_us: u32,
+    /// R340's put-off arm: when the frame waiting for its arm was built
+    /// (ticks), and, for the chain in flight, how long its arm was put
+    /// off (the margin's measure).
+    defer_t0: Option<u32>,
+    defer_us: Option<u32>,
     pages_recent: u32,
     /// R340's measure (`-rpoverlapat S`): kit 113's overlap off until S
     /// seconds after the open, then on (one run, both ways, the manager
@@ -1836,7 +1879,15 @@ impl Chip {
         if !ch.busy() {
             return;
         }
+        if self.counts.rebuild_owed {
+            // the chip is silent: a frame never armed is not sent into it
+            ch.forget();
+            o.defer_t0 = None;
+        }
         let t0 = rt::ticks();
+        // R340: a frame still waiting for its arm is armed first, the
+        // render in flight waited for here
+        Self::arm_waiting(&mut self.counts, o, regs, ch, true);
         let s = ch.settle(regs);
         self.counts.settle_us += us_since(t0);
         Self::settled(
@@ -1849,6 +1900,38 @@ impl Chip {
             ch.last_gap_us,
             ch.last_fail.take(),
         );
+    }
+
+    /// R340's put-off arm: the frame built and waiting armed, once the
+    /// render in flight has ended (`wait`: waited for here; else a look,
+    /// and nothing done while it still runs).
+    fn arm_waiting(c: &mut Counts, o: &mut Open, regs: &mut Mmio, ch: &mut Chain, wait: bool) {
+        if !ch.waiting() {
+            return;
+        }
+        if wait {
+            let t0 = rt::ticks();
+            // (a render that hung is reset there, as a frame's wait does)
+            let _ = o.wait_render(regs);
+            HOLD_END.with(|h| {
+                h.in_call += 1;
+                h.in_call_us = h.in_call_us.wrapping_add(us_since(t0));
+            });
+        } else if !o.render_done_now(regs) {
+            return;
+        }
+        let d = o.defer_t0.take().map_or(0, us_since);
+        HOLD_END.with(|h| {
+            h.held += 1;
+            h.held_us = h.held_us.wrapping_add(d);
+        });
+        o.defer_us = Some(d);
+        o.arm_cursor = pm_cursor(o);
+        if !ch.arm(regs) {
+            o.defer_us = None;
+            c.ta_hangs += 1;
+            o.recover(regs);
+        }
     }
 
     /// What a settle or a pump found, acted on.
@@ -1870,6 +1953,18 @@ impl Chip {
                     b.ta_n += 1;
                 });
                 o.ta_us = us;
+                if let Some(d) = o.defer_us.take() {
+                    HOLD_END.with(|h| {
+                        if d < us {
+                            h.needed += 1;
+                        } else if d < us + 1_000 {
+                            h.unsure += 1;
+                        } else {
+                            h.needless += 1;
+                            h.needless_us = h.needless_us.wrapping_add(d - us);
+                        }
+                    });
+                }
                 c.chain_fails_row = 0;
                 c.chain_us += us;
                 c.gap_us += gap;
@@ -2130,11 +2225,22 @@ impl Chip {
         }
         let he = HOLD_END.with(|h| *h);
         (self.log)(format_args!(
-            "rp-gfx: R340 a render never ending under a TA ({}): {} frames' TA waited for the render in flight ({} ms in all), {} armed beside one that would outlast it; the last render {} us, the last TA {} us",
+            "rp-gfx: R340 a render never ending under a TA ({}; the wait {}): {} frames' TA waited for the render in flight ({} ms in all; {} of them inside the next frame call, {} ms), {} armed beside one that would outlast it; of the waits, judged by the frame's own TA time: {} needed, {} within 1 ms, {} needless (by {} ms in all); the last render {} us, the last TA {} us",
             if he.on { "on" } else { "-rpnoholdend" },
+            if he.defer {
+                "put off to the pump"
+            } else {
+                "-rpnodefer: in the frame call"
+            },
             he.held,
             he.held_us / 1000,
+            he.in_call,
+            he.in_call_us / 1000,
             he.beside,
+            he.needed,
+            he.unsure,
+            he.needless,
+            he.needless_us / 1000,
             self.open.as_ref().map_or(0, |o| o.render_us),
             self.open.as_ref().map_or(0, |o| o.ta_us)
         ));
@@ -3131,6 +3237,8 @@ impl Screen for Chip {
             scene_pages: [0; 2],
             render_us: 0,
             ta_us: 0,
+            defer_t0: None,
+            defer_us: None,
             pages_recent: 0,
         });
         if let (Some(o), Some(regs)) = (self.open.as_ref(), self.regs.as_mut()) {
@@ -3448,6 +3556,7 @@ impl Screen for Chip {
                 return Ok(());
             }
             // R340 (run 310): a render must not end under a running TA.
+            let mut defer = false;
             if o.overlap
                 && HOLD_END.with(|h| h.on)
                 && let Some(t0) = o.rendering
@@ -3455,18 +3564,46 @@ impl Screen for Chip {
             {
                 let left = o.render_us.saturating_sub(us_since(t0));
                 if left < o.ta_us + END_MARGIN_US {
-                    let t1 = rt::ticks();
-                    let _ = o.wait_render(regs);
-                    if o.pending.is_some() {
-                        o.start_pending(regs);
+                    if HOLD_END.with(|h| h.defer) && o.pending.is_none() {
+                        // the arm put off to the pump, the program let go
+                        defer = true;
+                    } else {
+                        let t1 = rt::ticks();
+                        let _ = o.wait_render(regs);
+                        if o.pending.is_some() {
+                            o.start_pending(regs);
+                        }
+                        HOLD_END.with(|h| {
+                            h.held += 1;
+                            h.held_us = h.held_us.wrapping_add(us_since(t1));
+                        });
                     }
-                    HOLD_END.with(|h| {
-                        h.held += 1;
-                        h.held_us = h.held_us.wrapping_add(us_since(t1));
-                    });
                 } else {
                     HOLD_END.with(|h| h.beside += 1);
                 }
+            }
+            if defer {
+                // (armed once the render has ended: the chip then holds
+                // no other scene, so the fits check has nothing to weigh)
+                let into = o.next_b;
+                if ch.prepare(&o.ta_lay(into), &bg, parts) {
+                    o.defer_t0 = Some(rt::ticks());
+                    bisect_step(c.ev[3], o.scene_pages, self.log);
+                    o.armed_b = into;
+                    o.next_b = !into;
+                    c.frames += 1;
+                    c.chained += 1;
+                    c.words += (bg.len() + parts.iter().map(|p| p.len()).sum::<usize>()) as u32;
+                    c.strips += counts.strips;
+                    c.descriptors += ch.last_descriptors;
+                    c.feed_us += us_since(t1);
+                    self.frame = self.frame.wrapping_add(1);
+                    self.report();
+                    return Ok(());
+                }
+                // too large for the chain: the CPU's, below (it waits for
+                // every render first; the build below says so again and
+                // counts it)
             }
             // R340's fits check: the next scene's TA starts beside the
             // scenes the chip still holds only when its pages provably fit
@@ -3751,6 +3888,8 @@ impl Screen for Chip {
             return;
         };
         o.chip_events(regs, &mut self.counts, self.log, ch.descriptor());
+        // R340: the frame waiting for its arm, the moment its render ended
+        Self::arm_waiting(&mut self.counts, o, regs, ch, false);
         if ch.busy() {
             let s = ch.pump(regs);
             Self::settled(
@@ -3830,6 +3969,7 @@ impl Screen for Chip {
         };
         crate::cpu::put_back(self.log);
         if let Some(ch) = self.chain.as_mut() {
+            Self::arm_waiting(&mut self.counts, &mut o, regs, ch, true);
             let s = ch.settle(regs);
             Self::settled(
                 &mut self.counts,
