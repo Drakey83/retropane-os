@@ -7009,15 +7009,26 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 		rp_tri_image = img;
 		rp_count.decals++;
 		{
-			static int said; /* the first three, so a log has them by the frame */
+			/* each picture once (the first 16 pictures), so a log names every
+			   kind of decal a run drew: run 320's red patch was one of the
+			   fight's, not the map's own, which had used every line */
+			static const image_t *seen[16];
+			static int           nseen;
+			int                  k = 0;
 
-			if( said < 3 )
+			while( k < nseen && seen[k] != img )
+				k++;
+			if( k == nseen && nseen < 16 )
 			{
-				said++;
-				fprintf( stderr, "rp-emit: R352: a decal drawn over its face (%d of the first 3): picture %d x %d%s, %d corners, frame %d\n",
-					said, img->width, img->height, R_TexHasAlpha( img ) ? " with alpha" : " (no alpha)", count, tr.framecount );
+				seen[nseen++] = img;
+				fprintf( stderr, "rp-emit: R352: a decal picture drawn as a polygon (%d): %s, %d x %d%s (bits 0x%x, flags 0x%x), scale %d/100, %d corners, frame %d\n",
+					nseen, img->name, img->width, img->height, R_TexHasAlpha( img ) ? " with alpha" : " (no alpha)", (unsigned)img->rp_bits, (unsigned)img->flags,
+					(int)( d->scale * 100.0f ), count, tr.framecount );
 			}
 		}
+		int32_t bx0 = 0x7FFFFFFF, by0 = 0x7FFFFFFF, bx1 = -0x7FFFFFFF, by1 = -0x7FFFFFFF;
+		int     smin = 1 << 30, smax = -1, tmin = 1 << 30, tmax = -1, behind = 0;
+
 		for( int i = 0; i < count; i++, v += 5 )
 		{
 			rp_tv_t *t = &c[i < 2 ? i : 2];
@@ -7034,7 +7045,17 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 			{
 				RP_ProjectS( q, t->w, t->st );
 				t->w[2] += RP_DECAL_BIAS;
+				bx0 = t->st[0] < bx0 ? t->st[0] : bx0;
+				bx1 = t->st[0] > bx1 ? t->st[0] : bx1;
+				by0 = t->st[1] < by0 ? t->st[1] : by0;
+				by1 = t->st[1] > by1 ? t->st[1] : by1;
 			}
+			else
+				behind++;
+			smin = t->s < smin ? t->s : smin;
+			smax = t->s > smax ? t->s : smax;
+			tmin = t->t < tmin ? t->t : tmin;
+			tmax = t->t > tmax ? t->t : tmax;
 			if( i < 2 )
 				continue;
 			if( !world && ( !c[0].front || !c[1].front || !c[2].front ))
@@ -7044,6 +7065,23 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 			else
 				RP_TriEmit( &c[0], &c[1], &c[2] );
 			c[1] = c[2];
+		}
+		/* run 320's red patch (the chip's last frame: a solid red trapezoid
+		   some 40 x 120 pixels on a wall, with the decals as polygons): a
+		   decal polygon that covers much of the screen is said, with what it
+		   is, where (the TA's x and y in pixels: the picture turned), its
+		   texels' range and the face, so one run names it */
+		{
+			static int said_big;
+			const int  w = ( bx1 - bx0 ) >> 4, h = ( by1 - by0 ) >> 4;
+
+			if( bx1 >= bx0 && w * h >= 2500 && said_big < 60 )
+			{
+				said_big++;
+				fprintf( stderr, "rp-emit: R352: a large decal polygon: %s %d x %d, scale %d/100, flags 0x%x, on screen %d x %d at TA %d,%d (%d corners, %d behind the eye), texels s %d-%d t %d-%d, face %d%s, frame %d\n",
+					img->name, img->width, img->height, (int)( d->scale * 100.0f ), (unsigned)d->flags, w, h, bx0 >> 4, by0 >> 4, count, behind,
+					smin, smax, tmin, tmax, (int)( fa - ( RI.currentmodel ? RI.currentmodel : WORLDMODEL )->surfaces ), world ? "" : " of a brush entity", tr.framecount );
+			}
 		}
 	}
 	vid.rendermode = mode_was;
