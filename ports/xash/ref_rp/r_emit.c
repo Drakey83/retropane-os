@@ -174,7 +174,7 @@ static struct
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
-	uint32_t decals, decal_cut; /* R352: decals drawn over their faces; a brush entity's triangles across the near plane not drawn */
+	uint32_t decals, decal_cut; /* R352: decals drawn over their faces; those cut at the near plane */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
@@ -206,6 +206,11 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    primitive to the frame); -rpdecalpoly turns them on. */
 static int rp_decal_on;
 static cvar_t *rp_decal; /* 1 turns them on while a run plays (-rpcombo's second half) */
+/* R352's eye on ordinary frames (-rpshots): rp_shot 1 asks for this frame's
+   picture from the 2700G (shot-N.565 on the card, N the frame) and a line
+   for each decal polygon drawn in it */
+static cvar_t *rp_shot;
+static int     rp_shot_now;
 
 void RP_EmitInit( void )
 {
@@ -236,6 +241,7 @@ void RP_EmitInit( void )
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	rp_decal = gEngfuncs.Cvar_Get( "rp_decal", "0", 0, "ref_rp: R352: 1 draws decals as polygons over their faces from now on" );
+	rp_shot = gEngfuncs.Cvar_Get( "rp_shot", "0", 0, "ref_rp: R352: 1 writes this frame's 2700G picture to the card (shot-N.565) and logs its decals" );
 	rp_picture = gEngfuncs.Cvar_Get( "rp_picture", "4", FCVAR_ARCHIVE, "ref_rp: R343: the picture's brightness, 0 (the game's own dark look) to 8 (daylight), 4 the default: the screen's curve and the light together" );
 	rp_near = gEngfuncs.Cvar_Get( "rp_near", "1", 0, "ref_rp: R347: the near plane in units, 1 to 8 (1 ref_rp's own, 4 Half-Life GL's); a ladder's look" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
@@ -438,7 +444,7 @@ static void RP_EmitReport( void )
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u triangles of brush entities across the near plane not drawn)\n",
+		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u of them cut at the near plane)\n",
 			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut );
 	if( rp_emit_on == 2 )
 	{
@@ -652,6 +658,9 @@ void RP_EmitFrame( void )
 	rp_cull_on = (int)rp_cull->value;
 	if( rp_decal && rp_decal->value != 0.0f )
 		rp_decal_on = 1;
+	rp_shot_now = rp_shot && rp_shot->value != 0.0f && rp_emit_on == 2;
+	if( rp_shot_now )
+		gEngfuncs.Cvar_SetValue( "rp_shot", 0.0f );
 	{
 		/* R347: 1 to 8 units, in 1/16ths */
 		float n = rp_near->value;
@@ -5957,6 +5966,14 @@ void RP_EmitSubmit( void )
 				rp_count.refused++;
 		}
 	}
+	if( rp_shot_now )
+	{
+		char path[40];
+
+		snprintf( path, sizeof( path ), "/rp-xash/shot-%d.565", tr.framecount );
+		RP_ChipShotTo( path );
+		rp_shot_now = 0;
+	}
 	if( rp_both )
 	{
 		RP_ChipShot();
@@ -7027,55 +7044,114 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 			}
 		}
 		int32_t bx0 = 0x7FFFFFFF, by0 = 0x7FFFFFFF, bx1 = -0x7FFFFFFF, by1 = -0x7FFFFFFF;
-		int     smin = 1 << 30, smax = -1, tmin = 1 << 30, tmax = -1, behind = 0;
+		int     smin = 1 << 30, smax = -1, tmin = 1 << 30, tmax = -1, behind = 0, n2 = 0;
+		/* the corners in view space with their texels, then clipped to the
+		   faces' own near plane here, in fixed point (as RP_ChipFace clips
+		   its face). Iterate (rule 0): the first build sent a triangle across
+		   the near plane to ref_soft's float clip (R_SetupFinalVert), which
+		   projects by `aliastransform`: the world's matrix as the last
+		   entities of the frame BEFORE left it (the world is drawn before
+		   R_SetUpWorldTransform runs), a brush entity's never; and the
+		   effects' plane (4 units) cut decals where their face (1 unit) still
+		   showed. Now a decal's corners are its face's numbers through one
+		   path, every triangle sent from in front of the eye, a brush
+		   entity's decal across the plane drawn too. */
+		static int32_t qv[RP_DECAL_CORNERS][3], cq[RP_DECAL_CORNERS + 1][3];
+		static int     sv[RP_DECAL_CORNERS][2], cs[RP_DECAL_CORNERS + 1][2];
 
 		for( int i = 0; i < count; i++, v += 5 )
 		{
-			rp_tv_t *t = &c[i < 2 ? i : 2];
-			int32_t  q[3];
+			int32_t p[3] = { RP_Fix16( v[0] ), RP_Fix16( v[1] ), RP_Fix16( v[2] ) };
 
-			t->p[0] = RP_Fix16( v[0] );
-			t->p[1] = RP_Fix16( v[1] );
-			t->p[2] = RP_Fix16( v[2] );
-			t->s = RP_TriCoord( v[3], img->width );
-			t->t = RP_TriCoord( v[4], img->height );
-			RP_ViewPoint( m, o, t->p, q );
-			t->front = q[2] >= ALIAS_Z_CLIP_PLANE * RP_ONE16;
-			if( t->front )
+			sv[i][0] = RP_TriCoord( v[3], img->width );
+			sv[i][1] = RP_TriCoord( v[4], img->height );
+			RP_ViewPoint( m, o, p, qv[i] );
+			behind += qv[i][2] < rp_near16;
+		}
+		for( int i = 0; i < count && n2 < RP_DECAL_CORNERS; i++ )
+		{
+			const int j = i + 1 < count ? i + 1 : 0;
+			const int ina = qv[i][2] >= rp_near16, inb = qv[j][2] >= rp_near16;
+
+			if( ina )
 			{
-				RP_ProjectS( q, t->w, t->st );
-				t->w[2] += RP_DECAL_BIAS;
-				bx0 = t->st[0] < bx0 ? t->st[0] : bx0;
-				bx1 = t->st[0] > bx1 ? t->st[0] : bx1;
-				by0 = t->st[1] < by0 ? t->st[1] : by0;
-				by1 = t->st[1] > by1 ? t->st[1] : by1;
+				memcpy( cq[n2], qv[i], sizeof( cq[0] ));
+				cs[n2][0] = sv[i][0];
+				cs[n2][1] = sv[i][1];
+				n2++;
 			}
-			else
-				behind++;
+			if( ina != inb && n2 < RP_DECAL_CORNERS )
+			{
+				/* f = (near - z_i) / (z_j - z_i), 0.16 */
+				int64_t den = (int64_t)qv[j][2] - qv[i][2];
+				int32_t f = (int32_t)(( (int64_t)( rp_near16 - qv[i][2] ) << 16 ) / den );
+
+				for( int k = 0; k < 2; k++ )
+				{
+					cq[n2][k] = qv[i][k] + (int32_t)(( (int64_t)( qv[j][k] - qv[i][k] ) * f ) >> 16 );
+					cs[n2][k] = sv[i][k] + (int)(( (int64_t)( sv[j][k] - sv[i][k] ) * f ) >> 16 );
+				}
+				cq[n2][2] = rp_near16;
+				n2++;
+			}
+		}
+		if( behind )
+			rp_count.decal_cut++;
+		for( int i = 0; i < n2; i++ )
+		{
+			rp_tv_t *t = &c[i < 2 ? i : 2];
+
+			t->s = cs[i][0];
+			t->t = cs[i][1];
+			t->front = 1;
+			RP_ProjectS( cq[i], t->w, t->st );
+			t->w[2] += RP_DECAL_BIAS;
+			bx0 = t->st[0] < bx0 ? t->st[0] : bx0;
+			bx1 = t->st[0] > bx1 ? t->st[0] : bx1;
+			by0 = t->st[1] < by0 ? t->st[1] : by0;
+			by1 = t->st[1] > by1 ? t->st[1] : by1;
 			smin = t->s < smin ? t->s : smin;
 			smax = t->s > smax ? t->s : smax;
 			tmin = t->t < tmin ? t->t : tmin;
 			tmax = t->t > tmax ? t->t : tmax;
 			if( i < 2 )
 				continue;
-			if( !world && ( !c[0].front || !c[1].front || !c[2].front ))
-				/* a brush entity's decal across the near plane: the
-				   software clip works in the world's space only */
-				rp_count.decal_cut++;
-			else
-				RP_TriEmit( &c[0], &c[1], &c[2] );
+			RP_TriEmit( &c[0], &c[1], &c[2] );
 			c[1] = c[2];
 		}
+		if( rp_shot_now && bx1 >= bx0 )
+			fprintf( stderr, "rp-emit: R352 shot %d: decal %s on face %d%s, TA %d-%d x %d-%d, %d corners (%d behind), texels s %d-%d t %d-%d\n",
+				tr.framecount, img->name, (int)( fa - ( RI.currentmodel ? RI.currentmodel : WORLDMODEL )->surfaces ), world ? "" : " (brush entity)",
+				bx0 >> 4, bx1 >> 4, by0 >> 4, by1 >> 4, n2, behind, smin, smax, tmin, tmax );
 		/* run 320's red patch (the chip's last frame: a solid red trapezoid
 		   some 40 x 120 pixels on a wall, with the decals as polygons): a
 		   decal polygon that covers much of the screen is said, with what it
 		   is, where (the TA's x and y in pixels: the picture turned), its
 		   texels' range and the face, so one run names it */
 		{
+			/* each face and picture said when first seen and again every
+			   100 frames (runs 321-323: one off-screen floor decal took all
+			   60 lines in frames 1-60, the patch's own polygon never named) */
+			static struct { const msurface_t *fa; const image_t *img; int frame; } big[32];
 			static int said_big;
 			const int  w = ( bx1 - bx0 ) >> 4, h = ( by1 - by0 ) >> 4;
+			int        say = 0;
 
-			if( bx1 >= bx0 && w * h >= 2500 && said_big < 60 )
+			if( bx1 >= bx0 && w * h >= 2500 && said_big < 400 )
+			{
+				int k = 0;
+
+				while( k < 32 && big[k].fa && ( big[k].fa != fa || big[k].img != img ))
+					k++;
+				if( k < 32 && ( !big[k].fa || tr.framecount - big[k].frame >= 100 ))
+				{
+					big[k].fa = fa;
+					big[k].img = img;
+					big[k].frame = tr.framecount;
+					say = 1;
+				}
+			}
+			if( say )
 			{
 				said_big++;
 				fprintf( stderr, "rp-emit: R352: a large decal polygon: %s %d x %d, scale %d/100, flags 0x%x, on screen %d x %d at TA %d,%d (%d corners, %d behind the eye), texels s %d-%d t %d-%d, face %d%s, frame %d\n",

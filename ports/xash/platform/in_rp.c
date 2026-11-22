@@ -906,6 +906,13 @@ static void RP_End( void )
 					Cbuf_AddText( "save rptest\nautosave\n" );
 				}
 			}
+			/* -rpshots (R352: run 323's red patch was in the end shot, the
+			   frame drawn both ways, where the second half's reports drew no
+			   decal at all): the 2700G's own picture of four ordinary frames
+			   of the fight, two in each half, with every decal polygon of
+			   those frames logged (rp_shot 1: ref_rp writes shot-N.565) */
+			if( RP_Parm( "-rpshots" ) && ( frames + 1u == 120u || frames + 1u == 240u || frames + 1u == 380u || frames + 1u == 490u ))
+				Cvar_SetValue( "rp_shot", 1.0f );
 			/* the ammunition topped up every 100 frames (impulse 101), so
 			   the MP5 never runs dry */
 			if( frames % 100u == 99u )
