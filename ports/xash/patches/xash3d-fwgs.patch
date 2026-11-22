@@ -6351,10 +6351,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_image.c b/ref/soft/r_image.c
-index 8a82400..c074dfc 100644
+index 8a82400..8b58eb3 100644
 --- a/ref/soft/r_image.c
 +++ b/ref/soft/r_image.c
-@@ -22,6 +22,480 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
+@@ -22,6 +22,496 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
  static uint    r_numImages;
  
  #define IsLightMap( tex ) ( FBitSet(( tex )->flags, TF_ATLAS_PAGE ))
@@ -6581,6 +6581,22 @@ index 8a82400..c074dfc 100644
 +	R_TexLevel( tex, (const byte *)tex->rp_pal, 0, tex->rp_npal, 1, c16, NULL );
 +	*idx = tex->rp_idx;
 +	return 1;
++}
++
++/* RetroPane (run 318: the menu's animated banner, 4 pictures of 507 x 270
++   and their 4 blip copies, decoded whole into a 534 KiB block each time
++   one was placed again in video memory): the same tables with the alpha
++   copy's too, for ref_rp's picture upload to read the indices through
++   them, no decoded copy. 0 if not compact; 1 colours only; 2 with alpha. */
++int R_TexCompactAlpha( image_t *tex, pixel_t c16[256], pixel_t a16[256], const byte **idx )
++{
++	const int alpha = FBitSet( tex->rp_bits, RP_TB_ALPHA ) != 0;
++
++	if( !tex->rp_idx || !tex->rp_pal )
++		return 0;
++	R_TexLevel( tex, (const byte *)tex->rp_pal, 0, tex->rp_npal, 1, c16, alpha ? a16 : NULL );
++	*idx = tex->rp_idx;
++	return alpha ? 2 : 1;
 +}
 +
 +static void GL_BuildMipMap( byte *in, int srcWidth, int srcHeight, int srcDepth, int flags );
@@ -6835,7 +6851,7 @@ index 8a82400..c074dfc 100644
  /*
  =================
  R_GetTexture
-@@ -44,31 +518,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
+@@ -44,31 +534,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
  {
  	image_t *image = &r_images[texnum];
  
@@ -6876,7 +6892,7 @@ index 8a82400..c074dfc 100644
  
  	r_affinetridesc.skinwidth = image->width;
  	r_affinetridesc.skinheight = image->height;
-@@ -227,6 +696,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -227,6 +712,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  	Assert( pic != NULL );
  	Assert( tex != NULL );
  
@@ -6887,7 +6903,7 @@ index 8a82400..c074dfc 100644
  	if( !pic->buffer )
  		return true;
  
-@@ -240,6 +713,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -240,6 +729,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  	else
  		data = buf;
  
@@ -6932,7 +6948,7 @@ index 8a82400..c074dfc 100644
  	// mips will be auto-generated if desired
  	for( uint j = 0; j < mipCount; j++ )
  	{
-@@ -254,31 +765,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -254,31 +781,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  		if( j == 0 && tex->flags & TF_HAS_ALPHA )
  			tex->alpha_pixels = (pixel_t *)Mem_Calloc( r_temppool, width * height * sizeof( pixel_t ));
  
@@ -6965,7 +6981,7 @@ index 8a82400..c074dfc 100644
  		if( mipCount > 1 )
  			GL_BuildMipMap( data, width, height, tex->depth, tex->flags );
  
-@@ -431,7 +918,7 @@ static void GL_DeleteTexture( image_t *tex )
+@@ -431,7 +934,7 @@ static void GL_DeleteTexture( image_t *tex )
  	ASSERT( tex != NULL );
  
  	// already freed?
@@ -6974,7 +6990,7 @@ index 8a82400..c074dfc 100644
  		return;
  
  	// debug
-@@ -462,11 +949,7 @@ static void GL_DeleteTexture( image_t *tex )
+@@ -462,11 +965,7 @@ static void GL_DeleteTexture( image_t *tex )
  	if( tex->original )
  		gEngfuncs.FS_FreeImage( tex->original );
  
@@ -6987,7 +7003,7 @@ index 8a82400..c074dfc 100644
  
  	memset( tex, 0, sizeof( *tex ));
  }
-@@ -814,7 +1297,7 @@ void R_TextureList_f( void )
+@@ -814,7 +1313,7 @@ void R_TextureList_f( void )
  
  	for( i = texCount = 0, image = r_images; i < r_numImages; i++, image++ )
  	{
@@ -6996,7 +7012,7 @@ index 8a82400..c074dfc 100644
  			continue;
  
  		bytes += image->size;
-@@ -863,6 +1346,23 @@ void R_InitImages( void )
+@@ -863,6 +1362,23 @@ void R_InitImages( void )
  	r_imagesHashTable[r_images->hashValue] = r_images;
  	r_numImages = 1;
  
@@ -7020,7 +7036,7 @@ index 8a82400..c074dfc 100644
  	// validate cvars
  
  	gEngfuncs.Cmd_AddCommand( "texturelist", R_TextureList_f, "display loaded textures list" );
-@@ -886,4 +1386,9 @@ void R_ShutdownImages( void )
+@@ -886,4 +1402,9 @@ void R_ShutdownImages( void )
  	memset( r_imagesHashTable, 0, sizeof( r_imagesHashTable ));
  	memset( r_images, 0, sizeof( r_images ));
  	r_numImages = 0;
@@ -7031,7 +7047,7 @@ index 8a82400..c074dfc 100644
 +	r_ring_size = r_ring_head = 0;
  }
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..d326440 100644
+index 1a7efd6..3961ec4 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
 @@ -48,7 +48,16 @@ typedef int fixed16_t;
@@ -7070,7 +7086,7 @@ index 1a7efd6..d326440 100644
  	uint           hashValue;
  	struct image_s *nextHash;
  } image_t;
-@@ -340,6 +360,21 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
+@@ -340,6 +360,22 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
  // gl_image.c
  //
  image_t *R_GetTexture( unsigned int texnum );
@@ -7084,6 +7100,7 @@ index 1a7efd6..d326440 100644
 +pixel_t *R_TexAlpha( image_t *tex );
 +pixel_t *const *R_TexLevels( image_t *tex, int transient );
 +int R_TexCompact( image_t *tex, pixel_t c16[256], const byte **idx ); // RetroPane: its colours and indices, no decoded copy
++int R_TexCompactAlpha( image_t *tex, pixel_t c16[256], pixel_t a16[256], const byte **idx ); // RetroPane: and the alpha copy's
 +pixel_t *R_SkinPix( void );
 +void R_TexRingFrame( void );
 +void R_TexRingStats( char *out, size_t len, qboolean reset );
@@ -7092,7 +7109,7 @@ index 1a7efd6..d326440 100644
  #define GL_LoadTextureInternal( name, pic, flags )   GL_LoadTextureFromBuffer( name, pic, flags, false )
  #define GL_UpdateTextureInternal( name, pic, flags ) GL_LoadTextureFromBuffer( name, pic, flags, true )
  int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags );
-@@ -992,6 +1027,102 @@ typedef struct
+@@ -992,6 +1028,102 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  

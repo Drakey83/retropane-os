@@ -174,7 +174,7 @@ static struct
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
-	uint32_t decals, decal_cut, decals_lit; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
+	uint32_t decals, decal_cut, decals_lit, decals_built, decal_arena_resets; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
@@ -455,8 +455,8 @@ static void RP_EmitReport( void )
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u of them cut at the near plane, %u lit by their wall's lightmap)\n",
-			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut, rp_count.decals_lit );
+		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u of them cut at the near plane, %u lit by their wall's lightmap; %u built, the rest kept from before; %u arena restarts)\n",
+			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut, rp_count.decals_lit, rp_count.decals_built, rp_count.decal_arena_resets );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -6146,8 +6146,13 @@ rebuild their per-map state here, in the load's own pause; ours builds the
 integer tables here too (not in the new map's first frame, which then
 pays nothing) and logs what that costs.
 */
+static intptr_t rp_dc_gen; /* R352's decal arena (defined with RP_DecalCorners) */
+static int      rp_dc_used;
+
 void RP_EmitNewMap( void )
 {
+	rp_dc_gen++; /* every decal's corners built again on the new map */
+	rp_dc_used = 0;
 	uint64_t t0 = rp_time_us( );
 
 	rp_wmodel = NULL;
@@ -6226,7 +6231,7 @@ static inline uint32_t RP_PicTexel( pixel_t p, int fmt )
 
 /* `w` x `h` texels from `src` (rows `stride` apart) into page `pg` at
    square (`qx`, `qy`), past the edges the last row and column again. */
-static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, int qx, int qy, int fmt, const byte *idx, const uint32_t *pal )
+static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, int qx, int qy, int fmt, const byte *idx, const uint32_t *pal, const pixel_t *tab )
 {
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
 	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
@@ -6253,18 +6258,20 @@ static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, 
 						x = w - 1;
 					if( y >= h )
 						y = h - 1;
-					if( idx )
+					const pixel_t p = tab ? tab[idx[y * stride + x]] : src[y * stride + x];
+
+					if( idx && pal && fmt )
 					{
 						/* R352: the opacity from the 8-bit palette's alpha
 						   (Half-Life's decals: the index itself, 256
 						   levels) to the chip's 16, not ref_soft's 8; the
 						   colour as before (the renderer's table) */
-						uint32_t a = pal[idx[y * stride + x]] >> 28, cc = vid.screen[(pixel_t)( src[y * stride + x] << 3 )];
+						uint32_t a = pal[idx[y * stride + x]] >> 28, cc = vid.screen[(pixel_t)( p << 3 )];
 
 						t[j] = a ? a << 12 | ( cc >> 12 & 0xFu ) << 8 | ( cc >> 7 & 0xFu ) << 4 | ( cc >> 1 & 0xFu ) : 0;
 					}
 					else
-						t[j] = RP_PicTexel( src[y * stride + x], fmt );
+						t[j] = RP_PicTexel( p, fmt );
 				}
 				dst[k] = t[0] | t[1] << 16;
 			}
@@ -6298,14 +6305,22 @@ static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int
 	{
 		int      x, y, pg;
 		uint64_t t0 = rp_time_us();
-		const pixel_t *src = fmt ? R_TexAlpha( img ) : R_TexPix( img, 0 ); /* R335: only now */
+		/* run 318: a compact picture read through its 256-entry tables (no
+		   decoded copy: the menu banner's 534 KiB blocks); else decoded */
+		static pixel_t c16[256], a16[256];
+		const byte    *idx = NULL;
+		const int      k = R_TexCompactAlpha( img, c16, a16, &idx );
+		const pixel_t *tab = k && ( !fmt || k == 2 ) ? ( fmt ? a16 : c16 ) : NULL;
+		const pixel_t *src = tab ? NULL : fmt ? R_TexAlpha( img ) : R_TexPix( img, 0 ); /* R335: only now */
 
-		if( !src )
+		if( !tab && !src )
 			return NULL;
+		if( !tab )
+			idx = NULL;
 		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &x, &y );
 		if( pg < 0 )
 			return NULL;
-		RP_PicUpload( src + off, stride, w, h, pg, x, y, fmt, fmt && img->rp_idx && img->rp_pal ? img->rp_idx + off : NULL, img->rp_pal );
+		RP_PicUpload( src ? src + off : NULL, stride, w, h, pg, x, y, fmt, idx ? idx + off : fmt && img->rp_idx && img->rp_pal ? img->rp_idx + off : NULL, img->rp_pal, tab );
 		e->key = key;
 		e->off = off;
 		e->w = (uint16_t)w;
@@ -6528,16 +6543,16 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 			for( int r = 0; r < rows; r++ )
 				for( int x = 0; x < pw; x++ )
 					band[r * pw + x] = c16[idx[( y + r ) * pw + x]];
-			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_borrow.pg0, 0, y >> 3, 0, NULL, NULL );
+			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_borrow.pg0, 0, y >> 3, 0, NULL, NULL, NULL );
 			if( pw > RP_PAGE_SIDE )
-				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_borrow.pg0 + 1, 0, y >> 3, 0, NULL, NULL );
+				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_borrow.pg0 + 1, 0, y >> 3, 0, NULL, NULL, NULL );
 		}
 	}
 	else
 	{
-		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_borrow.pg0, 0, 0, 0, NULL, NULL );
+		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_borrow.pg0, 0, 0, 0, NULL, NULL, NULL );
 		if( pw > RP_PAGE_SIDE )
-			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_borrow.pg0 + 1, 0, 0, 0, NULL, NULL );
+			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_borrow.pg0 + 1, 0, 0, 0, NULL, NULL, NULL );
 	}
 	rp_borrow.serial = pic->rp_serial;
 	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
@@ -7098,6 +7113,90 @@ static void RP_DecalLitStrip( const rp_skin_t *e, int lpg, int lqx, int lqy, int
 	rp_count.decals_lit++;
 }
 
+/*
+R352's cost (the owner, 2026-11-22: "can we rule 0 the inpact of that hit
+away?"). Run 328's samples: ~4% of the play in the decals' floats (the
+face's corners clipped to the picture in soft float, RP_DecalClipEdge and
+the dot products, every decal every frame). Half-Life's GL renderer builds
+a decal's polygon once (R_DecalCreatePoly) and keeps it. Ours keeps it
+too, in the numbers the frame uses: each corner's point in 16.16, its
+texel and its lightmap place, once per decal in a 36 KiB arena; a frame
+does only the integer view transform the walls do. The decal_t's own
+spare words hold its place (reserved[0]), the arena's generation
+(reserved[1]) and a check of what it was built from (reserved[2]), so a
+decal reused for another hole is built again. A full arena starts over
+(every decal built again as it is next drawn).
+*/
+typedef struct
+{
+	int32_t p[3]; /* the corner, 16.16 (the face's model space) */
+	int16_t s, t; /* the picture's texel */
+	int32_t l[2]; /* the face's lightmap, luxels 24.8 */
+} rp_dcorner_t;
+
+#define RP_DECAL_ARENA 1536 /* corners (24 bytes each) */
+static rp_dcorner_t rp_dc[RP_DECAL_ARENA];
+static int          rp_dc_used;
+static intptr_t     rp_dc_gen = 1;
+
+static intptr_t RP_DecalCookie( const decal_t *d, const msurface_t *fa )
+{
+	uint32_t h = (uint32_t)(uintptr_t)fa * 2654435761u;
+	uint32_t b;
+
+	__builtin_memcpy( &b, &d->dx, 4 );
+	h = ( h ^ b ) * 2246822519u;
+	__builtin_memcpy( &b, &d->dy, 4 );
+	h = ( h ^ b ) * 3266489917u;
+	__builtin_memcpy( &b, &d->scale, 4 );
+	h = ( h ^ b ^ (uint32_t)d->texture << 16 ^ (uint16_t)d->flags ) * 668265263u;
+	return (intptr_t)( h | 1u );
+}
+
+/* The decal's corners, built once (NULL: nothing of it on the face). */
+static const rp_dcorner_t *RP_DecalCorners( decal_t *d, const msurface_t *fa, const image_t *img, int *count )
+{
+	static float        poly[RP_DECAL_CORNERS][5];
+	const intptr_t      cookie = RP_DecalCookie( d, fa );
+	const mextrasurf_t *info = fa->info;
+	int                 n;
+
+	if( d->reserved[1] == rp_dc_gen && d->reserved[2] == cookie )
+	{
+		*count = (int)( d->reserved[0] >> 16 );
+		return *count ? &rp_dc[d->reserved[0] & 0xFFFF] : NULL;
+	}
+	n = RP_DecalPoly( d, fa, img, poly );
+	if( rp_dc_used + n > RP_DECAL_ARENA )
+	{
+		rp_dc_used = 0;
+		rp_dc_gen++;
+		rp_count.decal_arena_resets++;
+	}
+	for( int i = 0; i < n; i++ )
+	{
+		const float  *v = poly[i];
+		rp_dcorner_t *c = &rp_dc[rp_dc_used + i];
+
+		c->p[0] = RP_Fix16( v[0] );
+		c->p[1] = RP_Fix16( v[1] );
+		c->p[2] = RP_Fix16( v[2] );
+		c->s = (int16_t)RP_TriCoord( v[3], img->width );
+		c->t = (int16_t)RP_TriCoord( v[4], img->height );
+		c->l[0] = (int32_t)(( DotProduct( v, info->lmvecs[0] ) + info->lmvecs[0][3] - info->lightmapmins[0] ) * 256.0f );
+		c->l[1] = (int32_t)(( DotProduct( v, info->lmvecs[1] ) + info->lmvecs[1][3] - info->lightmapmins[1] ) * 256.0f );
+	}
+	d->reserved[0] = (intptr_t)( rp_dc_used | n << 16 );
+	d->reserved[1] = rp_dc_gen;
+	d->reserved[2] = cookie;
+	rp_count.decals_built++;
+	*count = n;
+	if( !n )
+		return NULL;
+	rp_dc_used += n;
+	return &rp_dc[rp_dc_used - n];
+}
+
 static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t o[3] )
 {
 	const int      mode_was = vid.rendermode;
@@ -7111,14 +7210,13 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 	{
 		const image_t *img = R_GetTexture( d->texture );
 		int            count = 0;
-		static float   poly[RP_DECAL_CORNERS][5];
-		const float   *v = poly[0];
+		const rp_dcorner_t *dc;
 		rp_tv_t        c[3];
 
 		if( !img || !R_TexLoaded( img ) || img->width < 1 || img->height < 1 )
 			continue;
-		count = RP_DecalPoly( d, fa, img, poly );
-		if( !count )
+		dc = RP_DecalCorners( d, fa, img, &count );
+		if( !dc )
 			continue;
 		rp_tri_image = img;
 		rp_count.decals++;
@@ -7156,17 +7254,13 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 		static int32_t qv[RP_DECAL_CORNERS][3], cq[RP_DECAL_CORNERS + 1][3];
 		static int     sv[RP_DECAL_CORNERS][2], cs[RP_DECAL_CORNERS + 1][2];
 		static int32_t lv[RP_DECAL_CORNERS][2], cl[RP_DECAL_CORNERS + 1][2]; /* the lightmap's luxels, 24.8 */
-		const mextrasurf_t *info = fa->info;
-
-		for( int i = 0; i < count; i++, v += 5 )
+		for( int i = 0; i < count; i++ )
 		{
-			int32_t p[3] = { RP_Fix16( v[0] ), RP_Fix16( v[1] ), RP_Fix16( v[2] ) };
-
-			sv[i][0] = RP_TriCoord( v[3], img->width );
-			sv[i][1] = RP_TriCoord( v[4], img->height );
-			lv[i][0] = (int32_t)(( DotProduct( v, info->lmvecs[0] ) + info->lmvecs[0][3] - info->lightmapmins[0] ) * 256.0f );
-			lv[i][1] = (int32_t)(( DotProduct( v, info->lmvecs[1] ) + info->lmvecs[1][3] - info->lightmapmins[1] ) * 256.0f );
-			RP_ViewPoint( m, o, p, qv[i] );
+			sv[i][0] = dc[i].s;
+			sv[i][1] = dc[i].t;
+			lv[i][0] = dc[i].l[0];
+			lv[i][1] = dc[i].l[1];
+			RP_ViewPoint( m, o, dc[i].p, qv[i] );
 			behind += qv[i][2] < rp_near16;
 		}
 		for( int i = 0; i < count && n2 < RP_DECAL_CORNERS; i++ )

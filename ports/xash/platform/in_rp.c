@@ -436,11 +436,19 @@ static void RP_ScoreAs( const char *what )
 		   test's own lines; a fast frame starts the count again) */
 		{
 			static uint32_t row;
+			static int      rp_play_quiet = -1;
+
+			if( rp_play_quiet < 0 )
+				rp_play_quiet = RP_Parm( "-rpplay" ) ? 1 : 0;
 
 			row = dt > 50000u ? row + 1 : 0;
 			if( row == 25 )
 				fprintf( stderr, "%s: frame %u: 24 slow frames in a row, the rest of the row not listed (the windows' counts have them)\n", what, frames + 1 );
-			if( dt > 50000u && row <= 24 )
+			/* run 318 (the owner's play): a line for every frame over 50 ms
+			   filled the card's log by 9 minutes and its writing was ~4% of
+			   the slow frames' samples; in played runs (-rpplay) only frames
+			   over 100 ms are listed (the windows' counts have the rest) */
+			if( dt > ( rp_play_quiet ? 100000u : 50000u ) && row <= 24 )
 				fprintf( stderr, "%s: frame %u took %u ms (%u to %u ms on rp_time_us)\n", what, frames + 1, dt / 1000u,
 					(uint32_t)( last / 1000u ), (uint32_t)( now / 1000u ));
 		}
