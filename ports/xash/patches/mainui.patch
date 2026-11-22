@@ -351,6 +351,25 @@ index 1159ec9..50a02b9 100644
  
  
  	textHeight = m_scPos.y - (m_scChSize * 1.5f);
+diff --git a/menus/Main.cpp b/menus/Main.cpp
+index 4d1a382..5996049 100644
+--- a/menus/Main.cpp
++++ b/menus/Main.cpp
+@@ -299,8 +299,14 @@ void CMenuMain::_Init( void )
+ 
+ 	AddItem( previews );
+ 	AddItem( quit );
++#if !XASH_RETROPANE
+ 	AddItem( minimizeBtn );
+ 	AddItem( quitButton );
++#endif
++	// RetroPane (the owner's photo, run 318: two pale boxes at the menu's top
++	// right): a desktop window's minimize and close buttons, whose pictures
++	// (gfx/shell/min_*, cls_*) Half-Life does not ship, so they drew as plain
++	// boxes; Half-Life's own menu has neither, and Quit is in the list
+ }
+ 
+ /*
 diff --git a/menus/VideoOptions.cpp b/menus/VideoOptions.cpp
 index 69dd50a..0b4f03f 100644
 --- a/menus/VideoOptions.cpp
