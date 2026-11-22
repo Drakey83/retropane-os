@@ -1923,9 +1923,14 @@ mod image {
         let pen_log = args[..arg_count]
             .iter()
             .any(|a| a.to_bytes() == b"-rppenlog");
+        // R355: the stylus's moves as the touch filter gives them
+        let pen_raw = args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpnopensmooth");
         match pad(gpio).and_then(|p| {
             INPUT.put_with(|| {
                 let i = Input::new(p, Calibration::X51V_DEFAULT);
+                let i = if pen_raw { i.without_pen_smooth() } else { i };
                 if pen_log { i.with_pen_log(gfx_log) } else { i }
             })
         }) {

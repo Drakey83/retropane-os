@@ -99,10 +99,27 @@ index ae05457..3a959c7 100755
  void UI_EnableAlphaFactor( float a );
  void UI_DisableAlphaFactor();
 diff --git a/controls/BackgroundBitmap.cpp b/controls/BackgroundBitmap.cpp
-index 0b087a4..d50f111 100644
+index 0b087a4..5a9af84 100644
 --- a/controls/BackgroundBitmap.cpp
 +++ b/controls/BackgroundBitmap.cpp
-@@ -219,6 +219,26 @@ bool CMenuBackgroundBitmap::LoadSteamBackground( bool gamedirOnly )
+@@ -117,7 +117,16 @@ void CMenuBackgroundBitmap::Draw()
+ 			return;
+ 		}
+ 
++#if XASH_RETROPANE
++		// RetroPane (the owner, 2026-11-21: "we agreed on this menu screen
++		// and that is NOT what it looks like"): upstream dims the game's
++		// picture behind a menu opened in a game; this port draws no world
++		// under its menu, so that was a flat grey screen. The agreed
++		// background (retropane/background.tga) is drawn there too.
++		if( !s_SteamBackground.Count() && EngFuncs::GetCvarFloat( "ui_renderworld" ) )
++#else
+ 		if( EngFuncs::GetCvarFloat( "ui_renderworld" ) )
++#endif
+ 		{
+ 			DrawInGameBackground();
+ 			return;
+@@ -219,6 +228,26 @@ bool CMenuBackgroundBitmap::LoadSteamBackground( bool gamedirOnly )
  
  	bool loaded = false;
  
@@ -129,6 +146,70 @@ index 0b087a4..d50f111 100644
  	// try 25'th anniversary update background first
  	if( FBitSet( gMenu.m_gameinfo.flags, GFL_HD_BACKGROUND ))
  		afile = (char *)EngFuncs::COM_LoadFile( "resource/HD_BackgroundLayout.txt" );
+@@ -348,8 +377,18 @@ void CMenuBackgroundBitmap::LoadBackground()
+ 	s_bGameHasSteamBackground = false;
+ 	s_bGameHasWONBackground = false;
+ 
++#if XASH_RETROPANE
++	// RetroPane (the owner, 2026-11-21): the kit's engine is the low-memory
++	// build, whose menu loads no background at all, so the agreed one was
++	// never on the X51v. Upstream skips it for the HD set's size (13 MiB in
++	// 105 pieces); ours is one prepared 640 x 480 picture (0.6 MiB), so it
++	// is loaded in that mode too, and only it.
++	if( uiStatic.lowmemory && !EngFuncs::FileExists( "retropane/background.tga", false ))
++		return;
++#else
+ 	if( uiStatic.lowmemory )
+ 		return;
++#endif
+ 
+ 	if( LoadSteamBackground( true ))
+ 	{
+@@ -359,7 +398,9 @@ void CMenuBackgroundBitmap::LoadBackground()
+ 	else if( LoadSteamBackground( false ))
+ 		Con_DPrintf( "%s: found %s background in %s directory\n", __func__, "steam", "base" );
+ 
+-	if( LoadWONBackground( true ))
++	if( uiStatic.lowmemory )
++		; // RetroPane: the prepared picture only (above)
++	else if( LoadWONBackground( true ))
+ 	{
+ 		Con_DPrintf( "%s: found %s background in %s directory\n", __func__, "won", "game" );
+ 		s_bGameHasWONBackground = true;
+diff --git a/controls/CheckBox.cpp b/controls/CheckBox.cpp
+index 77d013b..4ec4e8f 100644
+--- a/controls/CheckBox.cpp
++++ b/controls/CheckBox.cpp
+@@ -132,6 +132,29 @@ void CMenuCheckBox::Draw( void )
+ 		EngFuncs::DrawConsoleString( coord, szStatusText );
+ 	}
+ 
++	/*
++	RetroPane R351 (run 314's kit in the emulator, 2026-11-21: the Audio
++	window's check boxes are words with no box). Upstream draws a check box
++	from five pictures (gfx/shell/cb_*) that the owner's game files do not
++	hold, so nothing is drawn and a tap shows no change. Rule 0: a picture
++	per state is a mouse menu's skin; ours draws the box itself in flat
++	fills, the same on any panel and with any game files: a framed square,
++	filled when it is on, brighter under the stylus, grey when it cannot be
++	changed.
++	*/
++	{
++		bool focus = this == m_pParent->ItemAtCursor()
++			&& !(( iFlags & QMF_MOUSEONLY ) && !( iFlags & QMF_HASMOUSEFOCUS ));
++		unsigned int on = ( iFlags & QMF_GRAYED ) ? uiInputFgColor : ( focus ? uiPromptFocusColor : uiPromptTextColor );
++		int in = m_scSize.w / 5 > 2 ? m_scSize.w / 5 : 2;
++
++		UI_FillRect( m_scPos.x, m_scPos.y, m_scSize.w, m_scSize.h, uiInputBgColor );
++		UI_DrawRectangleExt( m_scPos.x, m_scPos.y, m_scSize.w, m_scSize.h, focus ? uiPromptFocusColor : uiInputFgColor, 1 );
++		if( bChecked || m_bPressed )
++			UI_FillRect( m_scPos.x + in, m_scPos.y + in, m_scSize.w - 2 * in, m_scSize.h - 2 * in, on );
++		return;
++	}
++
+ 	if( iFlags & QMF_GRAYED )
+ 	{
+ 		UI_DrawPic( m_scPos, m_scSize, uiColorWhite, szGrayedPic );
 diff --git a/controls/ItemsHolder.cpp b/controls/ItemsHolder.cpp
 index 7be4928..ab66de4 100644
 --- a/controls/ItemsHolder.cpp
@@ -173,7 +254,7 @@ index 7be4928..ab66de4 100644
  			ClearBits( item->iFlags, QMF_HASMOUSEFOCUS );
  			continue;
 diff --git a/controls/Slider.cpp b/controls/Slider.cpp
-index 1159ec9..712d6f7 100644
+index 1159ec9..50a02b9 100644
 --- a/controls/Slider.cpp
 +++ b/controls/Slider.cpp
 @@ -83,7 +83,8 @@ bool CMenuSlider::KeyDown( int key )
@@ -186,19 +267,23 @@ index 1159ec9..712d6f7 100644
  		{
  			m_iKeepSlider = false;
  			return true;
-@@ -94,7 +95,10 @@ bool CMenuSlider::KeyDown( int key )
+@@ -94,8 +95,13 @@ bool CMenuSlider::KeyDown( int key )
  		// immediately move slider into specified place
  		int	dist, numSteps;
  
 -		dist = uiStatic.cursorX - (m_scPos.x + m_iSliderOutlineWidth + m_scCenterBox.w);
+-		numSteps = floor(dist / m_flDrawStep);
 +		// (the knob's centre under the stylus, as the drag below puts it:
 +		// upstream's press put it half a knob to the left, so every drag
 +		// began with a jump)
-+		dist = uiStatic.cursorX - m_scPos.x - m_iSliderOutlineWidth - (m_scCenterBox.w/2);
- 		numSteps = floor(dist / m_flDrawStep);
++		// RetroPane R351 (run 314): the bar's whole width is the value's
++		// range, as it is drawn below
++		dist = uiStatic.cursorX - m_scPos.x;
++		numSteps = (int)floor( (float)dist / (float)( m_scSize.w > 1 ? m_scSize.w : 1 ) * ( m_flMaxValue - m_flMinValue ) / m_flRange + 0.5f );
  		m_flCurValue = bound( m_flMinValue, numSteps * m_flRange + m_flMinValue, m_flMaxValue );
  
-@@ -169,7 +173,9 @@ void CMenuSlider::Draw( void )
+ 		// tell menu about changes
+@@ -169,15 +175,17 @@ void CMenuSlider::Draw( void )
  
  	if( m_iKeepSlider )
  	{
@@ -209,6 +294,60 @@ index 1159ec9..712d6f7 100644
  			m_iKeepSlider = false;
  		else
  		{
+ 			int	dist, numSteps;
+ 
+ 			// move slider follow the holded mouse button
+-			dist = uiStatic.cursorX - m_scPos.x - m_iSliderOutlineWidth - (m_scCenterBox.w/2);
+-			numSteps = floor(dist / m_flDrawStep);
++			dist = uiStatic.cursorX - m_scPos.x;
++			numSteps = (int)floor( (float)dist / (float)( m_scSize.w > 1 ? m_scSize.w : 1 ) * ( m_flMaxValue - m_flMinValue ) / m_flRange + 0.5f );
+ 			m_flCurValue = bound( m_flMinValue, numSteps * m_flRange + m_flMinValue, m_flMaxValue );
+ 
+ 			// tell menu about changes
+@@ -189,17 +197,32 @@ void CMenuSlider::Draw( void )
+ 	// keep value in range
+ 	m_flCurValue = bound( m_flMinValue, m_flCurValue, m_flMaxValue );
+ 
+-	// calc slider position
+-	sliderX = m_scPos.x + (m_iSliderOutlineWidth/2) // start
+-		+ ( ( m_flCurValue - m_flMinValue ) / ( m_flMaxValue - m_flMinValue ) )  // calc fractional part
+-		* ( m_scSize.w - m_iSliderOutlineWidth - (m_scCenterBox.w) );
+-
+-
+-	UI_DrawRectangleExt( m_scPos.x + m_iSliderOutlineWidth / 2, m_scPos.y + m_iSliderOutlineWidth, m_scSize.w - m_iSliderOutlineWidth, m_scCenterBox.h, uiInputBgColor, m_iSliderOutlineWidth );
+-	if( eFocusAnimation == QM_HIGHLIGHTIFFOCUS && this == m_pParent->ItemAtCursor())
+-		UI_DrawPic( sliderX, m_scPos.y, m_scCenterBox.w, m_scSize.h, uiColorHelp, imgSlider );
+-	else
+-		UI_DrawPic( sliderX, m_scPos.y, m_scCenterBox.w, m_scSize.h, uiColorWhite, imgSlider );
++	/*
++	RetroPane R351 (the owner, run 314: "when i tried to make the sound bar
++	smaller ... it didnt shrink"; the log: his four drags took the volume from
++	0.95 to 0.25, the picture did not follow). Upstream draws a 40 x 14 knob
++	picture sliding in a track with a 6-pixel outline, laid out for 1024 x 768:
++	at the X51v's 0.625 the track is 8 pixels high, the outline (not scaled)
++	12, so the track's inside is -4 pixels high and the outline covers the
++	knob's whole travel. Rule 0: a knob is a mouse's handle; a stylus wants
++	the value itself shown, so ours is a level bar: the track, filled from the
++	left as far as the value, at least 14 pixels high about the control's
++	middle, and the stylus's place along it is the value (the press and the
++	drag above). Flat fills only: no picture to scale, the same on any panel.
++	*/
++	{
++		float frac = ( m_flCurValue - m_flMinValue ) / ( m_flMaxValue - m_flMinValue );
++		int barH = m_scSize.h < 14 ? 14 : m_scSize.h;
++		int barY = m_scPos.y + ( m_scSize.h - barH ) / 2;
++		int fillW = (int)( frac * m_scSize.w + 0.5f );
++		bool focus = eFocusAnimation == QM_HIGHLIGHTIFFOCUS && this == m_pParent->ItemAtCursor();
++
++		sliderX = m_scPos.x + fillW;
++		UI_FillRect( m_scPos.x, barY, m_scSize.w, barH, uiInputBgColor );
++		if( fillW > 0 )
++			UI_FillRect( m_scPos.x, barY, fillW, barH, focus ? uiPromptFocusColor : uiPromptTextColor );
++		UI_DrawRectangleExt( m_scPos.x, barY, m_scSize.w, barH, uiInputFgColor, 1 );
++	}
+ 
+ 
+ 	textHeight = m_scPos.y - (m_scChSize * 1.5f);
 diff --git a/sdk_includes/public/build.h b/sdk_includes/public/build.h
 index b92c51e..8142856 100644
 --- a/sdk_includes/public/build.h

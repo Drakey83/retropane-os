@@ -215,6 +215,153 @@ impl Stroke {
     }
 }
 
+/// R355 (the owner, runs 312 and 314: "the mouse look still isnt very
+/// smooth"): the stylus's path while it is down, smoothed.
+///
+/// Measured in run 314 (44 strokes): the pad gives 191 readings a second,
+/// but the OS's touch filter, built to tell a tap from a slip, passed only
+/// 57% of them as moves (35% held as "the same place", 7% dropped for an
+/// unsteady pressure), each move the mean of two raw readings in whole
+/// pixels; 10% of the game's frames under the stylus got no move at all
+/// and others several pixels at once.
+///
+/// Iterate, don't imitate (rule 0). Windows Mobile hands a game the touch
+/// driver's tap-filtered points, and a game that wants a smooth look adds
+/// its own running mean (lag at every speed); a desktop reads a mouse,
+/// which has no noise to remove. Today's way for a noisy pointer is the
+/// 1-euro filter (Casiez, Roussel and Vogel, CHI 2012): a low-pass whose
+/// cut-off rises with the pointer's speed, so a slow stylus is steadied
+/// hard and a fast one followed with next to no lag. Ours runs it on every
+/// raw reading the touch filter counts (its moves and its holds: the
+/// pressure rules still say when the pen is down, lifting or bouncing),
+/// after a median of three that drops a single wild reading, in integers
+/// (no FPU), on the pad's own units (a pixel is 5.6 to 7.5 of them, so the
+/// path is kept finer than the screen), with the time between readings
+/// measured, not assumed. A move is said whenever the steadied place
+/// reaches another pixel.
+///
+/// The cut-offs are a first fit to run 314's numbers, to be judged by the
+/// owner's eye and refitted from the next run's stroke lines.
+#[derive(Clone, Copy)]
+struct Smooth {
+    /// The last readings, newest first, for the median.
+    hist: [(u16, u16); 3],
+    n: u8,
+    /// The steadied place, in 1/256ths of a raw unit.
+    at: (i64, i64),
+    /// The steadied speed, in 1/256ths of a raw unit a second.
+    speed: (i64, i64),
+    at_us: u64,
+    /// The steadied place last handed on, in raw units: the next is handed
+    /// on once it is `step` raw units away (five eighths of a pixel by the
+    /// calibration), so a place resting on the edge between two pixels
+    /// does not flicker between them.
+    anchor: (u16, u16),
+    step: u16,
+    /// The pixel last said to the game, and whether any move was.
+    said: (i16, i16),
+    moved: bool,
+    live: bool,
+}
+
+/// The cut-off with the stylus at rest, in 1/1000 Hz: jitter of a unit or
+/// two (a held stylus, the taps of 2026-10-13) is under a quarter pixel.
+const SMOOTH_MIN_MHZ: u64 = 2_500;
+/// The cut-off's rise, in 1/1000 Hz for each raw unit a second: a slow
+/// look (300 units, 40 pixels a second) is followed at about 7 Hz, a quick
+/// turn (3,000) at 47 Hz, where the 5 ms between readings is the lag.
+const SMOOTH_RISE: u64 = 15;
+/// The speed's own cut-off, in 1/1000 Hz.
+const SMOOTH_SPEED_MHZ: u64 = 1_500;
+/// Five eighths of a screen pixel in raw units by `cal` (at least 1): the
+/// step the steadied place is handed on in.
+fn smooth_step(cal: &Calibration) -> u16 {
+    let (a, b) = (cal.map(1_000, 1_000), cal.map(1_064, 1_064));
+    let px = (b.0 - a.0).abs().max((b.1 - a.1).abs()).max(1);
+    (64 * 5 / 8 / px).clamp(1, 64) as u16
+}
+
+impl Smooth {
+    const NONE: Self = Self {
+        hist: [(0, 0); 3],
+        n: 0,
+        at: (0, 0),
+        speed: (0, 0),
+        at_us: 0,
+        anchor: (0, 0),
+        step: 1,
+        said: (0, 0),
+        moved: false,
+        live: false,
+    };
+
+    /// The low-pass's share of the new value for a cut-off and a time
+    /// step, in 1/65536ths: 2 pi f dt / (2 pi f dt + 1).
+    fn share(mhz: u64, dt_us: u64) -> i64 {
+        // 2 pi x 65536 x (mhz / 1000) x (dt_us / 1e6)
+        let r = mhz * dt_us * 411_775 / 1_000_000_000;
+        (r * 65_536 / (r + 65_536)) as i64
+    }
+
+    fn median(a: u16, b: u16, c: u16) -> u16 {
+        a.max(b).min(a.min(b).max(c))
+    }
+
+    /// The pen is down at raw `p`.
+    fn down(&mut self, p: (u16, u16), px: (i16, i16), step: u16, now_us: u64) {
+        *self = Self {
+            hist: [p; 3],
+            n: 1,
+            at: (i64::from(p.0) << 8, i64::from(p.1) << 8),
+            speed: (0, 0),
+            at_us: now_us,
+            anchor: p,
+            step,
+            said: px,
+            moved: false,
+            live: true,
+        };
+    }
+
+    /// One counted raw reading; the steadied place, in raw units.
+    fn feed(&mut self, p: (u16, u16), now_us: u64) -> (u16, u16) {
+        self.hist = [p, self.hist[0], self.hist[1]];
+        self.n = (self.n + 1).min(3);
+        let m = if self.n < 3 {
+            p
+        } else {
+            (
+                Self::median(self.hist[0].0, self.hist[1].0, self.hist[2].0),
+                Self::median(self.hist[0].1, self.hist[1].1, self.hist[2].1),
+            )
+        };
+        let dt = now_us.saturating_sub(self.at_us).clamp(1_000, 50_000);
+        self.at_us = now_us;
+        let want = (i64::from(m.0) << 8, i64::from(m.1) << 8);
+        let k = Self::share(SMOOTH_SPEED_MHZ, dt);
+        let v = |want: i64, at: i64, speed: i64| {
+            let now = (want - at) * 1_000_000 / dt as i64;
+            speed + (((now - speed) * k) >> 16)
+        };
+        self.speed = (
+            v(want.0, self.at.0, self.speed.0),
+            v(want.1, self.at.1, self.speed.1),
+        );
+        // one cut-off for both axes (the faster one's), so the path keeps
+        // its direction
+        let fast = (self.speed.0.unsigned_abs().max(self.speed.1.unsigned_abs())) >> 8;
+        let a = Self::share(SMOOTH_MIN_MHZ + SMOOTH_RISE * fast.min(20_000), dt);
+        self.at.0 += ((want.0 - self.at.0) * a) >> 16;
+        self.at.1 += ((want.1 - self.at.1) * a) >> 16;
+        let r = |v: i64| ((v + 128) >> 8).clamp(0, i64::from(u16::MAX)) as u16;
+        let p = (r(self.at.0), r(self.at.1));
+        if p.0.abs_diff(self.anchor.0) >= self.step || p.1.abs_diff(self.anchor.1) >= self.step {
+            self.anchor = p;
+        }
+        self.anchor
+    }
+}
+
 /// Strokes said one by one ([`Input::with_pen_log`]); after them only the
 /// ones longer than a second, up to [`STROKES_MOST`] lines in all.
 const STROKES_SAID: u32 = 40;
@@ -238,6 +385,10 @@ pub struct Input<P: Pad> {
     stroke: Stroke,
     strokes: u32,
     said: u32,
+    /// R355: the stylus's path steadied ([`Smooth`]; off: the touch
+    /// filter's own moves, as before).
+    smooth_on: bool,
+    smooth: Smooth,
 }
 
 impl<P: Pad> Input<P> {
@@ -258,7 +409,17 @@ impl<P: Pad> Input<P> {
             stroke: Stroke::NONE,
             strokes: 0,
             said: 0,
+            smooth_on: true,
+            smooth: Smooth::NONE,
         }
+    }
+
+    /// R355: the stylus's moves as the touch filter gives them, not
+    /// steadied (`-rpnopensmooth`: run 314's way).
+    #[must_use]
+    pub fn without_pen_smooth(mut self) -> Self {
+        self.smooth_on = false;
+        self
     }
 
     /// R355's measure: each touch of the stylus said in one line of `log`
@@ -344,6 +505,38 @@ impl<P: Pad> Input<P> {
                 None => {}
             }
         }
+        if self.smooth_on {
+            match (pen, raw) {
+                (Pen::Down(x, y), _) => {
+                    let px = turn.point(self.cal.to_screen(x, y, SCREEN));
+                    self.smooth.down((x, y), px, smooth_step(&self.cal), now_us);
+                    self.push(Event::pen(event::PEN_DOWN, px.0, px.1, now_us));
+                }
+                // every reading the filter counts while the pen is down
+                (Pen::Move(..) | Pen::Hold(..), Some(s)) if self.smooth.live => {
+                    let (x, y) = self.smooth.feed((s.x, s.y), now_us);
+                    let px = turn.point(self.cal.to_screen(x, y, SCREEN));
+                    if px != self.smooth.said {
+                        self.smooth.said = px;
+                        self.smooth.moved = true;
+                        self.push(Event::pen(event::PEN_MOVE, px.0, px.1, now_us));
+                    }
+                }
+                (Pen::Up(x, y), _) => {
+                    // lifted where the path last was (a tap: where the
+                    // filter put it)
+                    let px = if self.smooth.live && self.smooth.moved {
+                        self.smooth.said
+                    } else {
+                        turn.point(self.cal.to_screen(x, y, SCREEN))
+                    };
+                    self.smooth = Smooth::NONE;
+                    self.push(Event::pen(event::PEN_UP, px.0, px.1, now_us));
+                }
+                _ => {}
+            }
+            return;
+        }
         let (kind, rx, ry) = match pen {
             Pen::Down(x, y) => (event::PEN_DOWN, x, y),
             Pen::Move(x, y) => (event::PEN_MOVE, x, y),
@@ -365,6 +558,7 @@ impl<P: Pad> Events for Input<P> {
         // on the screen starts when the filter next sees it land.
         self.held = self.pad.pressed();
         self.filter = Filter::new();
+        self.smooth = Smooth::NONE;
         self.first = 0;
         self.len = 0;
         self.read_at = now_us;
@@ -445,14 +639,18 @@ pub(crate) mod tests {
     }
 
     /// Holds the stylus at `(x, y)` from `*now`, a reading every 5 ms,
-    /// until the filter has reported something; the events.
+    /// until the filter has reported something and the steadied path has
+    /// come to rest (no event for 100 ms); the events.
     fn hold(i: &mut Input<Fake>, x: u16, y: u16, now: &mut u64) -> Vec<Event> {
         i.pad().pen = touch(x, y);
         let mut out = Vec::new();
-        for _ in 0..40 {
+        let mut quiet = 0;
+        for _ in 0..400 {
             *now += 5_000;
-            out.extend(drain(i, *now));
-            if !out.is_empty() {
+            let got = drain(i, *now);
+            quiet = if got.is_empty() { quiet + 1 } else { 0 };
+            out.extend(got);
+            if !out.is_empty() && quiet >= 20 {
                 break;
             }
         }
@@ -597,7 +795,8 @@ pub(crate) mod tests {
                 (event::PEN, event::PEN_DOWN, at.0, at.1),
                 "{turn:?}"
             );
-            assert_eq!(got[0].time_us, now, "read when it was reported");
+            // (the helper waits 20 quiet readings, 100 ms, after it)
+            assert_eq!(got[0].time_us, now - 100_000, "read when it was reported");
             // Dragged to upright (300, 400): Moves, the last one there.
             let got = hold(&mut i, 300, 400, &mut now);
             let last = got.last().expect("a move");
@@ -618,6 +817,72 @@ pub(crate) mod tests {
                 (ups[0].code, ups[0].x, ups[0].y),
                 (event::PEN_UP, to.0, to.1),
                 "{turn:?}"
+            );
+        }
+    }
+
+    /// R355: a slow steady drag with the panel's noise on it reaches the
+    /// game as small even steps (never back, never a jump), and a stylus
+    /// held still under the same noise says nothing.
+    #[test]
+    fn a_noisy_slow_drag_arrives_as_small_even_steps_and_a_held_stylus_is_quiet() {
+        // the X51v's own calibration: a pixel is 5.6 to 7.5 raw units
+        let mut i = Input::new(Fake::default(), Calibration::X51V_DEFAULT);
+        assert_eq!(i.open(Turn::None, 0), Ok(()));
+        let mut now = 0;
+        let down = hold(&mut i, 1_500, 2_000, &mut now);
+        assert_eq!(down.len(), 1, "{down:?}");
+        let Some(base) = touch(1_500, 2_000) else {
+            panic!("a touch")
+        };
+        // noise of +-3 raw units (under half a pixel) on every reading
+        let noise = |k: u32| (k.wrapping_mul(2_654_435_761) >> 29) as i32 - 3;
+        // held still for a second: nothing said
+        for k in 0..200u32 {
+            now += 5_000;
+            i.pad().pen = Some(Sample {
+                x: (i32::from(base.x) + noise(k)) as u16,
+                y: (i32::from(base.y) + noise(k + 7)) as u16,
+                z1: base.z1,
+            });
+            assert_eq!(drain(&mut i, now), [], "held still, reading {k}");
+        }
+        // dragged along raw x, two units a reading (about 60 pixels a
+        // second), for two seconds
+        let mut xs = Vec::new();
+        for k in 0..400u32 {
+            now += 5_000;
+            i.pad().pen = Some(Sample {
+                x: (i32::from(base.x) + 2 * k as i32 + noise(k)) as u16,
+                y: (i32::from(base.y) + noise(k + 7)) as u16,
+                z1: base.z1,
+            });
+            for e in drain(&mut i, now) {
+                assert_eq!(e.code, event::PEN_MOVE);
+                xs.push((e.x, e.y));
+            }
+        }
+        assert!(
+            xs.len() >= 30,
+            "a move for nearly every pixel passed: {}",
+            xs.len()
+        );
+        for w in xs.windows(2) {
+            let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            assert!(dx.abs() <= 1 && dy.abs() <= 1, "a step of one pixel: {w:?}");
+        }
+        // one way along the axis that moves, never back
+        let end = xs[xs.len() - 1];
+        let along: Vec<i16> = if (end.0 - xs[0].0).abs() < (end.1 - xs[0].1).abs() {
+            xs.iter().map(|p| p.1).collect()
+        } else {
+            xs.iter().map(|p| p.0).collect()
+        };
+        let up = along[along.len() - 1] > along[0];
+        for w in along.windows(2) {
+            assert!(
+                if up { w[1] >= w[0] } else { w[1] <= w[0] },
+                "never back: {w:?}"
             );
         }
     }

@@ -950,7 +950,11 @@ static void RP_End( void )
 
 	state = 2;
 	fprintf( stderr, "rp-step: 5/5 Ending by itself:|%s.|The engine shuts|down, then back to|the loader.\n", why );
-	if( RP_Parm( "-rpendshot" ) && Cvar_VariableValue( "rp_gpu" ) == 1.0f )
+	/* R356 (run 315: the both-ways frame's software pass faulted in
+	   R_RenderFace after the play was over): a played run (-rpplay) ends
+	   without that frame until R356 is fixed, so the owner's play never
+	   ends in a fault; the test runs keep it */
+	if( RP_Parm( "-rpendshot" ) && !RP_Parm( "-rpplay" ) && Cvar_VariableValue( "rp_gpu" ) == 1.0f )
 	{
 		Cvar_SetValue( "rp_both", 1.0f );
 		asked = now;
