@@ -2106,6 +2106,23 @@ index b1e8e57..4404a97 100644
  		{
  			VectorLerp( start, trace_bbox.fraction, end, trace_bbox.endpos );
  
+diff --git a/engine/common/protocol.h b/engine/common/protocol.h
+index ac16815..883f873 100644
+--- a/engine/common/protocol.h
++++ b/engine/common/protocol.h
+@@ -210,7 +210,11 @@ GNU General Public License for more details.
+ #define MAX_EVENTS			128
+ #define MAX_MODELS			1024
+ #define MAX_CUSTOM			512
+-#define MAX_RENDER_DECALS	128
++// RetroPane (R352): Half-Life keeps 4096 decals a level (r_decals); the
++// low-memory build's 128 let a firefight's bullet holes and blood vanish
++// within seconds. 512 (about 32 KiB of decal_t, a save's list 2 x 20 KiB
++// for the moment it is written), each drawn only when its face is in view.
++#define MAX_RENDER_DECALS	512
+ #define MAX_RESOURCES		1024
+ #endif
+ 
 diff --git a/engine/common/zone.c b/engine/common/zone.c
 index a0d9c23..e2e4ed3 100644
 --- a/engine/common/zone.c
@@ -6114,7 +6131,7 @@ index 5d6dec1..3ec0ca5 100644
  }
  
 diff --git a/ref/soft/r_decals.c b/ref/soft/r_decals.c
-index 63e9fee..d17a989 100644
+index 63e9fee..e721e5f 100644
 --- a/ref/soft/r_decals.c
 +++ b/ref/soft/r_decals.c
 @@ -181,13 +181,38 @@ static void R_SetupDecalTextureSpaceBasis( decal_t *pDecal, msurface_t *surf, in
@@ -6183,6 +6200,27 @@ index 63e9fee..d17a989 100644
  }
  
  // Generate lighting coordinates at each vertex for decal vertices v[] on surface psurf
+@@ -582,6 +609,20 @@ static void R_DecalCreate( decalinfo_t *decalinfo, msurface_t *surf, float x, fl
+ 	// if not, then remove the decal
+ 	R_DecalVertsClip( pdecal, surf, decalinfo->m_iTexture, &vertCount );
+ 
++	{
++		// RetroPane (R352, the owner: "im not seeing any blood decals"):
++		// every decal the game asks for, kept or not, the first 60 named
++		static int said;
++
++		if( said < 60 )
++		{
++			const image_t *t = R_GetTexture( decalinfo->m_iTexture );
++
++			said++;
++			fprintf( stderr, "rp-decal: %s on face %d: %s (%d corners, %d overlapping)\n", t ? t->name : "?",
++				WORLDMODEL ? (int)( surf - WORLDMODEL->surfaces ) : -1, vertCount ? "kept" : "not on the face", vertCount, count );
++		}
++	}
+ 	if( !vertCount )
+ 	{
+ 		R_DecalUnlink( pdecal );
 diff --git a/ref/soft/r_draw.c b/ref/soft/r_draw.c
 index 5e64fcd..8fd53a1 100644
 --- a/ref/soft/r_draw.c

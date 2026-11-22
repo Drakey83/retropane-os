@@ -174,7 +174,7 @@ static struct
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
-	uint32_t decals, decal_cut; /* R352: decals drawn over their faces; those cut at the near plane */
+	uint32_t decals, decal_cut, decals_lit; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
@@ -212,6 +212,8 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    clip test reads the map's edges), the old way would send each marked
    wall through a surface rebuild; -rpdecalsoft keeps it for a side by side. */
 static int rp_decal_on = 1;
+/* R352: decals lit by their wall's lightmap (Half-Life's GL look); -rpdecalunlit the unlit way (ref_soft's) */
+static int rp_decal_lit = 1;
 static cvar_t *rp_decal; /* 1 turns them on while a run plays (-rpcombo's second half) */
 /* R352's eye on ordinary frames (-rpshots): rp_shot 1 asks for this frame's
    picture from the 2700G (shot-N.565 on the card, N the frame) and a line
@@ -230,6 +232,8 @@ void RP_EmitInit( void )
 		rp_tex2_plain = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352: decals baked into the lit surface, the old way */
 		rp_decal_on = 0;
+	if( gEngfuncs.Sys_CheckParm( "-rpdecalunlit" ))
+		rp_decal_lit = 0;
 	if( gEngfuncs.Sys_CheckParm( "-rpfx0" )) /* R338's bisection: the float path, one word on the 31-word line */
 		gEngfuncs.Cvar_Set( "rp_fixed", "0" );
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );
@@ -451,8 +455,8 @@ static void RP_EmitReport( void )
 			rp_lm_on, rp_count.lm_faces / f, rp_count.lm_built / f, rp_count.lm_dlit / f, rp_count.lm_words / f, rp_count.lm_full / f,
 			rp_count.tex_built, rp_count.tex_kib, rp_tex_used >> 10, rp_tex_room >> 10, rp_count.tex_resets );
 	if( rp_emit_on == 2 )
-		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u of them cut at the near plane)\n",
-			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut );
+		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u of them cut at the near plane, %u lit by their wall's lightmap)\n",
+			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut, rp_count.decals_lit );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -6222,7 +6226,7 @@ static inline uint32_t RP_PicTexel( pixel_t p, int fmt )
 
 /* `w` x `h` texels from `src` (rows `stride` apart) into page `pg` at
    square (`qx`, `qy`), past the edges the last row and column again. */
-static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, int qx, int qy, int fmt )
+static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, int qx, int qy, int fmt, const byte *idx, const uint32_t *pal )
 {
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
 	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
@@ -6249,7 +6253,18 @@ static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, 
 						x = w - 1;
 					if( y >= h )
 						y = h - 1;
-					t[j] = RP_PicTexel( src[y * stride + x], fmt );
+					if( idx )
+					{
+						/* R352: the opacity from the 8-bit palette's alpha
+						   (Half-Life's decals: the index itself, 256
+						   levels) to the chip's 16, not ref_soft's 8; the
+						   colour as before (the renderer's table) */
+						uint32_t a = pal[idx[y * stride + x]] >> 28, cc = vid.screen[(pixel_t)( src[y * stride + x] << 3 )];
+
+						t[j] = a ? a << 12 | ( cc >> 12 & 0xFu ) << 8 | ( cc >> 7 & 0xFu ) << 4 | ( cc >> 1 & 0xFu ) : 0;
+					}
+					else
+						t[j] = RP_PicTexel( src[y * stride + x], fmt );
 				}
 				dst[k] = t[0] | t[1] << 16;
 			}
@@ -6290,7 +6305,7 @@ static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int
 		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &x, &y );
 		if( pg < 0 )
 			return NULL;
-		RP_PicUpload( src + off, stride, w, h, pg, x, y, fmt );
+		RP_PicUpload( src + off, stride, w, h, pg, x, y, fmt, fmt && img->rp_idx && img->rp_pal ? img->rp_idx + off : NULL, img->rp_pal );
 		e->key = key;
 		e->off = off;
 		e->w = (uint16_t)w;
@@ -6513,16 +6528,16 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 			for( int r = 0; r < rows; r++ )
 				for( int x = 0; x < pw; x++ )
 					band[r * pw + x] = c16[idx[( y + r ) * pw + x]];
-			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_borrow.pg0, 0, y >> 3, 0 );
+			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_borrow.pg0, 0, y >> 3, 0, NULL, NULL );
 			if( pw > RP_PAGE_SIDE )
-				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_borrow.pg0 + 1, 0, y >> 3, 0 );
+				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_borrow.pg0 + 1, 0, y >> 3, 0, NULL, NULL );
 		}
 	}
 	else
 	{
-		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_borrow.pg0, 0, 0, 0 );
+		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_borrow.pg0, 0, 0, 0, NULL, NULL );
 		if( pw > RP_PAGE_SIDE )
-			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_borrow.pg0 + 1, 0, 0, 0 );
+			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_borrow.pg0 + 1, 0, 0, 0, NULL, NULL );
 	}
 	rp_borrow.serial = pic->rp_serial;
 	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
@@ -7008,6 +7023,81 @@ static int RP_DecalPoly( decal_t *d, const msurface_t *fa, const image_t *img, f
 	return n >= 3 ? n : 0;
 }
 
+/*
+R352 (the owner, 2026-11-22: "looks at how the Half Life files are telling
+you its supposed to work, and rule 0 it"). Half-Life's decals.wad: all 222
+decals are type 0x43, one colour (the palette's last entry: blood 22,0,0,
+alien blood 204,184,97, a bullet hole black) with the pixel's index its
+opacity, 256 levels; GoldSrc's GL renderer draws them over the wall's
+texture and then multiplies the wall's lightmap over both, so a decal is
+lit as its wall (a dark corridor's blood is dark, the flashlight shows it).
+ref_soft pastes them into the surface after the light (unlit, 8 levels of
+opacity): a shortcut, not Half-Life's look. Ours: the wall is one pass,
+texture x lightmap on the 2700G's two units (kit 112); the decal the same
+way, its picture (ARGB4444, the opacity from the index: 16 levels) times
+the SAME lightmap texels on unit 1, blended over the wall. The light is
+the wall's to the texel (styles, flicker, dynamic lights) with no second
+pass and no CPU work a pixel. A corner's lightmap place comes from its
+point as the face's own (luxels from lightmapmins, 24.8).
+*/
+static rp_tex_t rp_decal_lit_mark;
+
+static void RP_DecalLitStrip( const rp_skin_t *e, int lpg, int lqx, int lqy, int n,
+	const int32_t ( *cq )[3], const int ( *cs )[2], const int32_t ( *cl )[2] )
+{
+	static int last_pg = -1, last_lpg = -1;
+	int        lo = 1, hi = n - 1;
+	int32_t    smax = ( e->w << 16 ) - ( 1 << 15 ), tmax = ( e->h << 16 ) - ( 1 << 15 );
+
+	if( rp_state != &rp_decal_lit_mark || last_pg != e->pg || last_lpg != lpg )
+	{
+		RP_LmFlush( ); /* the second passes queued so far before what blends */
+		rp_state = &rp_decal_lit_mark;
+		last_pg = e->pg;
+		last_lpg = lpg;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE2 );
+		/* kit 112's two-unit word, blended source alpha over one minus it
+		   (bit 13), depth not written (bit 7), as the effects' blends */
+		RP_Put(((( RP_TSP_WORLD & ~0x000F0000u ) | 1u << 16 | 2u << 17 ) & 0x03FFFFFFu ) | 4u << 29 | 5u << 26 | 1u << 13 | 1u << 7 );
+		RP_Put( RP_ISP_ALWAYS );
+		RP_Put(( RP_TEX0_PAGE & ~( 7u << 13 )) | 4u << 13 ); /* ARGB4444 */
+		RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)e->pg * RP_PAGE_BYTES ));
+		RP_Put( rp_tex2_plain ? RP_TEX2 : 0x86084610u ); /* the texel's alpha */
+		RP_Put( RP_TEX0_PAGE );
+		RP_Put( RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)lpg * RP_PAGE_BYTES ));
+		RP_Put( RP_TEX2_UNIT1 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_Whole();
+	}
+	RP_Put( RP_GFX_STRIP( n ) | rp_noz );
+	for( int k = 0; k < n; k++ )
+	{
+		int      c = k == 0 ? 0 : ( k & 1 ) ? lo++ : hi--;
+		uint32_t w[3];
+		int32_t  st[2], s = cs[c][0] << 16, t = cs[c][1] << 16;
+
+		RP_ProjectS( cq[c], w, st );
+		w[2] += RP_DECAL_BIAS;
+		s = s < ( 1 << 15 ) ? 1 << 15 : s > smax ? smax : s;
+		t = t < ( 1 << 15 ) ? 1 << 15 : t > tmax ? tmax : t;
+		RP_Put( w[0] );
+		RP_Put( w[1] );
+		if( !rp_noz ) RP_Put( w[2] );
+		RP_Put( w[2] );
+		RP_Put( 0xFFFFFFFFu );
+		RP_Put( RP_FixBits(( e->qx * 8 << 16 ) + s, 16 + 9 ));
+		RP_Put( RP_FixBits(( e->qy * 8 << 16 ) + t, 16 + 9 ));
+		RP_Put( RP_FixBits(( lqx << 11 ) + ( cl[c][0] >> 4 ) + 128, 8 + 9 ));
+		RP_Put( RP_FixBits(( lqy << 11 ) + ( cl[c][1] >> 4 ) + 128, 8 + 9 ));
+	}
+	RP_Whole();
+	rp_count.tris += n - 2;
+	rp_count.verts += n;
+	rp_count.decals_lit++;
+}
+
 static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t o[3] )
 {
 	const int      mode_was = vid.rendermode;
@@ -7065,6 +7155,8 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 		   entity's decal across the plane drawn too. */
 		static int32_t qv[RP_DECAL_CORNERS][3], cq[RP_DECAL_CORNERS + 1][3];
 		static int     sv[RP_DECAL_CORNERS][2], cs[RP_DECAL_CORNERS + 1][2];
+		static int32_t lv[RP_DECAL_CORNERS][2], cl[RP_DECAL_CORNERS + 1][2]; /* the lightmap's luxels, 24.8 */
+		const mextrasurf_t *info = fa->info;
 
 		for( int i = 0; i < count; i++, v += 5 )
 		{
@@ -7072,6 +7164,8 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 
 			sv[i][0] = RP_TriCoord( v[3], img->width );
 			sv[i][1] = RP_TriCoord( v[4], img->height );
+			lv[i][0] = (int32_t)(( DotProduct( v, info->lmvecs[0] ) + info->lmvecs[0][3] - info->lightmapmins[0] ) * 256.0f );
+			lv[i][1] = (int32_t)(( DotProduct( v, info->lmvecs[1] ) + info->lmvecs[1][3] - info->lightmapmins[1] ) * 256.0f );
 			RP_ViewPoint( m, o, p, qv[i] );
 			behind += qv[i][2] < rp_near16;
 		}
@@ -7085,6 +7179,8 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 				memcpy( cq[n2], qv[i], sizeof( cq[0] ));
 				cs[n2][0] = sv[i][0];
 				cs[n2][1] = sv[i][1];
+				cl[n2][0] = lv[i][0];
+				cl[n2][1] = lv[i][1];
 				n2++;
 			}
 			if( ina != inb && n2 < RP_DECAL_CORNERS )
@@ -7097,6 +7193,7 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 				{
 					cq[n2][k] = qv[i][k] + (int32_t)(( (int64_t)( qv[j][k] - qv[i][k] ) * f ) >> 16 );
 					cs[n2][k] = sv[i][k] + (int)(( (int64_t)( sv[j][k] - sv[i][k] ) * f ) >> 16 );
+					cl[n2][k] = lv[i][k] + (int32_t)(( (int64_t)( lv[j][k] - lv[i][k] ) * f ) >> 16 );
 				}
 				cq[n2][2] = rp_near16;
 				n2++;
@@ -7104,6 +7201,23 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 		}
 		if( behind )
 			rp_count.decal_cut++;
+		if( n2 >= 3 && rp_decal_lit && RP_Lm1Pass( ) && R_TexHasAlpha( img ) && img->width <= RP_PAGE_SIDE && img->height <= RP_PAGE_SIDE )
+		{
+			/* lit by its wall's lightmap (above): the face's place, as
+			   RP_LmPlace keeps it, still valid this frame */
+			uint32_t         loc = (uint32_t)RP_LOC( fa );
+			int              lpg = loc >> 16 & 0xFF;
+			const rp_skin_t *e;
+
+			if(( loc & RP_VALID ) && ( loc & RP_LMAP ) && lpg < rp_pages && (int)( RP_GEN( fa ) >> 1 ) == rp_page[lpg].gen
+				&& ( e = RP_PicPlace( (image_t *)img, 0, img->width, img->width, img->height, 1 )) != NULL
+				&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[lpg].gen ) /* the picture's place may have dropped a page */
+			{
+				rp_page[lpg].used = tr.framecount;
+				RP_DecalLitStrip( e, lpg, loc & 0xFF, loc >> 8 & 0xFF, n2, (const int32_t( * )[3])cq, (const int( * )[2])cs, (const int32_t( * )[2])cl );
+				n2 = 0; /* drawn: the unlit fan below has nothing to do */
+			}
+		}
 		for( int i = 0; i < n2; i++ )
 		{
 			rp_tv_t *t = &c[i < 2 ? i : 2];
