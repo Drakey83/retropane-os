@@ -692,13 +692,14 @@ void RP_EmitFrame( void )
 			rp_light_set = level;
 			gEngfuncs.Cvar_SetValue( "brightness", (float)level * 0.25f );
 		}
-		/* behind a menu opened in a game: the paused game (the menu dims
-		   it), not a picture that pushes the map's textures out of the
-		   2700G's memory (mainui's BackgroundBitmap.cpp has the numbers) */
+		/* behind a menu opened in a game: the agreed picture (the owner,
+		   run 317: "i told you to make menu look like this, like the real
+		   game"), so no world is drawn under the menu. Run 317's kit set
+		   this setting to 1 and the engine saves it: put back to 0. */
 		if( !rp_world )
-			rp_world = gEngfuncs.Cvar_Get( "ui_renderworld", "1", 0, "render world when UI is visible" );
-		if( rp_world && rp_world->value == 0.0f )
-			gEngfuncs.Cvar_SetValue( "ui_renderworld", 1.0f );
+			rp_world = gEngfuncs.Cvar_Get( "ui_renderworld", "0", 0, "render world when UI is visible" );
+		if( rp_world && rp_world->value != 0.0f )
+			gEngfuncs.Cvar_SetValue( "ui_renderworld", 0.0f );
 	}
 	RP_LmFrame();
 	RP_CodeHint();
@@ -1780,7 +1781,7 @@ static uint16_t rp_lm_texels[RP_LM_TEXELS];
 
 static void RP_TexReset( void )
 {
-	rp_tex_gen++;
+	rp_tex_gen++; /* (RP_BorrowReturn: what was borrowed from this room is not put back) */
 	rp_tex_used = 0;
 	rp_tex_full = 0;
 }
@@ -1968,6 +1969,9 @@ static inline uint32_t RP_TexBlend( const pixel_t *src, int sw, int x0, int x1, 
    (the pool empties at the next frame) or a shape it doesn't take. */
 #define RP_TEX0_CLAMP 0xA0000000u /* clamped both ways (RP_TEX0_PAGE's) */
 
+static int  rp_borrowed; /* the menu's picture has two pages of this room (RP_BorrowPicture) */
+static void RP_BorrowReturn( void );
+
 static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 {
 	uint32_t  h = (uint32_t)(( image ? image->rp_serial : 0u ) * 2654435761u ) >> 23;
@@ -1976,6 +1980,9 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 	uint16_t *chain = (uint16_t *)rp_scratch_buf.more;
 	int       W, H, levels = 0, sb, plw = 1, plh = 1;
 	uint32_t  bytes = 0, at, off = 0, prev = 0;
+
+	if( rp_borrowed )
+		RP_BorrowReturn( ); /* the world's textures asked for again: theirs back first */
 
 	for( int i = 0; i < 16; i++ )
 	{
@@ -5927,6 +5934,8 @@ void RP_EmitFace( msurface_t *fa )
 {
 	if( rp_emit_on == 2 )
 	{
+		if( rp_borrowed )
+			RP_BorrowReturn( ); /* the world again: its textures back first */
 		RP_ChipFace( fa );
 		return;
 	}
@@ -6285,6 +6294,105 @@ static void RP_2DQuad( float x0, float y0, float x1, float y1, float u0, float v
 }
 
 /* R_DrawStretchPic: the picture's (s1, t1)-(s2, t2) (0 to 1) at (x, y), w x h. */
+/*
+The menu's background picture in borrowed texture memory (the owner, run
+317, 2026-11-21: "make the picture only show up whenever the menu is called
+... and then clear the image when the menu is closed, it shouldnt need to be
+using memory the entire time. Rule 0 that"; and he keeps the look: the
+agreed picture behind every menu, in a game too).
+
+The 2700G has 7 MiB of texture memory and the map nearly fills it. Run 316
+drew the 640 x 480 picture as upstream's renderers would, as textures of
+its own: six tiles in the atlas, which pushed the map's pictures out while
+the menu was up; they came back one by one after it (half of that run's
+1,202 texture rebuilds, its frames over 50 ms from 170 to 275). Run 317
+showed the paused game instead and the owner refused the look.
+
+Rule 0: while a menu covers the screen no face of the world is drawn, so
+the map's own textures lie idle in the chip. Ours borrows the first two
+pages of their room: the bytes there are copied to the program's memory,
+the picture is written in their place (512 x 480 in the first page, the
+rest in the second) and drawn from there; the first face of the world
+drawn again copies the bytes back, and every texture of the map is where it
+was: nothing pushed out, nothing rebuilt, and the picture holds video memory
+only while a menu is up. The cost is two copies of 1 MiB, at the moments
+the menu opens and closes. If the copy cannot be had (no memory, the chip
+lost) the picture is drawn the old way, in tiles.
+*/
+static struct
+{
+	uint8_t *save;   /* the map's bytes while the picture has their place */
+	uint32_t serial; /* the picture there */
+	int      gen;    /* the textures' room as it was borrowed (RP_TexReset moves it on) */
+	uint32_t borrows, returns, copied_us;
+} rp_borrow;
+
+/* The map's textures back in their place, before anything of the world is
+   drawn or placed. */
+static void RP_BorrowReturn( void )
+{
+	uint64_t t0;
+
+	if( !rp_borrow.save )
+		return;
+	t0 = rp_time_us( );
+	/* no frame in flight still draws the picture; and a room emptied since
+	   (a new map, the chip rebuilt) wants nothing back */
+	rp_gfx_wait( );
+	if( rp_borrow.gen == rp_tex_gen && RP_ChipWrite( ))
+		memcpy((uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES, rp_borrow.save, 2 * RP_PAGE_BYTES );
+	free( rp_borrow.save );
+	rp_borrow.save = NULL;
+	rp_borrowed = 0;
+	rp_borrow.serial = 0;
+	rp_borrow.returns++;
+	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
+	fprintf( stderr, "rp-emit: the menu's picture: the map's textures back in their place (%u borrowed, %u returned, %u ms of copies so far)\n",
+		rp_borrow.borrows, rp_borrow.returns, rp_borrow.copied_us / 1000u );
+}
+
+/* The picture `pic` (`pw` x `ph`, no alpha) in the two borrowed pages: 1,
+   or 0 if it cannot be (drawn the old way then). */
+static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
+{
+	const pixel_t *src;
+	uint64_t       t0;
+
+	if( rp_tex_pages < 2 || pw > 2 * RP_PAGE_SIDE || ph > RP_PAGE_SIDE || gEngfuncs.Sys_CheckParm( "-rpnoborrow" ))
+		return 0;
+	if( rp_borrow.save && rp_borrow.serial == pic->rp_serial )
+		return 1;
+	t0 = rp_time_us( );
+	src = R_TexPix( (image_t *)pic, 0 );
+	if( !src )
+		return 0;
+	if( !rp_borrow.save )
+	{
+		uint8_t *save = malloc( 2 * RP_PAGE_BYTES );
+
+		if( !save )
+			return 0;
+		/* no frame in flight still reads the map's textures */
+		rp_gfx_wait( );
+		if( !RP_ChipWrite( ))
+		{
+			free( save );
+			return 0;
+		}
+		memcpy( save, (uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES, 2 * RP_PAGE_BYTES );
+		rp_borrow.save = save;
+		rp_borrowed = 1;
+		rp_borrow.gen = rp_tex_gen;
+		rp_borrow.borrows++;
+	}
+	RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_pages, 0, 0, 0 );
+	if( pw > RP_PAGE_SIDE )
+		RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_pages + 1, 0, 0, 0 );
+	rp_borrow.serial = pic->rp_serial;
+	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
+	return 1;
+}
+
 void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, const image_t *pic )
 {
 	int            fmt, pw, ph, tile;
@@ -6303,6 +6411,24 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 	S2 = s2 * pw;
 	T1 = t1 * ph;
 	T2 = t2 * ph;
+	/* the menu's background: in the pages borrowed from the map's textures
+	   (above), two quads, the first page's 512 columns and the rest */
+	if( tile && !fmt && RP_BorrowPicture( pic, pw, ph ))
+	{
+		for( int k = 0; k < 2; k++ )
+		{
+			float c0 = k * (float)RP_PAGE_SIDE, c1 = k ? (float)pw : (float)( pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE );
+			float a0 = S1 > c0 ? S1 : c0, a1 = S2 < c1 ? S2 : c1;
+
+			if( a0 >= a1 )
+				continue;
+			RP_2DState( rp_pages + k, 0 );
+			/* (the half texels as below: R327, kit 98) */
+			RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y, x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + h,
+				a0 - c0 - 0.5f, T1 + 0.5f, a1 - c0 - 0.5f, T2 + 0.5f );
+		}
+		return;
+	}
 	for( int ty = tile ? (int)T1 / tile * tile : 0; ty < ( tile ? T2 : 1 ); ty += tile ? tile : 1 )
 		for( int tx = tile ? (int)S1 / tile * tile : 0; tx < ( tile ? S2 : 1 ); tx += tile ? tile : 1 )
 		{

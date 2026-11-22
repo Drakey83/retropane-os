@@ -301,7 +301,7 @@ pub fn report(s: &Samples, code: &Code, top: usize) -> String {
                     ms(before),
                     one.len()
                 );
-                profile(&mut out, &one, code, top.min(14));
+                profile(&mut out, &one, code, top.min(40));
             }
         }
     }

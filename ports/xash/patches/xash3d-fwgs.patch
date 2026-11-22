@@ -1230,6 +1230,80 @@ index 8d471f1..d42a3fc 100644
  qboolean LZSS_IsCompressed( const byte *source, size_t input_len );
  uint LZSS_GetActualSize( const byte *source, size_t input_len );
  byte *LZSS_Compress( byte *pInput, int inputLength, uint *pOutputSize );
+diff --git a/engine/common/con_utils.c b/engine/common/con_utils.c
+index 4766a7c..ab25e75 100644
+--- a/engine/common/con_utils.c
++++ b/engine/common/con_utils.c
+@@ -1417,6 +1417,36 @@ void Host_WriteConfig( void )
+ 
+ 	if( !clgame.hInstance || Sys_CheckParm( "-nowriteconfig" ) ) return;
+ 
++#if XASH_RETROPANE
++	// RetroPane (runs 314 to 317, each slow frame by itself: every "Done"
++	// in the options a frame of 0.37 to 0.40 s, in the card's rename and
++	// write: the menu has the settings file written whenever a page is
++	// left, changed or not, and on the X51v's card that is a third of a
++	// second). Rule 0: upstream writes always (a disk is fast and it guards
++	// against a crash); ours writes when what the file would hold has
++	// changed since it was last written, told by one number over the saved
++	// settings and the key bindings; a page left untouched writes nothing.
++	{
++		extern uint32_t Cvar_GroupHash( int group );
++		static uint32_t written;
++		static qboolean have;
++		uint32_t        now = Cvar_GroupHash( FCVAR_ARCHIVE );
++
++		for( int k = 0; k < 256; k++ )
++		{
++			const char *bind = Key_GetBinding( k );
++
++			now = ( now ^ (uint32_t)k ) * 16777619u;
++			for( const char *c = bind ? bind : ""; *c; c++ )
++				now = ( now ^ (byte)*c ) * 16777619u;
++		}
++		if( have && now == written && host.status != HOST_SHUTDOWN )
++			return;
++		written = now;
++		have = true;
++	}
++#endif
++
+ 
+ 	file_t *f = FS_Open( "config.cfg.new", "w", false );
+ 	if( f )
+diff --git a/engine/common/cvar.c b/engine/common/cvar.c
+index 0084a31..b79beb5 100644
+--- a/engine/common/cvar.c
++++ b/engine/common/cvar.c
+@@ -1028,6 +1028,28 @@ Writes lines containing "variable value" for all variables
+ with the specified flag set to true.
+ ============
+ */
++#if XASH_RETROPANE
++/* The settings of `group` as one number (their names and values, FNV-1a):
++   Host_WriteConfig's "has anything changed since the file was written". */
++uint32_t Cvar_GroupHash( int group )
++{
++	uint32_t h = 2166136261u;
++
++	for( convar_t *var = cvar_vars; var; var = var->next )
++	{
++		if( !FBitSet( var->flags, group ))
++			continue;
++		for( const char *c = var->name; *c; c++ )
++			h = ( h ^ (byte)*c ) * 16777619u;
++		h = ( h ^ '=' ) * 16777619u;
++		for( const char *c = var->string; *c; c++ )
++			h = ( h ^ (byte)*c ) * 16777619u;
++		h = ( h ^ ';' ) * 16777619u;
++	}
++	return h;
++}
++#endif
++
+ void Cvar_WriteVariables( file_t *f, int group )
+ {
+ 	for( convar_t *var = cvar_vars; var; var = var->next )
 diff --git a/engine/common/host.c b/engine/common/host.c
 index 8b43cfc..b51080a 100644
 --- a/engine/common/host.c

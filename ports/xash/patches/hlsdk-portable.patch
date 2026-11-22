@@ -673,6 +673,20 @@ index d5323aa..a66849e 100644
  #define HISTORY_MASK	( HISTORY_MAX - 1 )
  
  #include "entity_state.h"
+diff --git a/dlls/basemonster.h b/dlls/basemonster.h
+index 6d59164..413fa50 100644
+--- a/dlls/basemonster.h
++++ b/dlls/basemonster.h
+@@ -43,6 +43,9 @@ public:
+ 	float m_flFieldOfView;// width of monster's field of view ( dot product )
+ 	float m_flWaitFinished;// if we're told to wait, this is the time that the wait will be over.
+ 	float m_flMoveWaitFinished;
++#if XASH_RETROPANE
++	int m_rpCoverDone; // RetroPane: FindCover's place in its search, kept between thinks (monsters.cpp)
++#endif
+ 
+ 	Activity m_Activity;// what the monster is doing (animation)
+ 	Activity m_IdealActivity;// monster should switch to this activity
 diff --git a/dlls/client.cpp b/dlls/client.cpp
 index da2e9e1..f4ea37a 100644
 --- a/dlls/client.cpp
@@ -708,6 +722,244 @@ index da2e9e1..f4ea37a 100644
  
  		state->weaponmodel	= MODEL_INDEX( STRING( ent->v.weaponmodel ) );
  		state->gaitsequence	= ent->v.gaitsequence;
+diff --git a/dlls/enginecallback.h b/dlls/enginecallback.h
+index d9d709d..2276fcf 100644
+--- a/dlls/enginecallback.h
++++ b/dlls/enginecallback.h
+@@ -48,7 +48,13 @@ extern enginefuncs_t g_engfuncs;
+ #define MAKE_STATIC		(*g_engfuncs.pfnMakeStatic)
+ #define ENT_IS_ON_FLOOR	(*g_engfuncs.pfnEntIsOnFloor)
+ #define DROP_TO_FLOOR	(*g_engfuncs.pfnDropToFloor)
++#if XASH_RETROPANE
++// RetroPane: the trial walks counted (schedule.cpp: a think's work is its walks, not its time)
++extern unsigned rp_walks;
++#define WALK_MOVE( e, yaw, dist, mode )	( rp_walks++, (*g_engfuncs.pfnWalkMove)( e, yaw, dist, mode ))
++#else
+ #define WALK_MOVE		(*g_engfuncs.pfnWalkMove)
++#endif
+ #define SET_ORIGIN		(*g_engfuncs.pfnSetOrigin)
+ #define EMIT_SOUND_DYN2 (*g_engfuncs.pfnEmitSound)
+ #define BUILD_SOUND_MSG (*g_engfuncs.pfnBuildSoundMsg)
+diff --git a/dlls/monsters.cpp b/dlls/monsters.cpp
+index dbd0ba1..49f869d 100644
+--- a/dlls/monsters.cpp
++++ b/dlls/monsters.cpp
+@@ -2209,6 +2209,30 @@ int CBaseMonster::IRelationship( CBaseEntity *pTarget )
+ 
+ //float CGraph::PathLength( int iStart, int iDest, int iHull, int afCapMask )
+ 
++#if XASH_RETROPANE
++/*
++RetroPane (the owner, runs 316 and 317: the hitch in the opening fire fight,
++frames of 267 to 312 ms in the server's movement and collision; the scripted
++fight in the emulator, the trial walks counted: one task, FIND_COVER_FROM_ENEMY
++of a soldier's TakeCover and GruntHideReload, makes about 3,300 trial walks
++as it starts; no other task over 80).
++
++FindCover tries the map's nodes one after another and walks a trial route
++to each that would hide the monster, until one can be reached: a string of
++WALK_MOVEs a node, each a few hull traces. With an FPU that is nothing; in
++software floats it is a quarter of a second in one think.
++
++Rule 0: the SDK's search is all or nothing in the think it starts. Ours
++can stop and go on: asked with a budget (rp_cover_budget, in trial walks),
++it stops after the node that spends it, keeps its place in the monster
++(m_rpCoverDone) and says so (rp_cover_more); the task stays running and
++its next think goes on from that node. The same nodes in the same order
++and the same answer, found over a few thinks instead of inside one frame.
++Callers that set no budget get the SDK's search whole.
++*/
++int rp_cover_budget, rp_cover_more;
++#endif
++
+ BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMinDist, float flMaxDist )
+ {
+ 	int i;
+@@ -2257,9 +2281,27 @@ BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMi
+ 
+ 	vecLookersOffset = vecThreat + vecViewOffset;// calculate location of enemy's eyes
+ 
++#if XASH_RETROPANE
++	const unsigned rp_w0 = rp_walks;
++	const int rp_from = rp_cover_budget > 0 && m_rpCoverDone > 0 && m_rpCoverDone < WorldGraph.m_cNodes ? m_rpCoverDone : 0;
++
++	rp_cover_more = 0;
++	m_rpCoverDone = 0;
++	// we'll do a rough sample to find nodes that are relatively nearby
++	for( i = rp_from; i < WorldGraph.m_cNodes; i++ )
++	{
++		// (this think's walks are spent and nodes are left: the next think's)
++		if( rp_cover_budget > 0 && i > rp_from && rp_walks - rp_w0 > (unsigned)rp_cover_budget )
++		{
++			m_rpCoverDone = i;
++			rp_cover_more = 1;
++			return FALSE;
++		}
++#else
+ 	// we'll do a rough sample to find nodes that are relatively nearby
+ 	for( i = 0; i < WorldGraph.m_cNodes; i++ )
+ 	{
++#endif
+ 		int nodeNumber = ( i + WorldGraph.m_iLastCoverSearch ) % WorldGraph.m_cNodes;
+ 
+ 		CNode &node = WorldGraph.Node( nodeNumber );
+diff --git a/dlls/schedule.cpp b/dlls/schedule.cpp
+index 7512c9f..2efab17 100644
+--- a/dlls/schedule.cpp
++++ b/dlls/schedule.cpp
+@@ -204,10 +204,51 @@ BOOL CBaseMonster::FScheduleValid( void )
+ // ensures that the monster leaves this function with a valid
+ // schedule!
+ //=========================================================
++#if XASH_RETROPANE
++extern "C" unsigned long long rp_time_us( void );
++/*
++RetroPane (the owner, runs 316 and 317: the hitch in the opening fire fight;
++the samples of both: frames of 267 to 312 ms, 90% in the server's movement
++and collision, CheckLocalMove among them; run 317's count: one monster's
++think 221 ms by itself, so a budget across monsters could not help).
++
++The loop below starts a monster's next task in the same think whenever the
++last one ends at once, up to ten times ("just here so infinite loops are
++impossible"): a soldier whose search for cover fails picks its fail
++schedule and searches again, and again, each search a string of trial
++walks, each walk hull traces in software floats.
++
++Rule 0: on a 1998 PC ten searches in one think cost nothing to see; the
++SDK's way is to run them all. A monster's schedule is already made to go on
++at its next think (a tenth of a second on): that is what happens whenever a
++task does not end at once. Ours ends the loop when this think has taken
++RP_THINK_US of real time, and the monster goes on from the same place at
++its next think: the same tasks in the same order, a tenth of a second
++later, and the frame never waits a quarter second for one soldier.
++A task that alone takes longer is said in the log, with its schedule.
++*/
++#define RP_THINK_US 8000u
++static unsigned rp_task_cuts, rp_task_long;
++unsigned rp_walks; // every WALK_MOVE (enginecallback.h)
++extern int rp_cover_budget, rp_cover_more; // FindCover's budget and its "to go on" (monsters.cpp)
++#define RP_COVER_WALKS 300 // trial walks of a cover search a think: about 20 ms on the X51v by run 317's 221 ms for 3,300
++static void RP_Say( const char *fmt, const char *a, int b, const char *c, unsigned d, int e )
++{
++	char line[200];
++
++	snprintf( line, sizeof( line ), fmt, a, b, c, d, e );
++	g_engfuncs.pfnServerPrint( line );
++}
++#endif
++
+ void CBaseMonster::MaintainSchedule( void )
+ {
+ 	Schedule_t *pNewSchedule;
+ 	int i;
++#if XASH_RETROPANE
++	const unsigned long long rp_t0 = rp_time_us();
++	const unsigned rp_w0 = rp_walks;
++#endif
+ 
+ 	// UNDONE: Tune/fix this 10... This is just here so infinite loops are impossible
+ 	for( i = 0; i < 10; i++ )
+@@ -270,7 +311,24 @@ void CBaseMonster::MaintainSchedule( void )
+ 			Task_t *pTask = GetTask();
+ 			ASSERT( pTask != NULL );
+ 			TaskBegin();
++#if XASH_RETROPANE
++			{
++				const unsigned long long t1 = rp_time_us();
++
++				const unsigned w1 = rp_walks;
++
++				StartTask( pTask );
++				(void)t1;
++				if( rp_walks - w1 > 40u && rp_task_long < 300 )
++				{
++					rp_task_long++;
++					RP_Say( "rp-task: %s: task %d of %s took %u trial walks to start (turn %d of this think)\n", STRING( pev->classname ),
++						pTask->iTask, m_pSchedule && m_pSchedule->pName ? m_pSchedule->pName : "?", rp_walks - w1, i );
++				}
++			}
++#else
+ 			StartTask( pTask );
++#endif
+ 		}
+ 
+ 		// UNDONE: Twice?!!!
+@@ -281,6 +339,16 @@ void CBaseMonster::MaintainSchedule( void )
+ 
+ 		if( !TaskIsComplete() && m_iTaskStatus != TASKSTATUS_NEW )
+ 			break;
++#if XASH_RETROPANE
++		// this think's time is up: the schedule goes on at the next think
++		if( (unsigned)( rp_time_us() - rp_t0 ) > RP_THINK_US )
++		{
++			if(( ++rp_task_cuts & 31 ) == 1 )
++				RP_Say( "rp-task: thinks ended early with their schedule to go on at the next: the latest %s at turn %d (%s, %u trial walks in it; %d so far)\n",
++					STRING( pev->classname ), i, m_pSchedule && m_pSchedule->pName ? m_pSchedule->pName : "?", rp_walks - rp_w0, (int)rp_task_cuts );
++			break;
++		}
++#endif
+ 	}
+ 
+ 	if( TaskIsRunning() )
+@@ -306,6 +374,25 @@ void CBaseMonster::RunTask( Task_t *pTask )
+ {
+ 	switch( pTask->iTask )
+ 	{
++#if XASH_RETROPANE
++	case TASK_FIND_COVER_FROM_ENEMY:
++		{
++			// RetroPane: the cover search going on where the last think left it
++			entvars_t *pevCover = m_hEnemy == 0 ? pev : m_hEnemy->pev;
++
++			rp_cover_budget = RP_COVER_WALKS;
++			const BOOL found = FindCover( pevCover->origin, pevCover->view_ofs, 0, CoverRadius() );
++			rp_cover_budget = 0;
++			if( found )
++			{
++				m_flMoveWaitFinished = gpGlobals->time + pTask->flData;
++				TaskComplete();
++			}
++			else if( !rp_cover_more )
++				TaskFail();
++			break;
++		}
++#endif
+ 	case TASK_TURN_RIGHT:
+ 	case TASK_TURN_LEFT:
+ 		{
+@@ -753,6 +840,24 @@ void CBaseMonster::StartTask( Task_t *pTask )
+ 				m_flMoveWaitFinished = gpGlobals->time + pTask->flData;
+ 				TaskComplete();
+ 			}
++#if XASH_RETROPANE
++			else
++			{
++				// the search with a budget of trial walks a think (monsters.cpp):
++				// found, none, or to go on at the next think (RunTask)
++				m_rpCoverDone = 0;
++				rp_cover_budget = RP_COVER_WALKS;
++				const BOOL found = FindCover( pevCover->origin, pevCover->view_ofs, 0, CoverRadius() );
++				rp_cover_budget = 0;
++				if( found )
++				{
++					m_flMoveWaitFinished = gpGlobals->time + pTask->flData;
++					TaskComplete();
++				}
++				else if( !rp_cover_more )
++					TaskFail();
++			}
++#else
+ 			else if( FindCover( pevCover->origin, pevCover->view_ofs, 0, CoverRadius() ) )
+ 			{
+ 				// then try for plain ole cover
+@@ -764,6 +869,7 @@ void CBaseMonster::StartTask( Task_t *pTask )
+ 				// no coverwhatsoever.
+ 				TaskFail();
+ 			}
++#endif
+ 			break;
+ 		}
+ 	case TASK_FIND_COVER_FROM_ORIGIN:
 diff --git a/dlls/util.cpp b/dlls/util.cpp
 index 27c7ffe..bd54792 100644
 --- a/dlls/util.cpp
