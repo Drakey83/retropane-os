@@ -6231,6 +6231,53 @@ static inline uint32_t RP_PicTexel( pixel_t p, int fmt )
 
 /* `w` x `h` texels from `src` (rows `stride` apart) into page `pg` at
    square (`qx`, `qy`), past the edges the last row and column again. */
+static uint32_t RP_PicTexelAt( const pixel_t *src, int stride, int x, int y, int fmt, const byte *idx, const uint32_t *pal, const pixel_t *tab )
+{
+	const pixel_t p = tab ? tab[idx[y * stride + x]] : src[y * stride + x];
+
+	if( idx && pal && fmt )
+	{
+		/* R352: the opacity from the 8-bit palette's alpha (Half-Life's
+		   decals: the index itself, 256 levels) to the chip's 16, not
+		   ref_soft's 8; the colour as before (the renderer's table) */
+		uint32_t a = pal[idx[y * stride + x]] >> 28, cc = vid.screen[(pixel_t)( p << 3 )];
+
+		return a ? a << 12 | ( cc >> 12 & 0xFu ) << 8 | ( cc >> 7 & 0xFu ) << 4 | ( cc >> 1 & 0xFu ) : 0;
+	}
+	return RP_PicTexel( p, fmt );
+}
+
+/* the picture at half size (rp_pic_half: a texel the mean of its 2 x 2, each
+   channel; `w` x `h` the half size, the source's last row and column again
+   past its edge) */
+static int rp_pic_half, rp_pic_srcw, rp_pic_srch;
+
+static uint32_t RP_PicTexelHalf( const pixel_t *src, int stride, int x, int y, int fmt, const byte *idx, const uint32_t *pal, const pixel_t *tab )
+{
+	uint32_t sum[4] = { 0, 0, 0, 0 }, t;
+
+	for( int k = 0; k < 4; k++ )
+	{
+		int sx = 2 * x + ( k & 1 ), sy = 2 * y + ( k >> 1 );
+
+		sx = sx < rp_pic_srcw ? sx : rp_pic_srcw - 1;
+		sy = sy < rp_pic_srch ? sy : rp_pic_srch - 1;
+		t = RP_PicTexelAt( src, stride, sx, sy, fmt, idx, pal, tab );
+		if( fmt )
+			for( int c = 0; c < 4; c++ )
+				sum[c] += t >> ( 4 * c ) & 0xFu;
+		else
+		{
+			sum[0] += t & 0x1Fu;
+			sum[1] += t >> 5 & 0x3Fu;
+			sum[2] += t >> 11 & 0x1Fu;
+		}
+	}
+	if( fmt )
+		return ( sum[0] + 2 ) / 4 | ( sum[1] + 2 ) / 4 << 4 | ( sum[2] + 2 ) / 4 << 8 | ( sum[3] + 2 ) / 4 << 12;
+	return ( sum[0] + 2 ) / 4 | ( sum[1] + 2 ) / 4 << 5 | ( sum[2] + 2 ) / 4 << 11;
+}
+
 static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, int qx, int qy, int fmt, const byte *idx, const uint32_t *pal, const pixel_t *tab )
 {
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
@@ -6258,20 +6305,8 @@ static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, 
 						x = w - 1;
 					if( y >= h )
 						y = h - 1;
-					const pixel_t p = tab ? tab[idx[y * stride + x]] : src[y * stride + x];
-
-					if( idx && pal && fmt )
-					{
-						/* R352: the opacity from the 8-bit palette's alpha
-						   (Half-Life's decals: the index itself, 256
-						   levels) to the chip's 16, not ref_soft's 8; the
-						   colour as before (the renderer's table) */
-						uint32_t a = pal[idx[y * stride + x]] >> 28, cc = vid.screen[(pixel_t)( p << 3 )];
-
-						t[j] = a ? a << 12 | ( cc >> 12 & 0xFu ) << 8 | ( cc >> 7 & 0xFu ) << 4 | ( cc >> 1 & 0xFu ) : 0;
-					}
-					else
-						t[j] = RP_PicTexel( p, fmt );
+					t[j] = rp_pic_half ? RP_PicTexelHalf( src, stride, x, y, fmt, idx, pal, tab )
+						: RP_PicTexelAt( src, stride, x, y, fmt, idx, pal, tab );
 				}
 				dst[k] = t[0] | t[1] << 16;
 			}
@@ -6285,7 +6320,8 @@ static void RP_PicUpload( const pixel_t *src, int stride, int w, int h, int pg, 
 static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int w, int h, int fmt )
 {
 	uint32_t   key = RP_SkinKey( img, 1, fmt );
-	uint32_t   slot = RP_SkinSlot( key, off );
+	uint32_t   koff = rp_pic_half ? off | 0x80000000u : off; /* the half-size copy its own place */
+	uint32_t   slot = RP_SkinSlot( key, koff );
 	rp_skin_t *e;
 
 	if( rp_skin_world != WORLDMODEL )
@@ -6296,7 +6332,7 @@ static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int
 	for( int i = 0;; i++ )
 	{
 		e = &rp_skin[( slot + i ) % RP_SKINS];
-		if( !e->key || ( e->key == key && e->off == off && e->w == w && e->h == h ))
+		if( !e->key || ( e->key == key && e->off == koff && e->w == w && e->h == h ))
 			break;
 		if( i == RP_SKINS - 1 )
 			return NULL;
@@ -6322,7 +6358,7 @@ static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int
 			return NULL;
 		RP_PicUpload( src ? src + off : NULL, stride, w, h, pg, x, y, fmt, idx ? idx + off : fmt && img->rp_idx && img->rp_pal ? img->rp_idx + off : NULL, img->rp_pal, tab );
 		e->key = key;
-		e->off = off;
+		e->off = koff;
 		e->w = (uint16_t)w;
 		e->h = (uint16_t)h;
 		e->pg = (uint8_t)pg;
@@ -6340,6 +6376,8 @@ static const rp_skin_t *RP_PicPlace( image_t *img, uint32_t off, int stride, int
 
 /* The state block for a 2D draw from page `pg` (`fmt` 1: ARGB4444) in the
    engine's render mode. */
+static int rp_2d_linear; /* the half-size pictures: filtered (TEX1 bit 31) */
+
 static void RP_2DState( int pg, int fmt )
 {
 	int         mode = vid.rendermode, blend;
@@ -6354,7 +6392,7 @@ static void RP_2DState( int pg, int fmt )
 		blend = 1;
 	else
 		blend = 0;
-	what = (const uint8_t *)&rp_page[pg] + 32 + fmt * 4 + blend;
+	what = (const uint8_t *)&rp_page[pg] + 32 + fmt * 4 + blend + ( rp_2d_linear ? 8 : 0 ); /* 32-47: below the effects' 48 */
 	if( what == rp_state )
 		return;
 	RP_LmFlush(); /* the lit walls before the 2D layer */
@@ -6371,7 +6409,7 @@ static void RP_2DState( int pg, int fmt )
 	RP_Put( tsp );
 	RP_Put( RP_ISP_ALWAYS );
 	RP_Put( fmt ? ( RP_TEX0_PAGE & ~( 7u << 13 )) | 4u << 13 : RP_TEX0_PAGE );
-	RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+	RP_Put( rp_2d_linear ? RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ) : RP_TEX1( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
 	RP_Put( fmt && !rp_tex2_plain ? 0x86084610u : RP_TEX2 ); /* 4444: the texel's alpha (rp-glesfeat L) */
 	RP_Put( RP_CLIP );
 	RP_Put( 0 );
@@ -6610,13 +6648,39 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 
 			if( a0 >= a1 || b0 >= b1 )
 				continue;
-			e = RP_PicPlace( (image_t *)pic, (uint32_t)( ty * pw + tx ), pw, tw, th, fmt );
+			/* run 318 (the owner's play: the menu 8-14 fps, "minor texture
+			   glitching"; its log: 15 of the map's pages dropped in one menu
+			   visit): the menu's animated banner, Half-Life's 4 blurred
+			   logo pictures of 507 x 270 and their 4 blip copies, does not
+			   fit beside the map in video memory, so each flash between the
+			   two sets pushed pages out and the map's textures were placed
+			   again after the menu. Blurred glows hold no detail finer than
+			   a few texels: kept at half size each way (a quarter of the
+			   room, each texel the mean of its 2 x 2) and drawn filtered,
+			   both sets fit at once and nothing churns */
+			const int half = fmt && !tile && strstr( pic->name, "_blurred" ) != NULL;
+
+			rp_pic_half = half;
+			rp_pic_srcw = tw;
+			rp_pic_srch = th;
+			e = RP_PicPlace( (image_t *)pic, (uint32_t)( ty * pw + tx ), pw, half ? ( tw + 1 ) / 2 : tw, half ? ( th + 1 ) / 2 : th, fmt );
+			rp_pic_half = 0;
 			if( !e )
 			{
 				rp_count.pics_skipped++;
 				continue;
 			}
+			rp_2d_linear = half;
 			RP_2DState( e->pg, fmt );
+			rp_2d_linear = 0;
+			if( half )
+			{
+				/* filtered: texel centres at k + 0.5 of the half picture */
+				RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y + ( b0 - T1 ) / ( T2 - T1 ) * h,
+					x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + ( b1 - T1 ) / ( T2 - T1 ) * h,
+					e->qx * 8 + ( a0 - tx ) * 0.5f, e->qy * 8 + ( b0 - ty ) * 0.5f, e->qx * 8 + ( a1 - tx ) * 0.5f, e->qy * 8 + ( b1 - ty ) * 0.5f );
+				continue;
+			}
 			{
 				/* R327 (the owner, 2026-11-18: the flashlight's line, the
 				   weapon HUD's digits with a sliver of the next glyph; run
