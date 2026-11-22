@@ -374,7 +374,13 @@ mod tests {
         let mut waited = 0u32;
         let _ = run(&mut bus, |us| waited += us);
         let log = bus.log();
-        assert_eq!(log[0], Access::Write { offset: SYSRST, value: 1 });
+        assert_eq!(
+            log[0],
+            Access::Write {
+                offset: SYSRST,
+                value: 1
+            }
+        );
         assert_eq!(
             log[1],
             Access::Write {
@@ -383,7 +389,10 @@ mod tests {
             }
         );
         // the first read after the 5 sources, 7 clocks and 6 memory writes
-        let first_read = log.iter().position(|a| matches!(a, Access::Read { .. })).unwrap();
+        let first_read = log
+            .iter()
+            .position(|a| matches!(a, Access::Read { .. }))
+            .unwrap();
         assert_eq!(first_read, 2 + 5 + 7 + 6);
         let memory: Vec<usize> = log[14..20].iter().map(at).collect();
         let want: Vec<usize> = MEMORY.iter().map(|n| offset(n)).collect();

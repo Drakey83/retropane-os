@@ -111,7 +111,12 @@ impl PmWatch {
 
     fn get(&self, slot: usize, k: usize) -> u32 {
         let a = Self::at(slot, k);
-        u32::from_le_bytes([self.mem[a], self.mem[a + 1], self.mem[a + 2], self.mem[a + 3]])
+        u32::from_le_bytes([
+            self.mem[a],
+            self.mem[a + 1],
+            self.mem[a + 2],
+            self.mem[a + 3],
+        ])
     }
 
     /// Whether moment `m` is still wanted (each kept once, the reports
@@ -215,9 +220,26 @@ impl PmWatch {
             let w = |i: usize| self.get(k, HEAD_WORDS + REG_WORDS + i);
             log(format_args!(
                 "rp-gfx: R340 PM watch: the block at the set-up: [0..8) {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}; [1276..1284) {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}; [4092..4096) {:x} {:x} {:x} {:x}",
-                w(0), w(1), w(2), w(3), w(4), w(5), w(6), w(7),
-                w(1276), w(1277), w(1278), w(1279), w(1280), w(1281), w(1282), w(1283),
-                w(4092), w(4093), w(4094), w(4095)
+                w(0),
+                w(1),
+                w(2),
+                w(3),
+                w(4),
+                w(5),
+                w(6),
+                w(7),
+                w(1276),
+                w(1277),
+                w(1278),
+                w(1279),
+                w(1280),
+                w(1281),
+                w(1282),
+                w(1283),
+                w(4092),
+                w(4093),
+                w(4094),
+                w(4095)
             ));
         }
     }

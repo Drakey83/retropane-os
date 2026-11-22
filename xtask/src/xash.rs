@@ -173,7 +173,11 @@ fn parse_mod_options(text: &str) -> Result<Vec<String>, String> {
         let (name, value) = setting
             .split_once('=')
             .ok_or_else(|| format!("a line with no `=`: {line}"))?;
-        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
             return Err(format!("a name the SDK's build would not read: {line}"));
         }
         if value == "ON" {
@@ -1238,13 +1242,32 @@ CLIENT_WEAPONS=ON # Client local weapons prediction
 GAMEDIR=valve # Gamedir path
 # a comment
 ";
-        assert_eq!(parse_mod_options(t).unwrap(), vec!["-DCLIENT_WEAPONS=1".to_string()]);
-        assert!(parse_mod_options("CLIENT_WEAPONS ON # no equals
-").is_err());
-        assert!(parse_mod_options("CLIENT_WEAPONS=ON
-").is_err(), "no comment part");
-        assert!(parse_mod_options("BAD NAME=ON # x
-").is_err());
+        assert_eq!(
+            parse_mod_options(t).unwrap(),
+            vec!["-DCLIENT_WEAPONS=1".to_string()]
+        );
+        assert!(
+            parse_mod_options(
+                "CLIENT_WEAPONS ON # no equals
+"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_mod_options(
+                "CLIENT_WEAPONS=ON
+"
+            )
+            .is_err(),
+            "no comment part"
+        );
+        assert!(
+            parse_mod_options(
+                "BAD NAME=ON # x
+"
+            )
+            .is_err()
+        );
         let sdk = crate::workspace_root().join("target/ports-src/hlsdk-portable");
         if sdk.join("mod_options.txt").exists() {
             let real = mod_options(&sdk).unwrap();

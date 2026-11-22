@@ -1749,7 +1749,8 @@ pub fn sample_frame(us: u32, counted: bool) {
             );
             let at = buf.add(m as usize * SAMPLE_BYTES);
             let ms = (us / 1000).min(0xFFFF);
-            at.cast::<[u8; 4]>().write_unaligned(SAMPLE_SLOW_MARK.to_le_bytes());
+            at.cast::<[u8; 4]>()
+                .write_unaligned(SAMPLE_SLOW_MARK.to_le_bytes());
             at.add(4)
                 .cast::<[u8; 4]>()
                 .write_unaligned(((n - m).min(0xFFFF) | ms << 16).to_le_bytes());
