@@ -926,6 +926,14 @@ static void RP_End( void )
 			   those frames logged (rp_shot 1: ref_rp writes shot-N.565) */
 			if(( RP_Parm( "-rpshots" ) || RP_Parm( "-rpdecalshot" ) || RP_Parm( "-rpfloorshot" )) && ( frames + 1u == 120u || frames + 1u == 240u || frames + 1u == 380u || frames + 1u == 490u ))
 				Cvar_SetValue( "rp_shot", 1.0f );
+			/* -rpshots' menu (the owner's photo, run 318: the HUD's flashlight
+			   icon as two pale boxes with the menu up, its animated banner
+			   swapping 534 KiB pictures through video memory): the menu opened
+			   at frame 400, its picture at 430, closed at 450 */
+			if( RP_Parm( "-rpshots" ) && ( frames + 1u == 400u || frames + 1u == 450u ))
+				Cbuf_AddText( "togglemenu\n" );
+			if( RP_Parm( "-rpshots" ) && frames + 1u == 430u )
+				Cvar_SetValue( "rp_shot", 1.0f );
 			/* the ammunition topped up every 100 frames (impulse 101), so
 			   the MP5 never runs dry */
 			if( frames % 100u == 99u )
