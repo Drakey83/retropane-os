@@ -205,6 +205,7 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    surface, which flashes when a decal lands but adds no small blended
    primitive to the frame); -rpdecalpoly turns them on. */
 static int rp_decal_on;
+static cvar_t *rp_decal; /* 1 turns them on while a run plays (-rpcombo's second half) */
 
 void RP_EmitInit( void )
 {
@@ -234,6 +235,7 @@ void RP_EmitInit( void )
 		rp_facecull = 0; /* kit 104's control: off-screen faces sent as kit 103 did */
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
+	rp_decal = gEngfuncs.Cvar_Get( "rp_decal", "0", 0, "ref_rp: R352: 1 draws decals as polygons over their faces from now on" );
 	rp_picture = gEngfuncs.Cvar_Get( "rp_picture", "4", FCVAR_ARCHIVE, "ref_rp: R343: the picture's brightness, 0 (the game's own dark look) to 8 (daylight), 4 the default: the screen's curve and the light together" );
 	rp_near = gEngfuncs.Cvar_Get( "rp_near", "1", 0, "ref_rp: R347: the near plane in units, 1 to 8 (1 ref_rp's own, 4 Half-Life GL's); a ladder's look" );
 	rp_report = gEngfuncs.Cvar_Get( "rp_report", "0", 0, "ref_rp: 1 the counts reported at the next frame (a yardstick's window; kit 80)" );
@@ -648,6 +650,8 @@ void RP_EmitFrame( void )
 	rp_lit_on = (int)rp_lit->value;
 	rp_mip_force = (int)rp_mip->value;
 	rp_cull_on = (int)rp_cull->value;
+	if( rp_decal && rp_decal->value != 0.0f )
+		rp_decal_on = 1;
 	{
 		/* R347: 1 to 8 units, in 1/16ths */
 		float n = rp_near->value;

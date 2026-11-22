@@ -887,6 +887,25 @@ static void RP_End( void )
 				fprintf( stderr, "rp-step: 4/5 The fight's|second half: frames|251 to 500.\n" );
 			if( frames + 1u == RP_WALK_WINDOW || frames + 20u == 2u * RP_WALK_WINDOW )
 				Cvar_SetValue( "rp_report", 1.0f );
+			/* -rpcombo (the owner, 2026-11-22: "you cant combine the 3 into
+			   one?"): one hands-free run for three questions: the fight's
+			   first half with the decals the old way and its second with
+			   them as polygons (rp_decal 1 from frame 251; each half's own
+			   report), and a save by name and the autosave 30 frames before
+			   the end (run 318w's out of memory was at an autosave) */
+			if( RP_Parm( "-rpcombo" ))
+			{
+				if( frames + 1u == RP_WALK_WINDOW )
+				{
+					fprintf( stderr, "rp-fight: -rpcombo: the decals as polygons from here (rp_decal 1)\n" );
+					Cvar_SetValue( "rp_decal", 1.0f );
+				}
+				if( frames + 30u == 2u * RP_WALK_WINDOW )
+				{
+					fprintf( stderr, "rp-save: -rpcombo: a save by name and the autosave asked for\n" );
+					Cbuf_AddText( "save rptest\nautosave\n" );
+				}
+			}
 			/* the ammunition topped up every 100 frames (impulse 101), so
 			   the MP5 never runs dry */
 			if( frames % 100u == 99u )
@@ -945,6 +964,19 @@ static void RP_End( void )
 		   the suit given once the map plays */
 		static int suit_done;
 
+		/* -rpsavetest (run 318w: out of memory at an autosave; run 319w's walk
+		   came to no save): a save by name and the autosave, 20 s into the
+		   play, so a hands-free run proves a save on the X51v */
+		{
+			static int save_done;
+
+			if( state == 1 && !save_done && now - played_from > 20000000u && RP_Parm( "-rpsavetest" ))
+			{
+				save_done = 1;
+				fprintf( stderr, "rp-save: -rpsavetest: a save by name and the autosave asked for\n" );
+				Cbuf_AddText( "save rptest\nautosave\n" );
+			}
+		}
 		if( state == 1 && !suit_done && now - played_from > 2000000u && RP_Parm( "-rpsuit" ))
 		{
 			suit_done = 1;
