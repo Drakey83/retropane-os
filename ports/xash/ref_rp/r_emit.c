@@ -203,8 +203,15 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    faces drawn with other pictures. Until R340's cause is found the
    polygons are off by default (the old way: a decal face by its lit
    surface, which flashes when a decal lands but adds no small blended
-   primitive to the frame); -rpdecalpoly turns them on. */
-static int rp_decal_on;
+   primitive to the frame); -rpdecalpoly turns them on.
+   On by default again (2026-11-22, runs 324-326 under R340's strict chip
+   order: decal polygons in four ordinary fight frames, a bullet hole drawn
+   right on the floor in run 326's pictures, no fault, no stall; the red
+   patch of runs 320 and 323 only in the test's end frame drawn both ways,
+   which play never draws). With the engine now keeping every decal (its
+   clip test reads the map's edges), the old way would send each marked
+   wall through a surface rebuild; -rpdecalsoft keeps it for a side by side. */
+static int rp_decal_on = 1;
 static cvar_t *rp_decal; /* 1 turns them on while a run plays (-rpcombo's second half) */
 /* R352's eye on ordinary frames (-rpshots): rp_shot 1 asks for this frame's
    picture from the 2700G (shot-N.565 on the card, N the frame) and a line
@@ -221,8 +228,8 @@ void RP_EmitInit( void )
 	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
 	if( gEngfuncs.Sys_CheckParm( "-rptex2plain" ))
 		rp_tex2_plain = 1;
-	if( gEngfuncs.Sys_CheckParm( "-rpdecalpoly" )) /* R352: decals as polygons over their faces */
-		rp_decal_on = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352: decals baked into the lit surface, the old way */
+		rp_decal_on = 0;
 	if( gEngfuncs.Sys_CheckParm( "-rpfx0" )) /* R338's bisection: the float path, one word on the 31-word line */
 		gEngfuncs.Cvar_Set( "rp_fixed", "0" );
 	rp_holes = gEngfuncs.Cvar_Get( "rp_holes", "0", 0, "ref_rp: 1 counts the clear colour showing at each report and keeps the first three frames with holes (a test: it waits for the render)" );

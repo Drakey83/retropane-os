@@ -866,6 +866,11 @@ static void RP_End( void )
 			   move: the shots land on what is ahead, their decals in view */
 			if( RP_Parm( "-rpdecalshot" ))
 				Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\n" );
+			/* -rpfloorshot (R352): the fight's spot looking 50 degrees down,
+			   so the shots' holes land on the floor some 100 units ahead,
+			   large in -rpshots' pictures */
+			else if( RP_Parm( "-rpfloorshot" ))
+				Cbuf_AddText( "sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 50 -60\n" );
 			else
 			Cbuf_AddText("sv_cheats 1\ngod\nimpulse 101\nnoclip\nrp_setpos 450 400 -1730 10 -60\n" );
 		}
@@ -911,7 +916,7 @@ static void RP_End( void )
 			   decal at all): the 2700G's own picture of four ordinary frames
 			   of the fight, two in each half, with every decal polygon of
 			   those frames logged (rp_shot 1: ref_rp writes shot-N.565) */
-			if( RP_Parm( "-rpshots" ) && ( frames + 1u == 120u || frames + 1u == 240u || frames + 1u == 380u || frames + 1u == 490u ))
+			if(( RP_Parm( "-rpshots" ) || RP_Parm( "-rpdecalshot" ) || RP_Parm( "-rpfloorshot" )) && ( frames + 1u == 120u || frames + 1u == 240u || frames + 1u == 380u || frames + 1u == 490u ))
 				Cvar_SetValue( "rp_shot", 1.0f );
 			/* the ammunition topped up every 100 frames (impulse 101), so
 			   the MP5 never runs dry */

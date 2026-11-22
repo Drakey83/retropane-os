@@ -6113,6 +6113,76 @@ index 5d6dec1..3ec0ca5 100644
  	return loaded;
  }
  
+diff --git a/ref/soft/r_decals.c b/ref/soft/r_decals.c
+index 63e9fee..d17a989 100644
+--- a/ref/soft/r_decals.c
++++ b/ref/soft/r_decals.c
+@@ -181,13 +181,38 @@ static void R_SetupDecalTextureSpaceBasis( decal_t *pDecal, msurface_t *surf, in
+ }
+ 
+ // Build the initial list of vertices from the surface verts into the global array, 'verts'.
+-static void R_SetupDecalVertsForMSurface( decal_t *pDecal, msurface_t *surf, vec3_t textureSpaceBasis[3], float *verts )
++// RetroPane (R352, runs 324-326: about one bullet hole alive at a time, the
++// rest dropped as they were made): the software renderer builds no GL
++// polygon (`surf->polys`), so this filled nothing and R_DecalVertsClip
++// returned without setting the count, and R_DecalCreate kept or dropped
++// each new decal on a stack word's leftover. With no polygon the face's
++// corners come from the map's own edges (as ref_rp's RP_DecalPoly draws
++// them), so a decal is kept exactly when it touches its face. The count of
++// corners written, 0 for none.
++static int R_SetupDecalVertsForMSurface( decal_t *pDecal, msurface_t *surf, vec3_t textureSpaceBasis[3], float *verts )
+ {
+ 	float *v;
+ 	int   i;
+ 
+ 	if( !surf->polys )
+-		return;
++	{
++		const model_t *mod = WORLDMODEL; // every brush model's faces index the world's edges
++		int           n = surf->numedges;
++
++		if( !mod || n < 3 || n > MAX_DECALCLIPVERT - 4 || surf->firstedge < 0 || surf->firstedge + n > mod->numsurfedges )
++			return 0;
++		for( i = 0; i < n; i++, verts += VERTEXSIZE )
++		{
++			int            lindex = mod->surfedges[surf->firstedge + i];
++			const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
++
++			VectorCopy( mod->vertexes[lindex > 0 ? e->v[0] : e->v[1]].position, verts );
++			verts[3] = DotProduct( verts, textureSpaceBasis[0] ) - pDecal->dx + 0.5f;
++			verts[4] = DotProduct( verts, textureSpaceBasis[1] ) - pDecal->dy + 0.5f;
++			verts[5] = verts[6] = 0.0f;
++		}
++		return n;
++	}
+ 	for( i = 0, v = surf->polys->verts[0]; i < surf->polys->numverts; i++, v += VERTEXSIZE, verts += VERTEXSIZE )
+ 	{
+ 		VectorCopy( v, verts ); // copy model space coordinates
+@@ -195,6 +220,7 @@ static void R_SetupDecalVertsForMSurface( decal_t *pDecal, msurface_t *surf, vec
+ 		verts[4] = DotProduct( verts, textureSpaceBasis[1] ) - pDecal->dy + 0.5f;
+ 		verts[5] = verts[6] = 0.0f;
+ 	}
++	return surf->polys->numverts;
+ }
+ 
+ // Figure out where the decal maps onto the surface.
+@@ -362,11 +388,12 @@ static float *R_DecalVertsClip( decal_t *pDecal, msurface_t *surf, int texture,
+ 	R_SetupDecalClip( pDecal, surf, texture, textureSpaceBasis, decalWorldScale );
+ 
+ 	// build the initial list of vertices from the surface verts.
+-	R_SetupDecalVertsForMSurface( pDecal, surf, textureSpaceBasis, g_DecalClipVerts[0] );
++	int n = R_SetupDecalVertsForMSurface( pDecal, surf, textureSpaceBasis, g_DecalClipVerts[0] );
+ 
+-	if( !surf->polys )
+-		return 0;
+-	return R_DoDecalSHClip( g_DecalClipVerts[0], pDecal, surf->polys->numverts, pVertCount );
++	*pVertCount = 0; // RetroPane (R352): never left unset
++	if( !n )
++		return NULL;
++	return R_DoDecalSHClip( g_DecalClipVerts[0], pDecal, n, pVertCount );
+ }
+ 
+ // Generate lighting coordinates at each vertex for decal vertices v[] on surface psurf
 diff --git a/ref/soft/r_draw.c b/ref/soft/r_draw.c
 index 5e64fcd..8fd53a1 100644
 --- a/ref/soft/r_draw.c
