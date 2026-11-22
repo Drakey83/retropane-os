@@ -6216,10 +6216,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_image.c b/ref/soft/r_image.c
-index 8a82400..0890917 100644
+index 8a82400..c074dfc 100644
 --- a/ref/soft/r_image.c
 +++ b/ref/soft/r_image.c
-@@ -22,6 +22,477 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
+@@ -22,6 +22,480 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
  static uint    r_numImages;
  
  #define IsLightMap( tex ) ( FBitSet(( tex )->flags, TF_ATLAS_PAGE ))
@@ -6477,6 +6477,9 @@ index 8a82400..0890917 100644
 +		aoff = lvbytes;
 +		lvbytes += ( n * 2u + 3u ) & ~3u;
 +	}
++	// RetroPane: a block the ring cannot hold is a heap block of that size: said, with whose it is
++	if( lvbytes + ( to > 0 ? n * 4u : 0u ) > 512u * 1024u )
++		fprintf( stderr, "rp-tex: a large decode: %s %u x %u, levels %d to %d%s, %u KiB\n", tex->name, w, h, from, to, alpha ? " and its alpha" : "", ( lvbytes + ( to > 0 ? n * 4u : 0u )) >> 10 );
 +	b = R_RingAlloc( lvbytes + ( to > 0 ? n * 4u : 0u ));
 +	body = (byte *)( b + 1 );
 +	for( int j = from; j <= to; j++ )
@@ -6697,7 +6700,7 @@ index 8a82400..0890917 100644
  /*
  =================
  R_GetTexture
-@@ -44,31 +515,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
+@@ -44,31 +518,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
  {
  	image_t *image = &r_images[texnum];
  
@@ -6738,7 +6741,7 @@ index 8a82400..0890917 100644
  
  	r_affinetridesc.skinwidth = image->width;
  	r_affinetridesc.skinheight = image->height;
-@@ -227,6 +693,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -227,6 +696,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  	Assert( pic != NULL );
  	Assert( tex != NULL );
  
@@ -6749,7 +6752,7 @@ index 8a82400..0890917 100644
  	if( !pic->buffer )
  		return true;
  
-@@ -240,6 +710,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -240,6 +713,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  	else
  		data = buf;
  
@@ -6794,7 +6797,7 @@ index 8a82400..0890917 100644
  	// mips will be auto-generated if desired
  	for( uint j = 0; j < mipCount; j++ )
  	{
-@@ -254,31 +762,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -254,31 +765,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  		if( j == 0 && tex->flags & TF_HAS_ALPHA )
  			tex->alpha_pixels = (pixel_t *)Mem_Calloc( r_temppool, width * height * sizeof( pixel_t ));
  
@@ -6827,7 +6830,7 @@ index 8a82400..0890917 100644
  		if( mipCount > 1 )
  			GL_BuildMipMap( data, width, height, tex->depth, tex->flags );
  
-@@ -431,7 +915,7 @@ static void GL_DeleteTexture( image_t *tex )
+@@ -431,7 +918,7 @@ static void GL_DeleteTexture( image_t *tex )
  	ASSERT( tex != NULL );
  
  	// already freed?
@@ -6836,7 +6839,7 @@ index 8a82400..0890917 100644
  		return;
  
  	// debug
-@@ -462,11 +946,7 @@ static void GL_DeleteTexture( image_t *tex )
+@@ -462,11 +949,7 @@ static void GL_DeleteTexture( image_t *tex )
  	if( tex->original )
  		gEngfuncs.FS_FreeImage( tex->original );
  
@@ -6849,7 +6852,7 @@ index 8a82400..0890917 100644
  
  	memset( tex, 0, sizeof( *tex ));
  }
-@@ -814,7 +1294,7 @@ void R_TextureList_f( void )
+@@ -814,7 +1297,7 @@ void R_TextureList_f( void )
  
  	for( i = texCount = 0, image = r_images; i < r_numImages; i++, image++ )
  	{
@@ -6858,7 +6861,7 @@ index 8a82400..0890917 100644
  			continue;
  
  		bytes += image->size;
-@@ -863,6 +1343,23 @@ void R_InitImages( void )
+@@ -863,6 +1346,23 @@ void R_InitImages( void )
  	r_imagesHashTable[r_images->hashValue] = r_images;
  	r_numImages = 1;
  
@@ -6882,7 +6885,7 @@ index 8a82400..0890917 100644
  	// validate cvars
  
  	gEngfuncs.Cmd_AddCommand( "texturelist", R_TextureList_f, "display loaded textures list" );
-@@ -886,4 +1383,9 @@ void R_ShutdownImages( void )
+@@ -886,4 +1386,9 @@ void R_ShutdownImages( void )
  	memset( r_imagesHashTable, 0, sizeof( r_imagesHashTable ));
  	memset( r_images, 0, sizeof( r_images ));
  	r_numImages = 0;

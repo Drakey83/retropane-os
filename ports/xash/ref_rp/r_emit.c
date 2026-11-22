@@ -2033,8 +2033,53 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 	for( int l = 0, lw = W, lh = H; l < levels; l++ )
 	{
 		uint16_t *lv = chain + off / 2;
+		/* A texel's place in the level (RP_TexAt) is its column's part plus
+		   its row's part: the two sets of bits never meet. Each is worked
+		   once a column and once a row here, not once a texel (the owner,
+		   2026-11-22: "close all opened things": a texture placed in play
+		   still cost its frame 27% to 42% in this function in run 317).
+		   -rpplacecheck compares every place with RP_TexAt's own. */
+		static uint32_t cx[1024], ry[1024];
 
 		sb = 31 - __builtin_clz((uint32_t)( lw < lh ? lw : lh ));
+		{
+			const uint32_t m = ( 1u << sb ) - 1u;
+
+			for( int x = 0; x < lw; x++ )
+			{
+				uint32_t in = (uint32_t)rp_spread[x & m & 0xFF] << 1;
+
+				if( sb > 8 )
+					in |= ( (uint32_t)rp_spread[( x & m ) >> 8] << 1 ) << 16;
+				cx[x] = ( lw > lh ? ( (uint32_t)x >> sb ) << ( 2 * sb ) : 0u ) + in;
+			}
+			for( int y = 0; y < lh; y++ )
+			{
+				uint32_t in = rp_spread[y & m & 0xFF];
+
+				if( sb > 8 )
+					in |= (uint32_t)rp_spread[( y & m ) >> 8] << 16;
+				ry[y] = ( lw > lh ? 0u : ( (uint32_t)y >> sb ) << ( 2 * sb )) + in;
+			}
+			{
+				static int      check = -1;
+				static uint32_t places, differ, said;
+
+				if( check < 0 )
+					check = gEngfuncs.Sys_CheckParm( "-rpplacecheck" ) != 0;
+				if( check )
+				{
+					for( int y = 0; y < lh; y++ )
+						for( int x = 0; x < lw; x++ )
+						{
+							places++;
+							differ += cx[x] + ry[y] != RP_TexAt( x, y, lw, lh, sb );
+						}
+					if(( ++said & 255 ) == 1 )
+						fprintf( stderr, "rp-emit: -rpplacecheck: %u texel places against RP_TexAt, %u differ\n", places, differ );
+				}
+			}
+		}
 		if( l < 4 && src[l] )
 		{
 			/* the map's own level (a quarter of the area each) */
@@ -2053,7 +2098,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 
 				for( int y = 0; y < lh; y++, row += sw )
 					for( int x = 0; x < lw; x++ )
-						lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)vid.screen[row[x]];
+						lv[cx[x] + ry[y]] = (uint16_t)vid.screen[row[x]];
 			}
 			else
 			{
@@ -2072,15 +2117,15 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 				RP_TexAxis( lh, sh, ty0, ty1, tay );
 				for( int y = 0; y < lh; y++ )
 					for( int x = 0; x < lw; x++ )
-						lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexBlend( src[l], sw, tx0[x], tx1[x], tax[x], ty0[y], ty1[y], tay[y] );
-				/* -rptexcheck (the emulator's check of the above): every texel
+						lv[cx[x] + ry[y]] = (uint16_t)RP_TexBlend( src[l], sw, tx0[x], tx1[x], tax[x], ty0[y], ty1[y], tay[y] );
+				/* -rpplacecheck (the emulator's check of the above): every texel
 				   against RP_TexSample's own answer */
 				{
 					static int      check = -1;
 					static uint32_t texels, differ, levels_checked;
 
 					if( check < 0 )
-						check = gEngfuncs.Sys_CheckParm( "-rptexcheck" ) != 0;
+						check = gEngfuncs.Sys_CheckParm( "-rpplacecheck" ) != 0;
 					if( check )
 					{
 						for( int y = 0; y < lh; y++ )
@@ -2090,7 +2135,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 								differ += lv[RP_TexAt( x, y, lw, lh, sb )] != (uint16_t)RP_TexSample( src[l], sw, sh, x, y, lw, lh );
 							}
 						if(( ++levels_checked & 15 ) == 1 )
-							fprintf( stderr, "rp-emit: -rptexcheck: %u resampled levels, %u texels against RP_TexSample, %u differ\n", levels_checked, texels, differ );
+							fprintf( stderr, "rp-emit: -rpplacecheck: %u resampled levels, %u texels against RP_TexSample, %u differ\n", levels_checked, texels, differ );
 					}
 				}
 			}
@@ -2107,7 +2152,7 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 					int x0 = pw > lw ? 2 * x : x, y0 = ph > lh ? 2 * y : y;
 					int x1 = pw > lw ? x0 + 1 : x0, y1 = ph > lh ? y0 + 1 : y0;
 
-					lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_565Avg4(
+					lv[cx[x] + ry[y]] = (uint16_t)RP_565Avg4(
 						pv[RP_TexAt( x0, y0, pw, ph, psb )], pv[RP_TexAt( x1, y0, pw, ph, psb )],
 						pv[RP_TexAt( x0, y1, pw, ph, psb )], pv[RP_TexAt( x1, y1, pw, ph, psb )] );
 				}
@@ -6326,7 +6371,10 @@ lost) the picture is drawn the old way, in tiles.
 */
 static struct
 {
-	uint8_t *save;   /* the map's bytes while the picture has their place */
+	int      on;     /* the picture has the two pages */
+	int      pg0;    /* the first of them (the room's last two) */
+	uint8_t *save;   /* the map's bytes that lay there, if any did */
+	uint32_t saved;  /* how many */
 	uint32_t serial; /* the picture there */
 	int      gen;    /* the textures' room as it was borrowed (RP_TexReset moves it on) */
 	uint32_t borrows, returns, copied_us, refused;
@@ -6338,22 +6386,24 @@ static void RP_BorrowReturn( void )
 {
 	uint64_t t0;
 
-	if( !rp_borrow.save )
+	if( !rp_borrow.on )
 		return;
 	t0 = rp_time_us( );
 	/* no frame in flight still draws the picture; and a room emptied since
 	   (a new map, the chip rebuilt) wants nothing back */
 	rp_gfx_wait( );
-	if( rp_borrow.gen == rp_tex_gen && RP_ChipWrite( ))
-		memcpy((uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES, rp_borrow.save, 2 * RP_PAGE_BYTES );
+	if( rp_borrow.save && rp_borrow.gen == rp_tex_gen && RP_ChipWrite( ))
+		memcpy((uint8_t *)rp_g.tex + (size_t)rp_borrow.pg0 * RP_PAGE_BYTES, rp_borrow.save, rp_borrow.saved );
 	free( rp_borrow.save );
 	rp_borrow.save = NULL;
+	rp_borrow.on = 0;
 	rp_borrowed = 0;
 	rp_borrow.serial = 0;
 	rp_borrow.returns++;
 	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
-	fprintf( stderr, "rp-emit: the menu's picture: the map's textures back in their place (%u borrowed, %u returned, %u ms of copies so far; %u times no memory for it)\n",
-		rp_borrow.borrows, rp_borrow.returns, rp_borrow.copied_us / 1000u, rp_borrow.refused );
+	fprintf( stderr, "rp-emit: the menu's picture: its two pages given back, %u KiB of the map's textures copied back into them (%u borrowed, %u returned, %u ms of copies so far; %u times no memory for it)\n",
+		rp_borrow.saved >> 10, rp_borrow.borrows, rp_borrow.returns, rp_borrow.copied_us / 1000u, rp_borrow.refused );
+	rp_borrow.saved = 0;
 }
 
 /* The picture `pic` (`pw` x `ph`, no alpha) in the two borrowed pages: 1,
@@ -6368,7 +6418,7 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 
 	if( rp_tex_pages < 2 || pw > 2 * RP_PAGE_SIDE || ph > RP_PAGE_SIDE || gEngfuncs.Sys_CheckParm( "-rpnoborrow" ))
 		return 0;
-	if( rp_borrow.save && rp_borrow.serial == pic->rp_serial )
+	if( rp_borrow.on && rp_borrow.serial == pic->rp_serial )
 		return 1;
 	t0 = rp_time_us( );
 	/* the picture as it is kept (8 bits a texel and its colours), read a
@@ -6382,16 +6432,27 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 		if( !src )
 			return 0;
 	}
-	if( !rp_borrow.save )
+	if( !rp_borrow.on )
 	{
-		uint8_t *save = malloc( 2 * RP_PAGE_BYTES );
+		/* The room's LAST two pages (the owner, 2026-11-22: "close all opened
+		   things": the heap's thin margin with the menu up, 36 MiB of 37.6
+		   when the first two pages' megabyte was saved). The room is filled
+		   from its start and run 317's map used 2,157 of its 3,072 KiB: the
+		   end of it is empty, or nearly. Only the bytes the map has really
+		   put in the two pages are saved (none, or a few tens of KiB),
+		   so the picture costs the heap next to nothing. */
+		const int      pg0 = rp_pages + rp_tex_pages - 2;
+		const uint32_t off0 = (uint32_t)( rp_tex_pages - 2 ) * RP_PAGE_BYTES;
+		uint32_t       used = rp_tex_used > off0 ? rp_tex_used - off0 : 0;
+		uint8_t       *save = NULL;
 
-		/* no megabyte to be had (the emulator's runs: the heap at 36 MiB of
-		   its 37.6 with the menu up): no picture this frame, asked again at
-		   the next. Never the old tiles from here: they decode the picture
-		   whole, 0.9 MiB the heap would refuse too, and the engine stops at
-		   a refused block. */
-		if( !save )
+		if( used > 2 * RP_PAGE_BYTES )
+			used = 2 * RP_PAGE_BYTES;
+		/* nothing to be had for what must be saved: no picture this frame,
+		   asked again at the next. Never the old tiles from here: they decode
+		   the picture whole, 0.9 MiB the heap would refuse too, and the
+		   engine stops at a refused block. */
+		if( used && !( save = malloc( used )))
 		{
 			rp_borrow.refused++;
 			return -1;
@@ -6403,8 +6464,12 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 			free( save );
 			return 0;
 		}
-		memcpy( save, (uint8_t *)rp_g.tex + (size_t)rp_pages * RP_PAGE_BYTES, 2 * RP_PAGE_BYTES );
+		if( used )
+			memcpy( save, (uint8_t *)rp_g.tex + (size_t)pg0 * RP_PAGE_BYTES, used );
 		rp_borrow.save = save;
+		rp_borrow.saved = used;
+		rp_borrow.pg0 = pg0;
+		rp_borrow.on = 1;
 		rp_borrowed = 1;
 		rp_borrow.gen = rp_tex_gen;
 		rp_borrow.borrows++;
@@ -6420,16 +6485,16 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 			for( int r = 0; r < rows; r++ )
 				for( int x = 0; x < pw; x++ )
 					band[r * pw + x] = c16[idx[( y + r ) * pw + x]];
-			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_pages, 0, y >> 3, 0 );
+			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_borrow.pg0, 0, y >> 3, 0 );
 			if( pw > RP_PAGE_SIDE )
-				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_pages + 1, 0, y >> 3, 0 );
+				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_borrow.pg0 + 1, 0, y >> 3, 0 );
 		}
 	}
 	else
 	{
-		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_pages, 0, 0, 0 );
+		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_borrow.pg0, 0, 0, 0 );
 		if( pw > RP_PAGE_SIDE )
-			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_pages + 1, 0, 0, 0 );
+			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_borrow.pg0 + 1, 0, 0, 0 );
 	}
 	rp_borrow.serial = pic->rp_serial;
 	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
@@ -6469,7 +6534,7 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 
 			if( a0 >= a1 )
 				continue;
-			RP_2DState( rp_pages + k, 0 );
+			RP_2DState( rp_borrow.pg0 + k, 0 );
 			/* (the half texels as below: R327, kit 98) */
 			RP_2DQuad( x + ( a0 - S1 ) / ( S2 - S1 ) * w, y, x + ( a1 - S1 ) / ( S2 - S1 ) * w, y + h,
 				a0 - c0 - 0.5f, T1 + 0.5f, a1 - c0 - 0.5f, T2 + 0.5f );
