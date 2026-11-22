@@ -147,6 +147,79 @@ pub const QUEUE: usize = 32;
 /// a millisecond of the CPU while it touches).
 pub const READ_EVERY_US: u64 = 4_000;
 
+/// R355's measure (the owner, run 312: "the mouse look with the stylus is
+/// not smooth at all and very jerky"): one touch of the stylus as the pad
+/// read it, said in one log line when it lifts. How often it was read
+/// (the pad is read at the game's clock reads, so the readings follow the
+/// game's frames, not a clock of their own), what the OS's filter made of
+/// each reading, and how far the raw position moved between readings (a
+/// stylus held still shows the panel's noise).
+#[derive(Clone, Copy)]
+struct Stroke {
+    from_us: u64,
+    last_us: u64,
+    reads: u32,
+    /// Between readings: under 6, 10, 16, 25, 50 ms, longer.
+    gaps: [u32; 6],
+    /// The raw step between readings (the larger axis): up to 2, 5, 10,
+    /// 20, 50 units, more.
+    steps: [u32; 6],
+    /// The filter's answers: moves, holds, not counted.
+    moves: u32,
+    holds: u32,
+    nothing: u32,
+    last: (u16, u16),
+    min: (u16, u16),
+    max: (u16, u16),
+}
+
+impl Stroke {
+    const NONE: Self = Self {
+        from_us: 0,
+        last_us: 0,
+        reads: 0,
+        gaps: [0; 6],
+        steps: [0; 6],
+        moves: 0,
+        holds: 0,
+        nothing: 0,
+        last: (0, 0),
+        min: (u16::MAX, u16::MAX),
+        max: (0, 0),
+    };
+
+    fn bucket(v: u64, edges: [u64; 5]) -> usize {
+        edges.iter().position(|&e| v < e).unwrap_or(5)
+    }
+
+    fn reading(&mut self, s: Sample, pen: Pen, now_us: u64) {
+        if self.reads == 0 {
+            self.from_us = now_us;
+        } else {
+            let gap = now_us.saturating_sub(self.last_us) / 1_000;
+            self.gaps[Self::bucket(gap, [6, 10, 16, 25, 50])] += 1;
+            let step = self.last.0.abs_diff(s.x).max(self.last.1.abs_diff(s.y));
+            self.steps[Self::bucket(u64::from(step), [3, 6, 11, 21, 51])] += 1;
+        }
+        self.reads += 1;
+        self.last_us = now_us;
+        self.last = (s.x, s.y);
+        self.min = (self.min.0.min(s.x), self.min.1.min(s.y));
+        self.max = (self.max.0.max(s.x), self.max.1.max(s.y));
+        match pen {
+            Pen::Move(..) => self.moves += 1,
+            Pen::Hold(..) => self.holds += 1,
+            Pen::Nothing => self.nothing += 1,
+            Pen::Down(..) | Pen::Up(..) => {}
+        }
+    }
+}
+
+/// Strokes said one by one ([`Input::with_pen_log`]); after them only the
+/// ones longer than a second, up to [`STROKES_MOST`] lines in all.
+const STROKES_SAID: u32 = 40;
+const STROKES_MOST: u32 = 160;
+
 /// The pad's readings as events, in a queue.
 pub struct Input<P: Pad> {
     pad: P,
@@ -160,6 +233,11 @@ pub struct Input<P: Pad> {
     len: usize,
     dropped: u32,
     read_at: u64,
+    /// R355's measure: where each stroke's line goes (`None`: not kept).
+    pen_log: Option<fn(core::fmt::Arguments<'_>)>,
+    stroke: Stroke,
+    strokes: u32,
+    said: u32,
 }
 
 impl<P: Pad> Input<P> {
@@ -176,7 +254,56 @@ impl<P: Pad> Input<P> {
             len: 0,
             dropped: 0,
             read_at: 0,
+            pen_log: None,
+            stroke: Stroke::NONE,
+            strokes: 0,
+            said: 0,
         }
+    }
+
+    /// R355's measure: each touch of the stylus said in one line of `log`
+    /// when it lifts (the first 40, then the ones longer than a second).
+    #[must_use]
+    pub fn with_pen_log(mut self, log: fn(core::fmt::Arguments<'_>)) -> Self {
+        self.pen_log = Some(log);
+        self
+    }
+
+    /// The stroke that just ended, said.
+    fn stroke_end(&mut self) {
+        let k = core::mem::replace(&mut self.stroke, Stroke::NONE);
+        let Some(log) = self.pen_log.filter(|_| k.reads > 0) else {
+            return;
+        };
+        self.strokes += 1;
+        let ms = k.last_us.saturating_sub(k.from_us) / 1_000;
+        if self.said >= STROKES_MOST || (self.strokes > STROKES_SAID && ms < 1_000) {
+            return;
+        }
+        self.said += 1;
+        log(format_args!(
+            "input: R355 stroke {}: {ms} ms, {} readings ({} a second); between readings under 6 ms {}, under 10 {}, under 16 {}, under 25 {}, under 50 {}, longer {}; the filter: {} moves, {} holds, {} not counted; the raw step between readings up to 2 units {}, 5 {}, 10 {}, 20 {}, 50 {}, more {}; the raw range {} x {} units (a screen pixel is about 7.5 x 5.6)",
+            self.strokes,
+            k.reads,
+            u64::from(k.reads.saturating_sub(1)) * 1_000 / ms.max(1),
+            k.gaps[0],
+            k.gaps[1],
+            k.gaps[2],
+            k.gaps[3],
+            k.gaps[4],
+            k.gaps[5],
+            k.moves,
+            k.holds,
+            k.nothing,
+            k.steps[0],
+            k.steps[1],
+            k.steps[2],
+            k.steps[3],
+            k.steps[4],
+            k.steps[5],
+            k.max.0.saturating_sub(k.min.0),
+            k.max.1.saturating_sub(k.min.1),
+        ));
     }
 
     /// Events dropped because the game did not poll (the queue was full).
@@ -210,6 +337,13 @@ impl<P: Pad> Input<P> {
         self.held = now;
         let raw = self.pad.pen();
         let pen = self.filter.sample(raw, (now_us / 1_000) as u32);
+        if self.pen_log.is_some() {
+            match raw.filter(|s| s.z1 >= rp_touch_cal::Z_MIN) {
+                Some(s) => self.stroke.reading(s, pen, now_us),
+                None if !self.filter.down() => self.stroke_end(),
+                None => {}
+            }
+        }
         let (kind, rx, ry) = match pen {
             Pen::Down(x, y) => (event::PEN_DOWN, x, y),
             Pen::Move(x, y) => (event::PEN_MOVE, x, y),

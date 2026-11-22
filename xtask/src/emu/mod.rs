@@ -1697,6 +1697,7 @@ pub fn boot_xash_kit(
         extra.extend(["-drive", &cf_drive]);
     }
     let shots = kit_shots(root)?;
+    let taps = kit_taps();
     let output = boot(
         root,
         &Boot {
@@ -1712,9 +1713,13 @@ pub fn boot_xash_kit(
             timeout: Duration::from_secs(u64::from(crate::xashkit::LIMIT_SECS) + 300),
         },
     )?;
-    let shots = shots
+    let mut shots = shots
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
+    shots.extend(
+        taps.map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default(),
+    );
     let (_, log) = output
         .rsplit_once("RPL LOG")
         .ok_or("emu-xash-kit: the loader sent no run log")?;
@@ -3552,6 +3557,106 @@ impl Serial {
 /// end shot is the software renderer's picture, not the chip's). A thread
 /// waits beside the boot; a shot the emulator could not give is said, not
 /// a failure.
+/// `RETROPANE_EMU_TAPS` (R351: the game's menu worked by the stylus with no
+/// device run): stylus taps and drags while the kit runs, by semicolons,
+/// each `S:x,y` (a tap at guest second S, held six seconds of the PC's) or
+/// `S:x,y>x2,y2` (a drag, eight moves on the way), in the game's own
+/// landscape pixels (640 x 480, the device's top edge at the player's
+/// right, as `in_rp.c` opens the pad). Timed in the guest's seconds, as
+/// the shots are; a thread beside the boot.
+fn kit_taps() -> Option<std::thread::JoinHandle<Vec<String>>> {
+    let list = std::env::var("RETROPANE_EMU_TAPS").ok()?;
+    let point = |v: &str| -> Option<(u32, u32)> {
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    };
+    let mut at: Vec<(u64, (u32, u32), Option<(u32, u32)>)> = list
+        .split(';')
+        .filter_map(|item| {
+            let (s, rest) = item.trim().split_once(':')?;
+            let (from, to) = match rest.split_once('>') {
+                Some((a, b)) => (point(a)?, Some(point(b)?)),
+                None => (point(rest)?, None),
+            };
+            Some((s.trim().parse().ok()?, from, to))
+        })
+        .collect();
+    at.sort_by_key(|t| t.0);
+    let port = monitor_port();
+    Some(std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let mut last: Option<u32> = None;
+        let mut ticks: u64 = 0;
+        let mut misses = 0u32;
+        let mut guest_ms = || -> Option<u64> {
+            let mut m = crate::screen::Monitor::connect(port).ok()?;
+            let now = audio::GuestClock::start(&mut m, "kit taps").ok()?.last;
+            if let Some(l) = last {
+                ticks += u64::from(now.wrapping_sub(l));
+            }
+            last = Some(now);
+            Some(ticks / 3_250)
+        };
+        // the game's landscape pixel as the panel's absolute pointer units
+        // (portrait 480 x 640, the game's turn `RP_TURN_RIGHT`: x = game
+        // y, y = 639 - game x; measured 2026-11-21 against `in_rp.c`'s own
+        // log of where each tap arrived)
+        let abs = |(gx, gy): (u32, u32)| {
+            (
+                gy.min(479) * 0x7FFF / (SCREEN.0 - 1),
+                (639 - gx.min(639)) * 0x7FFF / (SCREEN.1 - 1),
+            )
+        };
+        for (s, from, to) in at {
+            let mut ok = true;
+            loop {
+                match guest_ms() {
+                    Some(ms) if ms >= s * 1000 => break,
+                    Some(_) => misses = 0,
+                    None if misses >= 240 => {
+                        ok = false;
+                        break;
+                    }
+                    None => misses += 1,
+                }
+                audio::poll_pause(Duration::from_millis(250));
+            }
+            if !ok {
+                said.push(format!("no tap at {s} s: the monitor did not answer"));
+                continue;
+            }
+            let r = crate::screen::Qmp::connect(port + 1).and_then(|mut q| {
+                q.touch(Some(abs(from)))?;
+                if let Some(to) = to {
+                    for k in 1..=8u32 {
+                        audio::poll_pause(Duration::from_millis(1500));
+                        let mid = (
+                            (from.0 * (8 - k) + to.0 * k) / 8,
+                            (from.1 * (8 - k) + to.1 * k) / 8,
+                        );
+                        q.touch(Some(abs(mid)))?;
+                    }
+                }
+                // (held long: the pad is read at the game's clock reads, and
+                // an emulated frame can take half a second)
+                audio::poll_pause(Duration::from_millis(6000));
+                q.touch(None)
+            });
+            said.push(match (r, to) {
+                (Ok(()), None) => format!("a tap at {s} s at {},{}", from.0, from.1),
+                (Ok(()), Some(t)) => {
+                    format!(
+                        "a drag at {s} s from {},{} to {},{}",
+                        from.0, from.1, t.0, t.1
+                    )
+                }
+                (Err(e), _) => format!("no tap at {s} s: {e}"),
+            });
+        }
+        said
+    }))
+}
+
 fn kit_shots(root: &Path) -> Result<Option<std::thread::JoinHandle<Vec<String>>>, String> {
     let Ok(list) = std::env::var("RETROPANE_EMU_SHOTS") else {
         return Ok(None);

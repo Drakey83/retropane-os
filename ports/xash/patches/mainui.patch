@@ -1,3 +1,103 @@
+diff --git a/BaseMenu.cpp b/BaseMenu.cpp
+index 7b727eb..6744424 100755
+--- a/BaseMenu.cpp
++++ b/BaseMenu.cpp
+@@ -634,6 +634,31 @@ void UI_UpdateMenu( float flTime )
+ 	if( !uiStatic.initialized )
+ 		return;
+ 
++	// RetroPane R351's measure (rp_taplog 1): each window's controls said
++	// once when it comes up: where the menu itself puts them, and how big
++	// (a control under UI_STYLUS_MIN either way is marked: the stylus's
++	// rectangle is larger than the drawn one)
++	{
++		static CMenuBaseWindow *listed;
++		CMenuBaseWindow        *w = uiStatic.menu.Current();
++
++		if( w && w != listed && EngFuncs::GetCvarFloat( "rp_taplog" ) != 0.0f )
++		{
++			listed = w;
++			Con_Printf( "rp-tap: window %s: %d controls\n", w->szName ? w->szName : "(unnamed)", w->ItemCount());
++			for( int i = 0; i < w->ItemCount(); i++ )
++			{
++				CMenuBaseItem *c = w->GetItemByIndex( i );
++
++				if( c )
++					Con_Printf( "rp-tap: control %d %s at %d,%d size %d x %d%s%s\n", i, c->szName ? c->szName : "(unnamed)",
++						c->GetRenderPosition().x, c->GetRenderPosition().y, c->GetRenderSize().w, c->GetRenderSize().h,
++						c->IsVisible() ? "" : " (hidden)",
++						c->GetRenderSize().w < UI_STYLUS_MIN || c->GetRenderSize().h < UI_STYLUS_MIN ? " SMALL" : "" );
++			}
++		}
++	}
++
+ 	if( UI_UpdateWindowInsets() )
+ 		UI_VidInit();
+ 
+@@ -732,6 +757,20 @@ void UI_KeyEvent( int key, int down )
+ 	clientActive = uiStatic.client.IsActive();
+ 	menuActive = uiStatic.menu.IsActive();
+ 
++	// RetroPane R351's measure (rp_taplog 1): what the menu knows at a press
++	if( key == K_MOUSE1 && EngFuncs::GetCvarFloat( "rp_taplog" ) != 0.0f )
++	{
++		CMenuBaseWindow *w = uiStatic.menu.Current();
++		CMenuBaseItem   *it = w ? w->ItemAtCursor() : NULL;
++
++		Con_Printf( "rp-tap: menu %s: cursor %d,%d of %d x %d (scale %.3f x %.3f); window %s; item at cursor %s at %d,%d size %d x %d (%s)\n",
++			down ? "DOWN" : "UP", uiStatic.cursorX, uiStatic.cursorY, (int)ScreenWidth, (int)ScreenHeight,
++			uiStatic.scaleX, uiStatic.scaleY, w && w->szName ? w->szName : "none",
++			it && it->szName ? it->szName : it ? "(unnamed)" : "none",
++			it ? it->GetRenderPosition().x : 0, it ? it->GetRenderPosition().y : 0, it ? it->GetRenderSize().w : 0, it ? it->GetRenderSize().h : 0,
++			it && UI_CursorInRect( it->GetRenderPosition(), it->GetRenderSize() ) ? "the cursor inside" : "the cursor OUTSIDE" );
++	}
++
+ 	if( clientActive && !menuActive )
+ 		down ? uiStatic.client.KeyDownEvent( key ) :
+ 			uiStatic.client.KeyUpEvent( key );
+diff --git a/BaseMenu.h b/BaseMenu.h
+index ae05457..3a959c7 100755
+--- a/BaseMenu.h
++++ b/BaseMenu.h
+@@ -161,6 +161,38 @@ inline bool UI_CursorInRect( Point pos, Size size )
+ 	return UI_CursorInRect( pos.x, pos.y, size.w, size.h );
+ }
+ 
++/*
++RetroPane R351 (the owner, 2026-11-21: "the options and menu option sliders
++arent adjustable by the stylus"). Measured in the emulator with scripted
++taps: on the X51v's 640 x 480 the menu's 1024 x 768 layout is scaled by
++0.625, so a slider's bar is 187 x 8 pixels (under 1 mm high on the 3.7 inch
++panel) and a check box 20 x 20; a tap on the bar moved the slider, a tap 7
++pixels under it did nothing. Rule 0: the menu's hit test is the drawn
++rectangle, sized for a mouse pointer (one pixel wide, seen before the
++click); a stylus has no pointer to aim with and lands within a couple of
++millimetres. So a control's rectangle as the stylus may hit it is never
++smaller than UI_STYLUS_MIN pixels either way (3.3 mm on this panel),
++grown about its centre; the drawn control is not changed, and the items
++holder tries the drawn rectangles first, so a grown one never takes a
++press that lies on a neighbour.
++*/
++#define UI_STYLUS_MIN 28
++
++inline bool UI_CursorInStylusRect( Point pos, Size size )
++{
++	if( size.w < UI_STYLUS_MIN )
++	{
++		pos.x -= ( UI_STYLUS_MIN - size.w ) / 2;
++		size.w = UI_STYLUS_MIN;
++	}
++	if( size.h < UI_STYLUS_MIN )
++	{
++		pos.y -= ( UI_STYLUS_MIN - size.h ) / 2;
++		size.h = UI_STYLUS_MIN;
++	}
++	return UI_CursorInRect( pos.x, pos.y, size.w, size.h );
++}
++
+ // temporarily override alpha by multiplying given alpha and factor
+ void UI_EnableAlphaFactor( float a );
+ void UI_DisableAlphaFactor();
 diff --git a/controls/BackgroundBitmap.cpp b/controls/BackgroundBitmap.cpp
 index 0b087a4..d50f111 100644
 --- a/controls/BackgroundBitmap.cpp
@@ -29,6 +129,86 @@ index 0b087a4..d50f111 100644
  	// try 25'th anniversary update background first
  	if( FBitSet( gMenu.m_gameinfo.flags, GFL_HD_BACKGROUND ))
  		afile = (char *)EngFuncs::COM_LoadFile( "resource/HD_BackgroundLayout.txt" );
+diff --git a/controls/ItemsHolder.cpp b/controls/ItemsHolder.cpp
+index 7be4928..ab66de4 100644
+--- a/controls/ItemsHolder.cpp
++++ b/controls/ItemsHolder.cpp
+@@ -48,7 +48,7 @@ bool CMenuItemsHolder::Key( const int key, const bool down )
+ 			if( !item->IsVisible() )
+ 				continue;
+ 
+-			if( !UI_CursorInRect( item->m_scPos, item->m_scSize ) )
++			if( !UI_CursorInStylusRect( item->m_scPos, item->m_scSize ) )
+ 				continue;
+ 
+ 			if( down ? item->KeyDown( key ) : item->KeyUp( key ) )
+@@ -78,7 +78,7 @@ bool CMenuItemsHolder::Key( const int key, const bool down )
+ 	{
+ 		// mouse keys must be checked for item bounds on press
+ 		if( !UI::Key::IsMouse( key ) ||
+-			 (UI::Key::IsMouse( key ) && ( !down || UI_CursorInRect( item->m_scPos, item->m_scSize ))))
++			 (UI::Key::IsMouse( key ) && ( !down || UI_CursorInStylusRect( item->m_scPos, item->m_scSize ))))
+ 		{
+ 			handled = down ? item->KeyDown( key ) : item->KeyUp( key );
+ 			if( handled )
+@@ -224,6 +224,10 @@ bool CMenuItemsHolder::MouseMove( int x, int y )
+ 	int i = 0;
+ 	// region test the active menu items
+ 	// go in reverse direction, so last items will be first
++	// RetroPane R351: the drawn rectangles first, then the stylus's
++	// (UI_CursorInStylusRect), so a small control's grown rectangle
++	// never takes the cursor from a neighbour it lies on
++	for( int stylus = 0; stylus < 2; stylus++ )
+ 	FOR_EACH_VEC_BACK( m_pItems, i )
+ 	{
+ 		CMenuBaseItem *item = m_pItems[i];
+@@ -245,7 +249,8 @@ bool CMenuItemsHolder::MouseMove( int x, int y )
+ 		}
+ 
+ 		// simple region test
+-		if( !UI_CursorInRect( item->m_scPos, item->m_scSize ) || !item->MouseMove( x, y ))
++		if( !( stylus ? UI_CursorInStylusRect( item->m_scPos, item->m_scSize ) : UI_CursorInRect( item->m_scPos, item->m_scSize ))
++			|| !item->MouseMove( x, y ))
+ 		{
+ 			ClearBits( item->iFlags, QMF_HASMOUSEFOCUS );
+ 			continue;
+diff --git a/controls/Slider.cpp b/controls/Slider.cpp
+index 1159ec9..712d6f7 100644
+--- a/controls/Slider.cpp
++++ b/controls/Slider.cpp
+@@ -83,7 +83,8 @@ bool CMenuSlider::KeyDown( int key )
+ {
+ 	if( UI::Key::IsLeftMouse( key ))
+ 	{
+-		if( !UI_CursorInRect( m_scPos, m_scSize ) )
++		// RetroPane R351: the stylus's rectangle (the bar is 8 pixels high)
++		if( !UI_CursorInStylusRect( m_scPos, m_scSize ) )
+ 		{
+ 			m_iKeepSlider = false;
+ 			return true;
+@@ -94,7 +95,10 @@ bool CMenuSlider::KeyDown( int key )
+ 		// immediately move slider into specified place
+ 		int	dist, numSteps;
+ 
+-		dist = uiStatic.cursorX - (m_scPos.x + m_iSliderOutlineWidth + m_scCenterBox.w);
++		// (the knob's centre under the stylus, as the drag below puts it:
++		// upstream's press put it half a knob to the left, so every drag
++		// began with a jump)
++		dist = uiStatic.cursorX - m_scPos.x - m_iSliderOutlineWidth - (m_scCenterBox.w/2);
+ 		numSteps = floor(dist / m_flDrawStep);
+ 		m_flCurValue = bound( m_flMinValue, numSteps * m_flRange + m_flMinValue, m_flMaxValue );
+ 
+@@ -169,7 +173,9 @@ void CMenuSlider::Draw( void )
+ 
+ 	if( m_iKeepSlider )
+ 	{
+-		if( !UI_CursorInRect( m_scPos.x, m_scPos.y - 40, m_scSize.w, m_scSize.h + 80 ) )
++		// RetroPane R351: followed 40 pixels past either end too (the value
++		// is clamped), so the stylus reaches the slider's ends
++		if( !UI_CursorInRect( m_scPos.x - 40, m_scPos.y - 40, m_scSize.w + 80, m_scSize.h + 80 ) )
+ 			m_iKeepSlider = false;
+ 		else
+ 		{
 diff --git a/sdk_includes/public/build.h b/sdk_includes/public/build.h
 index b92c51e..8142856 100644
 --- a/sdk_includes/public/build.h

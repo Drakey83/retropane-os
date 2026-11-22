@@ -91,6 +91,9 @@ static struct
 	int dx, dy;     // how far it was dragged since the engine last asked
 	int touch_key;  // the engine key a touch key holds down, or 0
 	int keys_on;    // the touch keys shown (in a game, not a menu or the console)
+	// R355's measure, for the stroke under way: move events, the engine's
+	// frames, the frames with no move, the largest move in a frame, the path
+	int moves, frames, still, most, path;
 } in_rp;
 
 /*
@@ -129,6 +132,9 @@ void RP_InputInit( void )
 	Cvar_RegisterVariable( &rp_layout );
 	Cvar_RegisterVariable( &rp_tk_alpha );
 	Cvar_Get( "rp_touchkeys", "0", 0, "RetroPane: 1 while the touch keys are shown (in_rp.c sets it)" );
+	/* R351's measure (-rptaplog): the stylus's place and the menu's own
+	   view of each press, in the run's log (BaseMenu.cpp reads the cvar) */
+	Cvar_Get( "rp_taplog", RP_Parm( "-rptaplog" ) ? "1" : "0", 0, "RetroPane: 1 logs each stylus press and what the menu makes of it" );
 	Cmd_AddCommand( "rp_defaults", RP_Defaults_f, "RetroPane: rp_binds.cfg when the saved layout is older than the argument" );
 }
 
@@ -673,6 +679,27 @@ static void RP_End( void )
 		   over it, 876 strips a frame, gave 70 a second): the console
 		   opened over the menu 2 s later, its text the many small
 		   see-through quads */
+		/* -rptaplog (R351's measure): the Audio menu opened 2 s later, its
+		   sliders there for the emulator's taps */
+		if( left >= 1 && RP_Parm( "-rptaplog" ))
+		{
+			/* each options menu in turn, 2 s apart (the menu lists its
+			   controls and their sizes as it comes up), the Audio menu
+			   last and kept: its sliders there for the emulator's taps */
+			static const char *menus[] = { "menu_options", "menu_controls", "menu_advcontrols", "menu_gameoptions", "menu_video",
+				"menu_vidoptions", "menu_vidmodes", "menu_newgame", "menu_saveload", "menu_loadgame", "menu_audio" };
+			static uint64_t next;
+
+			if( !next )
+				next = played_from + 5000000u;
+			if( left - 1 < (int)ARRAYSIZE( menus ) && now >= next )
+			{
+				next = now + 2000000u;
+				fprintf( stderr, "rp-menu: %s opened (-rptaplog)\n", menus[left - 1] );
+				Cbuf_AddText( va( "%s\n", menus[left - 1] ));
+				left++;
+			}
+		}
 		if( left == 1 && now - played_from > 5000000u && RP_Parm( "-rpmenutext" ))
 		{
 			left = 2;
@@ -1035,16 +1062,33 @@ void Platform_RunEvents( void )
 			   a drag moves it too (the sliders). */
 			if( cls.key_dest == key_menu )
 				UI_MouseMove( ev.x, ev.y );
+			if( ev.code != RP_PEN_MOVE && RP_Parm( "-rptaplog" ))
+				fprintf( stderr, "rp-tap: pen %s at %d,%d; the keys go to %s; volume %.2f\n", ev.code == RP_PEN_DOWN ? "DOWN" : "UP",
+					ev.x, ev.y, cls.key_dest == key_menu ? "the menu" : cls.key_dest == key_game ? "the game" : "the console or a message",
+					Cvar_VariableValue( "volume" ));
 
+			if( ev.code == RP_PEN_MOVE )
+				in_rp.moves++;
 			if( ev.code == RP_PEN_DOWN )
 			{
 				in_rp.pen_down = true;
+				in_rp.moves = in_rp.frames = in_rp.still = in_rp.most = in_rp.path = 0;
 				Key_Event( K_MOUSE1, true );
 			}
 			else if( ev.code == RP_PEN_UP )
 			{
+				static int said;
+
 				in_rp.pen_down = false;
 				Key_Event( K_MOUSE1, false );
+				/* R355's measure (-rppenlog): the stroke as the game got it
+				   (the runner's own line says how the pad was read) */
+				if( said < 160 && RP_Parm( "-rppenlog" ) && ( said < 40 || in_rp.frames > 40 ))
+				{
+					said++;
+					fprintf( stderr, "rp-pen: a stroke as the game got it: %d frames, %d of them with no move, %d moves, %d pixels of path, the largest move in one frame %d pixels\n",
+						in_rp.frames, in_rp.still, in_rp.moves, in_rp.path, in_rp.most );
+				}
 			}
 		}
 	}
@@ -1057,6 +1101,17 @@ void Platform_MouseMove( float *x, float *y )
 {
 	if( x ) *x = (float)in_rp.dx;
 	if( y ) *y = (float)in_rp.dy;
+
+	if( in_rp.pen_down )
+	{
+		int step = abs( in_rp.dx ) > abs( in_rp.dy ) ? abs( in_rp.dx ) : abs( in_rp.dy );
+
+		in_rp.frames++;
+		in_rp.still += step == 0;
+		in_rp.path += step;
+		if( step > in_rp.most )
+			in_rp.most = step;
+	}
 
 	in_rp.dx = in_rp.dy = 0;
 }

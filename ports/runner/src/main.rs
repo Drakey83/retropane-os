@@ -1918,7 +1918,17 @@ mod image {
         if let Some(v) = voice {
             s.set_sound(v);
         }
-        match pad(gpio).and_then(|p| INPUT.put_with(|| Input::new(p, Calibration::X51V_DEFAULT))) {
+        // `-rppenlog` (R355's measure): each touch of the stylus said in
+        // one line when it lifts
+        let pen_log = args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rppenlog");
+        match pad(gpio).and_then(|p| {
+            INPUT.put_with(|| {
+                let i = Input::new(p, Calibration::X51V_DEFAULT);
+                if pen_log { i.with_pen_log(gfx_log) } else { i }
+            })
+        }) {
             Some(i) => s.set_input(i),
             None => {
                 let _ = writeln!(uart, "input: none (no keypad or SSP1)");
@@ -2035,6 +2045,16 @@ mod image {
             let _ = writeln!(
                 uart,
                 "runner: R340 -rpnoholdend: a TA armed beside any render (kit 113 as it was)"
+            );
+        }
+        if args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpnodefer")
+        {
+            super::gfx::HOLD_END.with(|h| h.defer = false);
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpnodefer: the TA's wait for the render in flight inside the frame call (run 312's way)"
             );
         }
         if args[..arg_count]
