@@ -1114,6 +1114,18 @@ pub struct HoldEnd {
     pub on: bool,
     /// The arm put off to the pump (`-rpnodefer`: waited for in the call).
     pub defer: bool,
+    /// A TA armed beside a render the estimate says will outlast it
+    /// (`-rpbeside`; runs 312 and 314's way). Off: no TA ever starts while
+    /// a render runs, so none can end under one. Run 314 (the owner's
+    /// play, the wait put off): the estimate is the last frame's render
+    /// and TA times, and 18,387 frames armed on it gave 871 bit 9 events
+    /// and 2 stalls (run 312: 2,718 and 49): a guess at how long the chip
+    /// will take, wrong for a few frames in a hundred when the view turns.
+    /// Rule 0: the vendor's queue and this rule's first builds order the
+    /// two stages by a prediction or by blocking the caller; with the arm
+    /// put off, strict order costs the CPU nothing (it builds the next
+    /// frame meanwhile), so ours takes the order that is certain.
+    pub beside_ok: bool,
     /// Frames whose TA waited for the render to end, and the time waited
     /// (from the frame call to the arm).
     held: u32,
@@ -1138,6 +1150,7 @@ pub struct HoldEnd {
 pub static HOLD_END: rt::Global<HoldEnd> = rt::Global::new(HoldEnd {
     on: true,
     defer: true,
+    beside_ok: false,
     held: 0,
     held_us: 0,
     in_call: 0,
@@ -3563,7 +3576,7 @@ impl Screen for Chip {
                 && !o.render_done_now(regs)
             {
                 let left = o.render_us.saturating_sub(us_since(t0));
-                if left < o.ta_us + END_MARGIN_US {
+                if !HOLD_END.with(|h| h.beside_ok) || left < o.ta_us + END_MARGIN_US {
                     if HOLD_END.with(|h| h.defer) && o.pending.is_none() {
                         // the arm put off to the pump, the program let go
                         defer = true;

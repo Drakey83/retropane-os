@@ -2059,6 +2059,16 @@ mod image {
         }
         if args[..arg_count]
             .iter()
+            .any(|a| a.to_bytes() == b"-rpbeside")
+        {
+            super::gfx::HOLD_END.with(|h| h.beside_ok = true);
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpbeside: a TA armed beside a render the estimate says will outlast it (run 314's way)"
+            );
+        }
+        if args[..arg_count]
+            .iter()
             .any(|a| a.to_bytes() == b"-rpbisect")
         {
             super::gfx::BISECT.with(|b| b.on = true);
