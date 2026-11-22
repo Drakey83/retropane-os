@@ -674,10 +674,10 @@ index d5323aa..a66849e 100644
  
  #include "entity_state.h"
 diff --git a/dlls/basemonster.h b/dlls/basemonster.h
-index 6d59164..fb25e1c 100644
+index 6d59164..143c5be 100644
 --- a/dlls/basemonster.h
 +++ b/dlls/basemonster.h
-@@ -43,6 +43,11 @@ public:
+@@ -43,6 +43,13 @@ public:
  	float m_flFieldOfView;// width of monster's field of view ( dot product )
  	float m_flWaitFinished;// if we're told to wait, this is the time that the wait will be over.
  	float m_flMoveWaitFinished;
@@ -685,6 +685,8 @@ index 6d59164..fb25e1c 100644
 +	int m_rpCoverDone; // RetroPane: FindCover's place in its search, kept between thinks (monsters.cpp)
 +	int m_rpTriAt; // FTriangulate's next attempt for the goal below, when it stopped for the think's budget
 +	Vector m_rpTriGoal;
++	int m_rpTriPauses; // how often that search has stopped for the budget (three at most, then it runs out)
++	int m_rpSimplifyOwed; // RouteSimplify put off to the next think
 +#endif
  
  	Activity m_Activity;// what the monster is doing (animation)
@@ -743,10 +745,10 @@ index d9d709d..2276fcf 100644
  #define EMIT_SOUND_DYN2 (*g_engfuncs.pfnEmitSound)
  #define BUILD_SOUND_MSG (*g_engfuncs.pfnBuildSoundMsg)
 diff --git a/dlls/monsters.cpp b/dlls/monsters.cpp
-index dbd0ba1..e1dd61c 100644
+index dbd0ba1..fde9914 100644
 --- a/dlls/monsters.cpp
 +++ b/dlls/monsters.cpp
-@@ -814,8 +814,23 @@ int ShouldSimplify( int routeType )
+@@ -814,8 +814,31 @@ int ShouldSimplify( int routeType )
  // unnecessary nodes & cutting corners.
  //
  //=========================================================
@@ -765,12 +767,20 @@ index dbd0ba1..e1dd61c 100644
  void CBaseMonster::RouteSimplify( CBaseEntity *pTargetEnt )
  {
 +#if XASH_RETROPANE
++	// the route is good as it is; making it shorter costs trial walks (run
++	// 318w: 174 of a chase's 636) and can wait for the next think when this
++	// one has spent its own (schedule.cpp's MaintainSchedule asks again)
++	if( rp_cover_budget > 0 && rp_walks - rp_cover_w0 > (unsigned)rp_cover_budget )
++	{
++		m_rpSimplifyOwed = 1;
++		return;
++	}
 +	rp_walk_count rp_count( rp_w_simp );
 +#endif
  	// BUGBUG: this doesn't work 100% yet
  	int		i, count, outCount;
  	Vector		vecStart;
-@@ -1563,6 +1578,10 @@ BOOL CBaseMonster::BuildRoute( const Vector &vecGoal, int iMoveFlag, CBaseEntity
+@@ -1563,6 +1586,10 @@ BOOL CBaseMonster::BuildRoute( const Vector &vecGoal, int iMoveFlag, CBaseEntity
  		return TRUE;
  	}
  
@@ -781,7 +791,7 @@ index dbd0ba1..e1dd61c 100644
  	// last ditch, try nodes
  	if( FGetNodeRoute( vecGoal ) )
  	{
-@@ -1608,6 +1627,9 @@ void CBaseMonster::InsertWaypoint( Vector vecLocation, int afMoveFlags )
+@@ -1608,6 +1635,9 @@ void CBaseMonster::InsertWaypoint( Vector vecLocation, int afMoveFlags )
  //=========================================================
  BOOL CBaseMonster::FTriangulate( const Vector &vecStart, const Vector &vecEnd, float flDist, CBaseEntity *pTargetEnt, Vector *pApex )
  {
@@ -791,7 +801,7 @@ index dbd0ba1..e1dd61c 100644
  	Vector		vecDir;
  	Vector		vecForward;
  	Vector		vecLeft;// the spot we'll try to triangulate to on the left
-@@ -1654,8 +1676,39 @@ BOOL CBaseMonster::FTriangulate( const Vector &vecStart, const Vector &vecEnd, f
+@@ -1654,8 +1684,48 @@ BOOL CBaseMonster::FTriangulate( const Vector &vecStart, const Vector &vecEnd, f
  	if( pev->movetype == MOVETYPE_FLY )
  		vecDirUp = vecDirUp * sizeZ * 2;
  
@@ -799,11 +809,19 @@ index dbd0ba1..e1dd61c 100644
 +	// go on from the attempt kept for this goal; a goal that is not the kept
 +	// one starts at the first and is not stopped (so a node is never left
 +	// half searched twice)
++	// (run 318w on the X51v: an alien slave's Chase Enemy, task 8, 636 trial
++	// walks as it started, 455 of them here: every route's detours, not only
++	// a cover search's. The goal of a chase moves, so the kept attempt goes
++	// on for a goal near the kept one; and a search stops three times at
++	// most, then runs out, so a monster whose goal keeps moving still gets
++	// its route.)
 +	const int rp_kept = rp_cover_budget > 0 && m_rpTriAt > 0 && m_rpTriAt < 8;
-+	const int rp_same = rp_kept && ( m_rpTriGoal - vecEnd ).Length() < 1.0f;
++	const int rp_same = rp_kept && ( m_rpTriGoal - vecEnd ).Length() < 128.0f;
 +	const int rp_first = rp_same ? m_rpTriAt : 0;
-+	const int rp_may_stop = rp_cover_budget > 0 && ( !rp_kept || rp_same );
++	const int rp_may_stop = rp_cover_budget > 0 && m_rpTriPauses < 3;
 +
++	if( !rp_same )
++		m_rpTriPauses = 0;
 +	m_rpTriAt = 0;
 +	for( i = 0; i < rp_first; i++ )
 +	{
@@ -821,6 +839,7 @@ index dbd0ba1..e1dd61c 100644
 +		{
 +			m_rpTriAt = i;
 +			m_rpTriGoal = vecEnd;
++			m_rpTriPauses++;
 +			rp_tri_paused = 1;
 +			return FALSE;
 +		}
@@ -831,7 +850,7 @@ index dbd0ba1..e1dd61c 100644
  // Debug, Draw the triangulation
  #if 0
  		MESSAGE_BEGIN( MSG_BROADCAST, SVC_TEMPENTITY );
-@@ -2209,6 +2262,39 @@ int CBaseMonster::IRelationship( CBaseEntity *pTarget )
+@@ -2209,6 +2279,39 @@ int CBaseMonster::IRelationship( CBaseEntity *pTarget )
  
  //float CGraph::PathLength( int iStart, int iDest, int iHull, int afCapMask )
  
@@ -871,7 +890,7 @@ index dbd0ba1..e1dd61c 100644
  BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMinDist, float flMaxDist )
  {
  	int i;
-@@ -2257,9 +2343,32 @@ BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMi
+@@ -2257,9 +2360,32 @@ BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMi
  
  	vecLookersOffset = vecThreat + vecViewOffset;// calculate location of enemy's eyes
  
@@ -904,7 +923,7 @@ index dbd0ba1..e1dd61c 100644
  		int nodeNumber = ( i + WorldGraph.m_iLastCoverSearch ) % WorldGraph.m_cNodes;
  
  		CNode &node = WorldGraph.Node( nodeNumber );
-@@ -2298,6 +2407,20 @@ BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMi
+@@ -2298,6 +2424,20 @@ BOOL CBaseMonster::FindCover( Vector vecThreat, Vector vecViewOffset, float flMi
  
  						return TRUE;
  					}
@@ -926,10 +945,10 @@ index dbd0ba1..e1dd61c 100644
  			}
  		}
 diff --git a/dlls/schedule.cpp b/dlls/schedule.cpp
-index 7512c9f..45f0b44 100644
+index 7512c9f..e53b472 100644
 --- a/dlls/schedule.cpp
 +++ b/dlls/schedule.cpp
-@@ -204,10 +204,51 @@ BOOL CBaseMonster::FScheduleValid( void )
+@@ -204,10 +204,68 @@ BOOL CBaseMonster::FScheduleValid( void )
  // ensures that the monster leaves this function with a valid
  // schedule!
  //=========================================================
@@ -959,7 +978,8 @@ index 7512c9f..45f0b44 100644
 +#define RP_THINK_US 8000u
 +static unsigned rp_task_cuts, rp_task_long;
 +unsigned rp_walks; // every WALK_MOVE (enginecallback.h)
-+extern int rp_cover_budget, rp_cover_more; // FindCover's budget and its "to go on" (monsters.cpp)
++extern int rp_cover_budget, rp_cover_more, rp_tri_paused; // the think's budget of trial walks and what stopped for it (monsters.cpp)
++extern unsigned rp_cover_w0;
 +#define RP_COVER_WALKS 300 // trial walks of a cover search a think: about 20 ms on the X51v by run 317's 221 ms for 3,300
 +static void RP_Say( const char *fmt, const char *a, int b, const char *c, unsigned d, int e )
 +{
@@ -977,11 +997,27 @@ index 7512c9f..45f0b44 100644
 +#if XASH_RETROPANE
 +	const unsigned long long rp_t0 = rp_time_us();
 +	const unsigned rp_w0 = rp_walks;
++	// The think's budget of trial walks, for every task that builds a route
++	// (run 318w: the chase's routes cost as the cover search did): a detour
++	// search that spends it stops and the task starts again at the next
++	// think from the attempt it had come to; a route's shortening waits.
++	struct rp_budget_on
++	{
++		rp_budget_on() { rp_cover_budget = RP_COVER_WALKS; rp_cover_w0 = rp_walks; rp_tri_paused = 0; }
++		~rp_budget_on() { rp_cover_budget = 0; rp_tri_paused = 0; }
++	} rp_budget;
++
++	if( m_rpSimplifyOwed )
++	{
++		m_rpSimplifyOwed = 0;
++		if( !FRouteClear() )
++			RouteSimplify( m_movementGoal == MOVEGOAL_ENEMY ? (CBaseEntity *)m_hEnemy : (CBaseEntity *)m_hTargetEnt );
++	}
 +#endif
  
  	// UNDONE: Tune/fix this 10... This is just here so infinite loops are impossible
  	for( i = 0; i < 10; i++ )
-@@ -270,7 +311,27 @@ void CBaseMonster::MaintainSchedule( void )
+@@ -270,7 +328,36 @@ void CBaseMonster::MaintainSchedule( void )
  			Task_t *pTask = GetTask();
  			ASSERT( pTask != NULL );
  			TaskBegin();
@@ -1002,6 +1038,15 @@ index 7512c9f..45f0b44 100644
 +						pTask->iTask, m_pSchedule && m_pSchedule->pName ? m_pSchedule->pName : "?", rp_walks - w1, i );
 +					RP_Say( "rp-task:   of them%s %d in route smoothing%s, %u in detours (turn %d)\n", "", (int)( rp_w_simp - simp1 ), "", rp_w_tri - tri1, i );
 +				}
++				if( rp_tri_paused )
++				{
++					// its route's detour search stopped for the budget: not a
++					// failure; the task is started again at the next think
++					rp_tri_paused = 0;
++					ClearConditions( bits_COND_TASK_FAILED );
++					m_iTaskStatus = TASKSTATUS_NEW;
++					break;
++				}
 +			}
 +#else
  			StartTask( pTask );
@@ -1009,7 +1054,7 @@ index 7512c9f..45f0b44 100644
  		}
  
  		// UNDONE: Twice?!!!
-@@ -281,6 +342,16 @@ void CBaseMonster::MaintainSchedule( void )
+@@ -281,6 +368,16 @@ void CBaseMonster::MaintainSchedule( void )
  
  		if( !TaskIsComplete() && m_iTaskStatus != TASKSTATUS_NEW )
  			break;
@@ -1026,7 +1071,22 @@ index 7512c9f..45f0b44 100644
  	}
  
  	if( TaskIsRunning() )
-@@ -306,6 +377,25 @@ void CBaseMonster::RunTask( Task_t *pTask )
+@@ -288,6 +385,14 @@ void CBaseMonster::MaintainSchedule( void )
+ 		Task_t *pTask = GetTask();
+ 		ASSERT( pTask != NULL );
+ 		RunTask( pTask );
++#if XASH_RETROPANE
++		if( rp_tri_paused )
++		{
++			// (a route rebuilt while the task runs: again at the next think)
++			rp_tri_paused = 0;
++			ClearConditions( bits_COND_TASK_FAILED );
++		}
++#endif
+ 	}
+ 
+ 	// UNDONE: We have to do this so that we have an animation set to blend to if RunTask changes the animation
+@@ -306,6 +411,23 @@ void CBaseMonster::RunTask( Task_t *pTask )
  {
  	switch( pTask->iTask )
  	{
@@ -1036,9 +1096,7 @@ index 7512c9f..45f0b44 100644
 +			// RetroPane: the cover search going on where the last think left it
 +			entvars_t *pevCover = m_hEnemy == 0 ? pev : m_hEnemy->pev;
 +
-+			rp_cover_budget = RP_COVER_WALKS;
 +			const BOOL found = FindCover( pevCover->origin, pevCover->view_ofs, 0, CoverRadius() );
-+			rp_cover_budget = 0;
 +			if( found )
 +			{
 +				m_flMoveWaitFinished = gpGlobals->time + pTask->flData;
@@ -1052,7 +1110,7 @@ index 7512c9f..45f0b44 100644
  	case TASK_TURN_RIGHT:
  	case TASK_TURN_LEFT:
  		{
-@@ -753,6 +843,25 @@ void CBaseMonster::StartTask( Task_t *pTask )
+@@ -753,6 +875,23 @@ void CBaseMonster::StartTask( Task_t *pTask )
  				m_flMoveWaitFinished = gpGlobals->time + pTask->flData;
  				TaskComplete();
  			}
@@ -1063,9 +1121,7 @@ index 7512c9f..45f0b44 100644
 +				// found, none, or to go on at the next think (RunTask)
 +				m_rpCoverDone = 0;
 +				m_rpTriAt = 0;
-+				rp_cover_budget = RP_COVER_WALKS;
 +				const BOOL found = FindCover( pevCover->origin, pevCover->view_ofs, 0, CoverRadius() );
-+				rp_cover_budget = 0;
 +				if( found )
 +				{
 +					m_flMoveWaitFinished = gpGlobals->time + pTask->flData;
@@ -1078,7 +1134,7 @@ index 7512c9f..45f0b44 100644
  			else if( FindCover( pevCover->origin, pevCover->view_ofs, 0, CoverRadius() ) )
  			{
  				// then try for plain ole cover
-@@ -764,6 +873,7 @@ void CBaseMonster::StartTask( Task_t *pTask )
+@@ -764,6 +903,7 @@ void CBaseMonster::StartTask( Task_t *pTask )
  				// no coverwhatsoever.
  				TaskFail();
  			}

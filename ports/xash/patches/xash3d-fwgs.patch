@@ -56,6 +56,31 @@ index 9b98264..4b4f840 100644
  }
  
  #endif // XASH_TYPES_H
+diff --git a/engine/client/cl_cmds.c b/engine/client/cl_cmds.c
+index 6f81732..65310e7 100644
+--- a/engine/client/cl_cmds.c
++++ b/engine/client/cl_cmds.c
+@@ -353,6 +353,20 @@ void CL_GenericShot_f( void )
+ 		}
+ 	}
+ 
++#if XASH_RETROPANE
++	// RetroPane (run 318w on the X51v, 2026-11-22: out of memory at the
++	// level change, 1.17 MiB asked at the autosave with the heap at 37.2
++	// MiB): every save has the frame taken as a screenshot for the Load
++	// Game list's preview, a 640 x 480 copy in 32 bits and another to
++	// resize it. Rule 0: upstream always takes it (memory is no matter on
++	// a PC); here the 2700G draws the frame, so the software buffer the
++	// shot reads does not even hold the picture, and the megabyte is not
++	// there at a level change. A save keeps no preview until one can be
++	// read back from the chip at its own small size; the save itself is
++	// whole.
++	if( type == scrshot_savegame )
++		return;
++#endif
+ 	switch( type )
+ 	{
+ 	case scrshot_envshot:
 diff --git a/engine/client/cl_efrag.c b/engine/client/cl_efrag.c
 index ec7fdeb..f1bf3ce 100644
 --- a/engine/client/cl_efrag.c
@@ -3145,10 +3170,10 @@ index 54975d6..c74f1d5 100644
  
  		size = Q_min( nFieldSize, MAX_STRING );
 diff --git a/filesystem/dir.c b/filesystem/dir.c
-index 4541703..13fbea2 100644
+index 4541703..141c7d7 100644
 --- a/filesystem/dir.c
 +++ b/filesystem/dir.c
-@@ -48,7 +48,15 @@ enum
+@@ -48,7 +48,17 @@ enum
  
  typedef struct dir_s
  {
@@ -3156,15 +3181,17 @@ index 4541703..13fbea2 100644
 +	// RetroPane: a name's own length, not 256 bytes an entry (the game's
 +	// longest file name is 39 characters; the root's is its path): the
 +	// whole read-only tree is kept from the start (RP_WarmDir below), 4,372
-+	// entries in 0.6 MiB where upstream's would take 1.1
-+	char name[128];
++	// entries in 0.3 MiB where upstream's would take 1.1 (64 since run
++	// 318w: the heap had no megabyte left at a level change, and 128 was
++	// 0.3 MiB of it for nothing; a longer name is said in the log)
++	char name[64];
 +#else
  	string name;
 +#endif
  	int numentries;
  	struct dir_s *entries; // sorted
  } dir_t;
-@@ -114,6 +122,8 @@ static void FS_InitDirEntries( dir_t *dir, const stringlist_t *list )
+@@ -114,6 +124,8 @@ static void FS_InitDirEntries( dir_t *dir, const stringlist_t *list )
  	{
  		dir_t *entry = &dir->entries[i];
  
@@ -3173,7 +3200,7 @@ index 4541703..13fbea2 100644
  		Q_strncpy( entry->name, list->strings[i], sizeof( entry->name ));
  		entry->numentries = DIRENTRY_NOT_SCANNED;
  		entry->entries = NULL;
-@@ -239,11 +249,69 @@ static void FS_MergeDirEntries( dir_t *dir, const stringlist_t *list )
+@@ -239,11 +251,69 @@ static void FS_MergeDirEntries( dir_t *dir, const stringlist_t *list )
  	dir->entries = temp.entries;
  }
  
@@ -3243,7 +3270,7 @@ index 4541703..13fbea2 100644
  	stringlistinit( &list );
  	listdirectory( &list, path, false );
  
-@@ -535,6 +603,15 @@ void FS_InitDirectorySearchpath( searchpath_t *search, const char *path, int fla
+@@ -535,6 +605,15 @@ void FS_InitDirectorySearchpath( searchpath_t *search, const char *path, int fla
  	search->dir = Mem_Malloc( fs_mempool, sizeof( dir_t ));
  	Q_strncpy( search->dir->name, search->filename, sizeof( search->dir->name ));
  	FS_PopulateDirEntries( search->dir, path );
