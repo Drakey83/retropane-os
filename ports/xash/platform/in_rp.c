@@ -109,7 +109,7 @@ new layout from the kit still reaches him once.
 /* How opaque the touch keys are (the owner, run 47: "make the flashlight
    secondary fire buttons like 50% transparent"); saved, so it can be set
    from the console and stays. */
-static CVAR_DEFINE_AUTO( rp_tk_alpha, "0.25", FCVAR_ARCHIVE, "RetroPane: how opaque the touch keys are, 0 to 1" );
+static CVAR_DEFINE_AUTO( rp_tk_alpha, "0.18", FCVAR_ARCHIVE, "RetroPane: how opaque the touch keys are, 0 to 1" );
 
 static CVAR_DEFINE_AUTO( rp_layout, "0", FCVAR_ARCHIVE, "RetroPane: the button layout the saved bindings follow (rp_defaults)" );
 

@@ -23,8 +23,11 @@ in the game's 640 x 480 picture, so what is drawn is what is touched.
 #define RP_TK_MARGIN 8
 /* the mock-up's bottom corners, raised over Half-Life's HUD numbers (health
    bottom left, ammo bottom right: their row is the picture's last ~48 px),
-   so neither hides the other */
-#define RP_TK_TOP    ( 480 - 48 - RP_TK_H )
+   so neither hides the other. Raised 48 px more (the owner, 2026-11-22:
+   "they clash with some of the suite hud when the suite is fully stocked
+   up"): the second ammo count (the MP5's grenades) sits above the ammo
+   numbers, at about 405-430, under FIRE 2; the keys now end at 384 */
+#define RP_TK_TOP    ( 480 - 96 - RP_TK_H )
 
 /* key 0: the flashlight, LIGHT (bottom left); key 1: the second fire, FIRE 2 (bottom right) */
 #define RP_TK_X( k ) ( ( k ) == 0 ? RP_TK_MARGIN : 640 - RP_TK_MARGIN - RP_TK_W )

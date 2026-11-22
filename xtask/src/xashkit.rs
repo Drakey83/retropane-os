@@ -145,7 +145,7 @@ bind C_BUTTON impulse 100
 bind Z_BUTTON +attack2
 unbind MOUSE1
 sensitivity 12.8
-rp_tk_alpha 0.25
+rp_tk_alpha 0.18
 echo rp_binds.cfg: the X51v's buttons bound
 ";
 /// The engine's names (Xash `engine/client/input/in_keys.c` `keynames`)
