@@ -851,40 +851,205 @@ index 8ea38dc..5bcea01 100644
  
  static void R_UnloadProgs( void )
 diff --git a/engine/client/gamma.c b/engine/client/gamma.c
-index 65d340c..fa0c21b 100644
+index 65d340c..cd4305d 100644
 --- a/engine/client/gamma.c
 +++ b/engine/client/gamma.c
-@@ -129,6 +129,31 @@ void V_CheckGamma( void )
+@@ -79,6 +79,165 @@ static void BuildGammaTable( const float gamma, const float brightness, const fl
+ 	}
+ }
+ 
++#if XASH_RETROPANE
++/*
++RetroPane: the four tables without a frame's wait.
++
++Runs 314 to 317, each slow frame by itself: BuildGammaTable's 3,328 pow
++calls are a moment with an FPU and 0.12 to 0.14 s in software doubles: the
++owner dragging Valve's brightness slider (run 316: sixteen such frames in
++a row), each step of our own slider (run 317: six), and a cvar set to the
++value it already has counted as changed too.
++
++Rule 0: upstream works the tables whole in the frame a value changes. The
++tables are a function of four numbers, so ours (1) does nothing while the
++four are what the tables were made from; (2) keeps the tables of the last
++few sets of four (the slider has nine steps), so a set seen before is back
++at once; (3) makes a new set in the background, a few milliseconds a frame
++into tables of its own by the same loop and the same pow calls, and only
++then puts them in place and has the lightmaps lit again. The same numbers
++in every table; the light follows a new step about half a second later
++the first time, and no frame waits for it.
++*/
++uint64_t rp_time_us( void );
++#define RP_GAMMA_KEPT  10
++#define RP_GAMMA_SLICE_US 5000u
++typedef struct
++{
++	float    p[4]; // gamma, brightness, texgamma, lightgamma
++	qboolean made;
++	byte     tex[256];
++	uint16_t light[1024], linear[1024], screen[1024];
++} rp_gamma_t;
++static void RP_GammaWork( void );
++static rp_gamma_t rp_gamma_kept[RP_GAMMA_KEPT];
++static int        rp_gamma_next;      // the slot the next new set takes
++static rp_gamma_t *rp_gamma_job;      // the set being made, or NULL
++static int        rp_gamma_at;        // its progress: 0-255 the first table, 256-1279 the others
++static float      rp_gamma_live[4];   // what the tables in use were made from
++static qboolean   rp_gamma_have;
++
++/* Entries [from, to) of a set's tables, by BuildGammaTable's own lines. */
++static void RP_GammaSlice( rp_gamma_t *g, int from, int to )
++{
++	const float gamma = g->p[0], brightness = g->p[1], texgamma = g->p[2], lightgamma = g->p[3];
++	float g1, g2, g3;
++
++	if( gamma != 0.0 )
++		g1 = 1.0 / gamma;
++	else g1 = 0.4;
++
++	g2 = g1 * texgamma;
++
++	if( brightness <= 0.0 )
++		g3 = 0.125;
++	else if( brightness <= 1.0 )
++		g3 = 0.125 - brightness * brightness * 0.075;
++	else
++		g3 = 0.05;
++
++	for( int k = from; k < to; k++ )
++	{
++		if( k < 256 )
++		{
++			const int i = k;
++			float d = pow( i / 255.0, (double)g2 );
++			int inf = d * 255.0f;
++			g->tex[i] = bound( 0, inf, 255 );
++		}
++		else
++		{
++			const int i = k - 256;
++			float f = pow( i / 1023.0, (double)lightgamma );
++
++			if( brightness > 1.0 )
++				f *= brightness;
++
++			if( f <= g3 )
++				f = ( f / g3 ) * 0.125;
++			else
++				f = (( f - g3 ) / ( 1.0 - g3 )) * 0.875 + 0.125;
++
++			double d = pow( (double)f, (double)g1 );
++			int inf = d * 1023.0;
++			g->light[i] = bound( 0, inf, 1023 );
++			g->linear[i] = pow( i / 1023.0, (double)gamma ) * 1023.0;
++			g->screen[i] = pow( i / 1023.0, 1.0 / gamma ) * 1023.0;
++		}
++	}
++}
++
++/* A made set into use; the renderer lights its lightmaps again. */
++static void RP_GammaUse( const rp_gamma_t *g )
++{
++	memcpy( texgammatable, g->tex, sizeof( texgammatable ));
++	memcpy( lightgammatable, g->light, sizeof( lightgammatable ));
++	memcpy( lineargammatable, g->linear, sizeof( lineargammatable ));
++	memcpy( screengammatable, g->screen, sizeof( screengammatable ));
++	memcpy( rp_gamma_live, g->p, sizeof( rp_gamma_live ));
++	rp_gamma_have = true;
++	// force refdll to recalculate lightmaps (as upstream does at every build)
++	if( ref.initialized )
++		ref.dllFuncs.R_GammaChanged( false );
++}
++
++/* The four values asked for (they changed, or were set again). */
++static void RP_GammaAsk( float gamma, float brightness, float texgamma, float lightgamma )
++{
++	const float p[4] = { gamma, brightness, texgamma, lightgamma };
++
++	if( rp_gamma_job && !memcmp( rp_gamma_job->p, p, sizeof( p )))
++		return; // being made already
++	rp_gamma_job = NULL; // (a half-made set is given up: its slot is taken again)
++	if( rp_gamma_have && !memcmp( rp_gamma_live, p, sizeof( p )))
++		return; // in use already
++	for( int k = 0; k < RP_GAMMA_KEPT; k++ )
++	{
++		if( rp_gamma_kept[k].made && !memcmp( rp_gamma_kept[k].p, p, sizeof( p )))
++		{
++			RP_GammaUse( &rp_gamma_kept[k] );
++			return;
++		}
++	}
++	rp_gamma_job = &rp_gamma_kept[rp_gamma_next];
++	rp_gamma_job->made = false;
++	memcpy( rp_gamma_job->p, p, sizeof( p ));
++	rp_gamma_at = 0;
++	if( !rp_gamma_have ) // the first set, as the engine starts: whole, the loading waits anyway
++	{
++		RP_GammaSlice( rp_gamma_job, 0, 256 + 1024 );
++		rp_gamma_at = 256 + 1024;
++		RP_GammaWork( );
++	}
++}
++
++/* A slice of the set being made, every frame; in use when it is whole. */
++static void RP_GammaWork( void )
++{
++	uint64_t t0;
++
++	if( !rp_gamma_job )
++		return;
++	t0 = rp_time_us( );
++	while( rp_gamma_at < 256 + 1024 && rp_time_us( ) - t0 < RP_GAMMA_SLICE_US )
++	{
++		const int to = rp_gamma_at + 8 < 256 + 1024 ? rp_gamma_at + 8 : 256 + 1024;
++
++		RP_GammaSlice( rp_gamma_job, rp_gamma_at, to );
++		rp_gamma_at = to;
++	}
++	if( rp_gamma_at >= 256 + 1024 )
++	{
++		rp_gamma_t *g = rp_gamma_job;
++
++		g->made = true;
++		rp_gamma_job = NULL;
++		rp_gamma_next = ( rp_gamma_next + 1 ) % RP_GAMMA_KEPT;
++		RP_GammaUse( g );
++	}
++}
++#endif
++
+ static void V_ValidateGammaCvars( void )
+ {
+ 	if( v_gamma.value < 1.8f )
+@@ -125,10 +284,22 @@ void V_CheckGamma( void )
+ 		return;
+ 	}
+ 
++#if XASH_RETROPANE
++	RP_GammaWork( );
++#endif
+ 	if( dirty || FBitSet( v_texgamma.flags|v_lightgamma.flags|v_brightness.flags|v_gamma.flags, FCVAR_CHANGED ))
  	{
  		V_ValidateGammaCvars();
  
 +#if XASH_RETROPANE
-+		// RetroPane (the owner, run 316: "one or two major hitches"; runs
-+		// 314 and 316: every opening of the menu a frame of 0.33 to 0.40 s,
-+		// the slow frames' samples 7.5% in pow's software doubles): a cvar
-+		// set to the value it already has is "changed" too, and upstream
-+		// then works its four tables again (3,328 pow calls, a moment with
-+		// an FPU, a third of a second without) and has the renderer relight
-+		// every lightmap. Rule 0: the tables are a function of four numbers;
-+		// ours keeps the four they were made from and does nothing while
-+		// they are the same.
-+		{
-+			static float rp_made[4];
-+			static qboolean rp_have;
-+			const float now[4] = { v_gamma.value, v_brightness.value, v_texgamma.value, v_lightgamma.value };
-+
-+			if( rp_have && !dirty && !memcmp( rp_made, now, sizeof( now )))
-+			{
-+				gamma_rebuilt = true; // V_CheckGammaEnd clears the flags
-+				return;
-+			}
-+			memcpy( rp_made, now, sizeof( now ));
-+			rp_have = true;
-+		}
-+#endif
-+
++		// (RP_GammaAsk: nothing for unchanged values, kept tables at once,
++		// new ones made a slice a frame by RP_GammaWork below)
++		if( dirty )
++			rp_gamma_live[0] = -1.0f; // a screenshot's tables are in place: ours put back whatever was asked
++		dirty = false;
++		gamma_rebuilt = true; // V_CheckGammaEnd clears the flags
++		RP_GammaAsk( v_gamma.value, v_brightness.value, v_texgamma.value, v_lightgamma.value );
++#else
  		dirty = false;
  		gamma_rebuilt = true;
+ 
+@@ -137,6 +308,7 @@ void V_CheckGamma( void )
+ 		// force refdll to recalculate lightmaps
+ 		if( ref.initialized )
+ 			ref.dllFuncs.R_GammaChanged( false );
++#endif
+ 	}
+ }
  
 diff --git a/engine/client/input/input.c b/engine/client/input/input.c
 index 712a86e..bccf97f 100644
@@ -2563,10 +2728,54 @@ index 37e79df..6adc335 100644
  	for( int i = 0; i < GI->max_edicts; i++ )
  		svgame.edicts[i].free = true; // mark all edicts as freed
 diff --git a/engine/server/sv_init.c b/engine/server/sv_init.c
-index 3df187a..eb40ba9 100644
+index 3df187a..b9f6aa3 100644
 --- a/engine/server/sv_init.c
 +++ b/engine/server/sv_init.c
-@@ -164,10 +164,39 @@ int GAME_EXPORT SV_SoundIndex( const char *filename )
+@@ -113,11 +113,43 @@ int SV_ModelIndex( const char *filename )
+ 	Q_strncpy( name, filename, sizeof( name ));
+ 	COM_FixSlashes( name );
+ 
++#if XASH_RETROPANE
++	// RetroPane (run 317's frames in which an entity spawned: 9% in
++	// tolower, SV_ModelIndex and Mod_FindName under it): every spawn asks
++	// for its model's number by name, and upstream compares the name with
++	// each of the map's models in turn, a letter at a time without case.
++	// Rule 0: ours remembers where a name was found, by a number made
++	// from its letters, and checks that one place first (one comparison,
++	// against the same list, so never a wrong answer); the search in turn
++	// only for a name not asked for before.
++	static struct { uint32_t hash; int index; } rp_found[128];
++	uint32_t rp_hash = 2166136261u;
++
++	for( const char *c = name; *c; c++ )
++		rp_hash = ( rp_hash ^ (byte)( *c >= 'A' && *c <= 'Z' ? *c + 32 : *c )) * 16777619u;
++	{
++		const int at = rp_found[rp_hash & 127].index;
++
++		if( rp_found[rp_hash & 127].hash == rp_hash && at > 0 && at < MAX_MODELS
++			&& sv.model_precache[at][0] && !Q_stricmp( sv.model_precache[at], name ))
++			return at;
++	}
++	for( i = 1; i < MAX_MODELS && sv.model_precache[i][0]; i++ )
++	{
++		if( !Q_stricmp( sv.model_precache[i], name ))
++		{
++			rp_found[rp_hash & 127].hash = rp_hash;
++			rp_found[rp_hash & 127].index = i;
++			return i;
++		}
++	}
++#else
+ 	for( i = 1; i < MAX_MODELS && sv.model_precache[i][0]; i++ )
+ 	{
+ 		if( !Q_stricmp( sv.model_precache[i], name ))
+ 			return i;
+ 	}
++#endif
+ 
+ 	if( i == MAX_MODELS )
+ 	{
+@@ -164,10 +196,39 @@ int GAME_EXPORT SV_SoundIndex( const char *filename )
  	Q_strncpy( name, filename, sizeof( name ));
  	COM_FixSlashes( name );
  
@@ -2606,7 +2815,7 @@ index 3df187a..eb40ba9 100644
  	}
  
  	if( i == MAX_SOUNDS )
-@@ -566,6 +595,7 @@ void SV_FreeOldEntities( void )
+@@ -566,6 +627,7 @@ void SV_FreeOldEntities( void )
  
  	// decrement svgame.numEntities if the highest number entities died
  	for( ; ( ent = SV_EdictNum( svgame.numEntities - 1 )) && ent->free; svgame.numEntities-- );
@@ -2614,7 +2823,7 @@ index 3df187a..eb40ba9 100644
  }
  
  /*
-@@ -724,6 +754,7 @@ void SV_DeactivateServer( void )
+@@ -724,6 +786,7 @@ void SV_DeactivateServer( void )
  	svgame.globals->maxEntities = GI->max_edicts;
  	svgame.globals->maxClients = svs.maxclients;
  	svgame.numEntities = svs.maxclients + 1; // clients + world
@@ -2622,7 +2831,7 @@ index 3df187a..eb40ba9 100644
  	svgame.globals->startspot = 0;
  	svgame.globals->mapname = 0;
  }
-@@ -837,6 +868,7 @@ static void SV_SetupClients( void )
+@@ -837,6 +900,7 @@ static void SV_SetupClients( void )
  	// init network stuff
  	NET_Config(( svs.maxclients > 1 ), true );
  	svgame.numEntities = svs.maxclients + 1; // clients + world
@@ -6007,10 +6216,10 @@ index 863d5b4..322f249 100644
  	// memset( vid.buffer, 10, vid.width * vid.height );
  
 diff --git a/ref/soft/r_image.c b/ref/soft/r_image.c
-index 8a82400..0fb0ec5 100644
+index 8a82400..0890917 100644
 --- a/ref/soft/r_image.c
 +++ b/ref/soft/r_image.c
-@@ -22,6 +22,463 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
+@@ -22,6 +22,477 @@ static image_t *r_imagesHashTable[TEXTURES_HASH_SIZE];
  static uint    r_numImages;
  
  #define IsLightMap( tex ) ( FBitSet(( tex )->flags, TF_ATLAS_PAGE ))
@@ -6223,6 +6432,20 @@ index 8a82400..0fb0ec5 100644
 +		else if( j > 0 && hasalpha && !noalpha && data[i * 4 + 3] < 128 && onebit )
 +			out[i] = TRANSPARENT_COLOR;
 +	}
++}
++
++/* RetroPane: a compact texture's colours as the upload makes them (the
++   table R_TexDecode looks its level 0 up in) and its indices, for a reader
++   that takes the picture a few rows at a time and so needs no decoded copy
++   (ref_rp's menu picture: the copy was 0.9 MiB the heap did not have). 0 if
++   the texture is not kept compact, or has an alpha copy. */
++int R_TexCompact( image_t *tex, pixel_t c16[256], const byte **idx )
++{
++	if( !tex->rp_idx || !tex->rp_pal || FBitSet( tex->rp_bits, RP_TB_ALPHA ))
++		return 0;
++	R_TexLevel( tex, (const byte *)tex->rp_pal, 0, tex->rp_npal, 1, c16, NULL );
++	*idx = tex->rp_idx;
++	return 1;
 +}
 +
 +static void GL_BuildMipMap( byte *in, int srcWidth, int srcHeight, int srcDepth, int flags );
@@ -6474,7 +6697,7 @@ index 8a82400..0fb0ec5 100644
  /*
  =================
  R_GetTexture
-@@ -44,31 +501,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
+@@ -44,31 +515,26 @@ void GAME_EXPORT GL_Bind( int tmu, unsigned int texnum )
  {
  	image_t *image = &r_images[texnum];
  
@@ -6515,7 +6738,7 @@ index 8a82400..0fb0ec5 100644
  
  	r_affinetridesc.skinwidth = image->width;
  	r_affinetridesc.skinheight = image->height;
-@@ -227,6 +679,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -227,6 +693,10 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  	Assert( pic != NULL );
  	Assert( tex != NULL );
  
@@ -6526,7 +6749,7 @@ index 8a82400..0fb0ec5 100644
  	if( !pic->buffer )
  		return true;
  
-@@ -240,6 +696,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -240,6 +710,44 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  	else
  		data = buf;
  
@@ -6571,7 +6794,7 @@ index 8a82400..0fb0ec5 100644
  	// mips will be auto-generated if desired
  	for( uint j = 0; j < mipCount; j++ )
  	{
-@@ -254,31 +748,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
+@@ -254,31 +762,7 @@ static qboolean GL_UploadTexture( image_t *tex, rgbdata_t *pic )
  		if( j == 0 && tex->flags & TF_HAS_ALPHA )
  			tex->alpha_pixels = (pixel_t *)Mem_Calloc( r_temppool, width * height * sizeof( pixel_t ));
  
@@ -6604,7 +6827,7 @@ index 8a82400..0fb0ec5 100644
  		if( mipCount > 1 )
  			GL_BuildMipMap( data, width, height, tex->depth, tex->flags );
  
-@@ -431,7 +901,7 @@ static void GL_DeleteTexture( image_t *tex )
+@@ -431,7 +915,7 @@ static void GL_DeleteTexture( image_t *tex )
  	ASSERT( tex != NULL );
  
  	// already freed?
@@ -6613,7 +6836,7 @@ index 8a82400..0fb0ec5 100644
  		return;
  
  	// debug
-@@ -462,11 +932,7 @@ static void GL_DeleteTexture( image_t *tex )
+@@ -462,11 +946,7 @@ static void GL_DeleteTexture( image_t *tex )
  	if( tex->original )
  		gEngfuncs.FS_FreeImage( tex->original );
  
@@ -6626,7 +6849,7 @@ index 8a82400..0fb0ec5 100644
  
  	memset( tex, 0, sizeof( *tex ));
  }
-@@ -814,7 +1280,7 @@ void R_TextureList_f( void )
+@@ -814,7 +1294,7 @@ void R_TextureList_f( void )
  
  	for( i = texCount = 0, image = r_images; i < r_numImages; i++, image++ )
  	{
@@ -6635,7 +6858,7 @@ index 8a82400..0fb0ec5 100644
  			continue;
  
  		bytes += image->size;
-@@ -863,6 +1329,23 @@ void R_InitImages( void )
+@@ -863,6 +1343,23 @@ void R_InitImages( void )
  	r_imagesHashTable[r_images->hashValue] = r_images;
  	r_numImages = 1;
  
@@ -6659,7 +6882,7 @@ index 8a82400..0fb0ec5 100644
  	// validate cvars
  
  	gEngfuncs.Cmd_AddCommand( "texturelist", R_TextureList_f, "display loaded textures list" );
-@@ -886,4 +1369,9 @@ void R_ShutdownImages( void )
+@@ -886,4 +1383,9 @@ void R_ShutdownImages( void )
  	memset( r_imagesHashTable, 0, sizeof( r_imagesHashTable ));
  	memset( r_images, 0, sizeof( r_images ));
  	r_numImages = 0;
@@ -6670,7 +6893,7 @@ index 8a82400..0fb0ec5 100644
 +	r_ring_size = r_ring_head = 0;
  }
 diff --git a/ref/soft/r_local.h b/ref/soft/r_local.h
-index 1a7efd6..6c03402 100644
+index 1a7efd6..d326440 100644
 --- a/ref/soft/r_local.h
 +++ b/ref/soft/r_local.h
 @@ -48,7 +48,16 @@ typedef int fixed16_t;
@@ -6709,7 +6932,7 @@ index 1a7efd6..6c03402 100644
  	uint           hashValue;
  	struct image_s *nextHash;
  } image_t;
-@@ -340,6 +360,20 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
+@@ -340,6 +360,21 @@ void GL_UpdateTexture( int texnum, int cols, int rows, int width, int height, co
  // gl_image.c
  //
  image_t *R_GetTexture( unsigned int texnum );
@@ -6722,6 +6945,7 @@ index 1a7efd6..6c03402 100644
 +pixel_t *R_TexPix( image_t *tex, int mip );
 +pixel_t *R_TexAlpha( image_t *tex );
 +pixel_t *const *R_TexLevels( image_t *tex, int transient );
++int R_TexCompact( image_t *tex, pixel_t c16[256], const byte **idx ); // RetroPane: its colours and indices, no decoded copy
 +pixel_t *R_SkinPix( void );
 +void R_TexRingFrame( void );
 +void R_TexRingStats( char *out, size_t len, qboolean reset );
@@ -6730,7 +6954,7 @@ index 1a7efd6..6c03402 100644
  #define GL_LoadTextureInternal( name, pic, flags )   GL_LoadTextureFromBuffer( name, pic, flags, false )
  #define GL_UpdateTextureInternal( name, pic, flags ) GL_LoadTextureFromBuffer( name, pic, flags, true )
  int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags );
-@@ -992,6 +1026,102 @@ typedef struct
+@@ -992,6 +1027,102 @@ typedef struct
  
  extern aliastriangleparms_t aliastriangleparms;
  

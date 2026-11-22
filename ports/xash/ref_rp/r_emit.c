@@ -2046,9 +2046,14 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
 				sh = 1;
 			if( sw == lw && sh == lh )
 			{
-				for( int y = 0; y < lh; y++ )
+				/* the same size: RP_TexSample's first line, a texel a lookup,
+				   without its call (run 317's frames that placed a texture:
+				   23% in RP_TexSample, a call of seven arguments a texel) */
+				const pixel_t *row = src[l];
+
+				for( int y = 0; y < lh; y++, row += sw )
 					for( int x = 0; x < lw; x++ )
-						lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)RP_TexSample( src[l], sw, sh, x, y, lw, lh );
+						lv[RP_TexAt( x, y, lw, lh, sb )] = (uint16_t)vid.screen[row[x]];
 			}
 			else
 			{
@@ -6324,7 +6329,7 @@ static struct
 	uint8_t *save;   /* the map's bytes while the picture has their place */
 	uint32_t serial; /* the picture there */
 	int      gen;    /* the textures' room as it was borrowed (RP_TexReset moves it on) */
-	uint32_t borrows, returns, copied_us;
+	uint32_t borrows, returns, copied_us, refused;
 } rp_borrow;
 
 /* The map's textures back in their place, before anything of the world is
@@ -6347,15 +6352,18 @@ static void RP_BorrowReturn( void )
 	rp_borrow.serial = 0;
 	rp_borrow.returns++;
 	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
-	fprintf( stderr, "rp-emit: the menu's picture: the map's textures back in their place (%u borrowed, %u returned, %u ms of copies so far)\n",
-		rp_borrow.borrows, rp_borrow.returns, rp_borrow.copied_us / 1000u );
+	fprintf( stderr, "rp-emit: the menu's picture: the map's textures back in their place (%u borrowed, %u returned, %u ms of copies so far; %u times no memory for it)\n",
+		rp_borrow.borrows, rp_borrow.returns, rp_borrow.copied_us / 1000u, rp_borrow.refused );
 }
 
 /* The picture `pic` (`pw` x `ph`, no alpha) in the two borrowed pages: 1,
    or 0 if it cannot be (drawn the old way then). */
 static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 {
-	const pixel_t *src;
+	const pixel_t *src = NULL;
+	const byte    *idx = NULL;
+	pixel_t        c16[256];
+	int            compact;
 	uint64_t       t0;
 
 	if( rp_tex_pages < 2 || pw > 2 * RP_PAGE_SIDE || ph > RP_PAGE_SIDE || gEngfuncs.Sys_CheckParm( "-rpnoborrow" ))
@@ -6363,15 +6371,31 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 	if( rp_borrow.save && rp_borrow.serial == pic->rp_serial )
 		return 1;
 	t0 = rp_time_us( );
-	src = R_TexPix( (image_t *)pic, 0 );
-	if( !src )
-		return 0;
+	/* the picture as it is kept (8 bits a texel and its colours), read a
+	   band at a time below: decoded whole it is 0.9 MiB more of the heap at
+	   the moment the saved pages take 1 MiB (the emulator's play run with
+	   both: out of memory at the menu) */
+	compact = R_TexCompact( (image_t *)pic, c16, &idx );
+	if( !compact )
+	{
+		src = R_TexPix( (image_t *)pic, 0 );
+		if( !src )
+			return 0;
+	}
 	if( !rp_borrow.save )
 	{
 		uint8_t *save = malloc( 2 * RP_PAGE_BYTES );
 
+		/* no megabyte to be had (the emulator's runs: the heap at 36 MiB of
+		   its 37.6 with the menu up): no picture this frame, asked again at
+		   the next. Never the old tiles from here: they decode the picture
+		   whole, 0.9 MiB the heap would refuse too, and the engine stops at
+		   a refused block. */
 		if( !save )
-			return 0;
+		{
+			rp_borrow.refused++;
+			return -1;
+		}
 		/* no frame in flight still reads the map's textures */
 		rp_gfx_wait( );
 		if( !RP_ChipWrite( ))
@@ -6385,9 +6409,28 @@ static int RP_BorrowPicture( const image_t *pic, int pw, int ph )
 		rp_borrow.gen = rp_tex_gen;
 		rp_borrow.borrows++;
 	}
-	RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_pages, 0, 0, 0 );
-	if( pw > RP_PAGE_SIDE )
-		RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_pages + 1, 0, 0, 0 );
+	if( compact )
+	{
+		static pixel_t band[8 * 2 * RP_PAGE_SIDE];
+
+		for( int y = 0; y < ph; y += 8 )
+		{
+			const int rows = ph - y < 8 ? ph - y : 8;
+
+			for( int r = 0; r < rows; r++ )
+				for( int x = 0; x < pw; x++ )
+					band[r * pw + x] = c16[idx[( y + r ) * pw + x]];
+			RP_PicUpload( band, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, rows, rp_pages, 0, y >> 3, 0 );
+			if( pw > RP_PAGE_SIDE )
+				RP_PicUpload( band + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, rows, rp_pages + 1, 0, y >> 3, 0 );
+		}
+	}
+	else
+	{
+		RP_PicUpload( src, pw, pw < RP_PAGE_SIDE ? pw : RP_PAGE_SIDE, ph, rp_pages, 0, 0, 0 );
+		if( pw > RP_PAGE_SIDE )
+			RP_PicUpload( src + RP_PAGE_SIDE, pw, pw - RP_PAGE_SIDE, ph, rp_pages + 1, 0, 0, 0 );
+	}
 	rp_borrow.serial = pic->rp_serial;
 	rp_borrow.copied_us += (uint32_t)( rp_time_us( ) - t0 );
 	return 1;
@@ -6413,7 +6456,11 @@ void RP_EmitPic( float x, float y, float w, float h, float s1, float t1, float s
 	T2 = t2 * ph;
 	/* the menu's background: in the pages borrowed from the map's textures
 	   (above), two quads, the first page's 512 columns and the rest */
-	if( tile && !fmt && RP_BorrowPicture( pic, pw, ph ))
+	const int borrowed = tile && !fmt ? RP_BorrowPicture( pic, pw, ph ) : 0;
+
+	if( borrowed < 0 )
+		return; /* no memory for it now: the menu's words on a plain ground this frame */
+	if( borrowed )
 	{
 		for( int k = 0; k < 2; k++ )
 		{
