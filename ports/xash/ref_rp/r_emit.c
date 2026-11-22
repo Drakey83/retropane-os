@@ -369,9 +369,19 @@ static void RP_EmitReport( void )
 				extern unsigned rp_trace_counts[2];
 				extern int      rp_trace_nnodes;
 
-				fprintf( stderr, "rp-emit: kit 109's traces: %u sloped nodes a frame by the integers, %u by the floats (%s)%c",
+				fprintf( stderr, "rp-emit: the traces (kit 109, R358 every hull): %u sloped nodes a frame by the integers, %u by the floats (the world's table %s)%c",
 					rp_trace_counts[0] / f, rp_trace_counts[1] / f, rp_trace_nnodes ? "on" : "off: no cooked map", 10 );
 				rp_trace_counts[0] = rp_trace_counts[1] = 0;
+			}
+			{
+				/* R358: every hull's sloped nodes (the line above now counts them all) and -rphullcheck's differences */
+				extern int      rp_hull_int, rp_hull_check;
+				extern unsigned rp_hull_counts[8];
+
+				if( rp_hull_check )
+					fprintf( stderr, "rp-hull: -rphullcheck since the last report %u traces, %u points, %u boxes; differences in the run: %u, %u, %u (all must be 0; integers %s)%c",
+						rp_hull_counts[0], rp_hull_counts[2], rp_hull_counts[4], rp_hull_counts[1], rp_hull_counts[3], rp_hull_counts[5], rp_hull_int ? "on" : "off", 10 );
+				rp_hull_counts[0] = rp_hull_counts[2] = rp_hull_counts[4] = 0;
 			}
 			{
 				/* the owner's "Yes, try both": -rpdebrishalf, -rpdebrissoundsN */
@@ -6159,6 +6169,10 @@ void RP_EmitNewMap( void )
 	rp_skin_world = NULL;
 	rp_state = NULL;
 	RP_TurbFree(); /* R309: the water faces' shapes are the old map's */
+	/* R352: the old map's last frames may still be drawing from the pages
+	   (kit 113's overlap): waited for, as every other page drop does
+	   (RP_IN_FLIGHT), before the new map's faces are written over them */
+	rp_gfx_wait( );
 	for( int pg = 0; pg < rp_pages; pg++ )
 		RP_PageDrop( &rp_page[pg] );
 	if( rp_emit_on == 2 && rp_fixed_on )

@@ -1791,10 +1791,10 @@ index 64bc35e..1310e76 100644
  			numChanges++;
  	}
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
-index b1e8e57..4404a97 100644
+index b1e8e57..6269348 100644
 --- a/engine/common/pm_trace.c
 +++ b/engine/common/pm_trace.c
-@@ -102,6 +102,192 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
+@@ -102,6 +102,315 @@ static hull_t *PM_HullForBox( const vec3_t mins, const vec3_t maxs )
  	return &pm_boxhull;
  }
  
@@ -1884,8 +1884,12 @@ index b1e8e57..4404a97 100644
 +int                rp_trace_nnodes;
 +unsigned           rp_trace_counts[2]; /* node sides by the integers, by the floats */
 +
++extern int rp_hull_int, rp_hull_check;
 +void RP_TraceForget( void )
 +{
++	/* R358's switches, read at each world load (not per trace) */
++	rp_hull_int = !Sys_CheckParm( "-rphullfloat" );
++	rp_hull_check = Sys_CheckParm( "-rphullcheck" ) != 0;
 +	rp_trace_clip = NULL;
 +	rp_trace_np = NULL;
 +	rp_trace_pl = NULL;
@@ -1949,10 +1953,106 @@ index b1e8e57..4404a97 100644
 +	return side >= 0 ? side : RP_Lt0( lhs - plane->dist );
 +}
 +
++/*
++RetroPane R358 (run 318, the owner: "some random slow downs"; the alien
++grunts' fight ~16 fps, ~22% of its 35 slowest frames the server's movement
++and collision traces: PM_RecursiveHullCheck and its soft floats, the clip
++hulls 1-3 that kit 109's table never covered). The vendor way (GoldSrc,
++Xash, Quake): every node's side by a float dot, two a node. The textbook
++fixed-point trace would change fractions and end places in their last bits
++(a player could stand where the float code would not let him). Ours: kit
++109's proof on every hull and every brush plane, no table: the plane taken
++into integers as it is met (normal 2.30, distance 16.16, toward zero, from
++the float's bits: ~30 integer instructions, no memory), the side by a
++64-bit integer dot outside a 1/32-unit margin, the floats inside it and
++for every value the trace returns (fraction, end place, plane), the same
++operations in the same order: the answers are the float code's, bit for
++bit. -rphullcheck runs every trace and point both ways and counts every
++difference (the emulator's fight, which must say 0); -rphullfloat is the
++old way.
++*/
++int      rp_hull_int = 1;    /* integer sides on every hull (-rphullfloat: 0) */
++int      rp_hull_check;      /* -rphullcheck: both ways, compared */
++static int rp_hull_in_check; /* inside the check's own two runs */
++unsigned rp_hull_counts[8];  /* traces checked, differ; points checked, differ; boxes checked, differ; sloped nodes by the integers, by the floats */
++
++/* a plane in integers: 0 when it can't (a normal component over 1, the
++   components' sum over 2 so the dot can't overflow, |dist| >= 32768) */
++static __attribute__(( noinline )) int RP_PlaneFix( const mplane_t *plane, rp_tplane_t *f )
++{
++	uint32_t u[4], sum = 0;
++
++	__builtin_memcpy( u, plane->normal, 3 * sizeof( uint32_t ));
++	__builtin_memcpy( &u[3], &plane->dist, sizeof( uint32_t ));
++	for( int j = 0; j < 3; j++ )
++	{
++		uint32_t e = u[j] >> 23 & 0xFF, v = 0;
++
++		if( e >= 128 )
++			return 0;
++		if( e > 96 ) /* below 2^-30: 0 */
++		{
++			int      sh = (int)e - 120; /* - 127 - 23 + 30 */
++			uint32_t m = ( u[j] & 0x007FFFFFu ) | 0x00800000u;
++
++			v = sh >= 0 ? m << sh : m >> -sh;
++			if( v > ( 1u << 30 ))
++				return 0;
++		}
++		sum += v;
++		f->n[j] = u[j] >> 31 ? -(int32_t)v : (int32_t)v;
++	}
++	if( sum > ( 1u << 31 ))
++		return 0;
++	{
++		uint32_t e = u[3] >> 23 & 0xFF, m;
++		int      sh = (int)e - 127 - 23 + 16;
++		int32_t  v;
++
++		if( e >= 142 )
++			return 0;
++		if( e == 0 || sh < -24 )
++			v = 0;
++		else
++		{
++			m = ( u[3] & 0x007FFFFFu ) | 0x00800000u;
++			v = (int32_t)( sh >= 0 ? m << sh : m >> -sh );
++		}
++		f->d = u[3] >> 31 ? -v : v;
++	}
++	return 1;
++}
++
++/* the side of a fixed plane for a point in 16.16: 0 front, 1 back, -1 within the margin */
++static inline __attribute__(( always_inline )) int RP_FixSide( const rp_tplane_t *f, const int32_t q[3] )
++{
++	int64_t v = (int64_t)q[0] * f->n[0] + (int64_t)q[1] * f->n[1] + (int64_t)q[2] * f->n[2] - ( (int64_t)f->d << 30 );
++
++	if( v >= RP_TRACE_MARGIN )
++		return 0;
++	if( v <= -RP_TRACE_MARGIN )
++		return 1;
++	return -1;
++}
++
++/* a + f * ( b - a ), the float code's own answer: when a and b are the same
++   finite non-zero float, b - a is +0, f * it is +0 or -0 (f is never a NaN
++   here: the clamps), a + that is a; else the operations as written */
++static inline __attribute__(( always_inline )) float RP_Lerp1( float a, float f, float b )
++{
++	uint32_t ua = RP_FloatBits( a );
++
++	if( rp_hull_int && ua == RP_FloatBits( b ) && ( ua & 0x7FFFFFFFu ) != 0 && ( ua & 0x7F800000u ) != 0x7F800000u )
++		return a;
++	return a + f * ( b - a );
++}
++
 +/* kit 109: PM_HullPointContents on the cooked integers (out of the SRAM's
 +   hot code: a call from it), RP_TRACE_NOPOINT when the point is too far out */
 +#define RP_TRACE_NOPOINT 0x7FFFFFFF
-+static __attribute__(( noinline )) int RP_TraceContents( hull_t *hull, int num, const float *p )
++/* R358: every hull, a sloped plane outside kit 109's table taken into
++   integers as it is met (RP_PlaneFix) */
++static __attribute__(( noinline )) int RP_TraceContents( hull_t *hull, int num, const float *p, int hull0 )
 +{
 +	int32_t q[3];
 +
@@ -1960,40 +2060,66 @@ index b1e8e57..4404a97 100644
 +		return RP_TRACE_NOPOINT;
 +	while( num >= 0 )
 +	{
-+		int side;
++		mplane_t *plane;
++		int       side = -1;
++		const int *children;
 +
 +		if( world.version == QBSP2_VERSION )
 +		{
-+			mplane_t *plane = &hull->planes[hull->clipnodes32[num].planenum];
-+
-+			side = plane->type < 3 ? -1 : RP_TraceSide( num, q );
-+			if( side < 0 )
-+				side = RP_PlaneBack( p, plane );
-+			num = hull->clipnodes32[num].children[side];
++			plane = &hull->planes[hull->clipnodes32[num].planenum];
++			children = hull->clipnodes32[num].children;
 +		}
 +		else
 +		{
-+			mplane_t *plane = &hull->planes[hull->clipnodes16[num].planenum];
-+
-+			side = plane->type < 3 ? -1 : RP_TraceSide( num, q );
-+			if( side < 0 )
-+				side = RP_PlaneBack( p, plane );
-+			num = hull->clipnodes16[num].children[side];
++			plane = &hull->planes[hull->clipnodes16[num].planenum];
++			children = NULL;
 +		}
++		if( plane->type >= 3 )
++		{
++			rp_tplane_t fx;
++
++			if( hull0 )
++				side = RP_TraceSide( num, q );
++			if( side < 0 && RP_PlaneFix( plane, &fx ))
++				side = RP_FixSide( &fx, q );
++		}
++		if( side < 0 )
++			side = RP_PlaneBack( p, plane );
++		num = children ? children[side] : hull->clipnodes16[num].children[side];
 +	}
 +	return num;
++}
++
++/* R358 -rphullcheck: a point both ways (out of the hot code) */
++static __attribute__(( noinline )) int RP_PointCheckBoth( hull_t *hull, int num, const float *p )
++{
++	int keep = rp_hull_int, c0, c1;
++
++	rp_hull_in_check = 1;
++	rp_hull_int = 0;
++	c0 = PM_HullPointContents( hull, num, p );
++	rp_hull_int = keep;
++	c1 = PM_HullPointContents( hull, num, p );
++	rp_hull_in_check = 0;
++	rp_hull_counts[2]++;
++	if( c0 != c1 && rp_hull_counts[3]++ < 8 )
++		fprintf( stderr, "rp-hull: a point differs: %d by the floats, %d now (%.6f %.6f %.6f, node %d)%c", c0, c1, p[0], p[1], p[2], num, 10 );
++	return c1;
 +}
 +
  /*
  ==================
  PM_HullPointContents
-@@ -113,12 +299,19 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+@@ -113,12 +422,22 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
  	if( !hull || !hull->planes )	// fantom bmodels?
  		return CONTENTS_NONE;
  
-+	if( rp_trace_clip && ( hull->clipnodes16 == rp_trace_clip || hull->clipnodes32 == rp_trace_clip ))
++	/* R358 -rphullcheck: the point both ways, every difference counted */
++	if( rp_hull_check && !rp_hull_in_check )
++		return RP_PointCheckBoth( hull, num, p );
++	if( rp_hull_int )
 +	{
-+		int c = RP_TraceContents( hull, num, p );
++		int c = RP_TraceContents( hull, num, p, rp_trace_clip && ( hull->clipnodes16 == rp_trace_clip || hull->clipnodes32 == rp_trace_clip ));
 +
 +		if( c != RP_TRACE_NOPOINT )
 +			return c;
@@ -2008,7 +2134,7 @@ index b1e8e57..4404a97 100644
  		}
  	}
  	else
-@@ -126,7 +319,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
+@@ -126,7 +445,7 @@ int GAME_EXPORT PM_HullPointContents( hull_t *hull, int num, const vec3_t p )
  		while( num >= 0 )
  		{
  			mplane_t *plane = &hull->planes[hull->clipnodes16[num].planenum];
@@ -2017,17 +2143,54 @@ index b1e8e57..4404a97 100644
  		}
  	}
  	return num;
-@@ -199,6 +392,9 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+@@ -191,6 +510,31 @@ static hull_t *PM_HullForStudio( physent_t *pe, playermove_t *pmove, int *numhit
+ PM_RecursiveHullCheck
+ ==================
+ */
++/* R358 -rphullcheck: a trace both ways (the floats alone first, on copies),
++   every difference in what it returns and writes counted */
++static __attribute__(( noinline )) qboolean RP_HullCheckBoth( hull_t *hull, int num, float p1f, float p2f, vec3_t p1, vec3_t p2, pmtrace_t *trace )
++{
++	pmtrace_t t0 = *trace;
++	vec3_t    a, b;
++	qboolean  r0, r1;
++	int       keep = rp_hull_int;
++
++	VectorCopy( p1, a );
++	VectorCopy( p2, b );
++	rp_hull_in_check = 1;
++	rp_hull_int = 0;
++	r0 = PM_RecursiveHullCheck( hull, num, p1f, p2f, a, b, &t0 );
++	rp_hull_int = keep;
++	r1 = PM_RecursiveHullCheck( hull, num, p1f, p2f, p1, p2, trace );
++	rp_hull_in_check = 0;
++	rp_hull_counts[0]++;
++	if(( r0 != r1 || memcmp( &t0, trace, sizeof( t0 ))) && rp_hull_counts[1]++ < 8 )
++		fprintf( stderr, "rp-hull: a trace differs: fraction %.9g/%.9g end %.6f %.6f %.6f / %.6f %.6f %.6f plane %.6f/%.6f solid %d%d/%d%d%c",
++			t0.fraction, trace->fraction, t0.endpos[0], t0.endpos[1], t0.endpos[2], trace->endpos[0], trace->endpos[1], trace->endpos[2],
++			t0.plane.dist, trace->plane.dist, t0.allsolid, t0.startsolid, trace->allsolid, trace->startsolid, 10 );
++	return r1;
++}
++
+ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec3_t p1, vec3_t p2, pmtrace_t *trace )
+ {
+ 	int children[2];
+@@ -199,6 +543,14 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
  	float		frac, midf;
  	int		side;
  	vec3_t		mid;
 +	int32_t		q1[3], q2[3];
-+	const int	rp_int = rp_trace_clip && ( hull->clipnodes16 == rp_trace_clip || hull->clipnodes32 == rp_trace_clip )
-+		&& RP_TracePoint( p1, q1 ) && RP_TracePoint( p2, q2 );
++	int		rp_int, rp_hull0;
++
++	if( rp_hull_check && !rp_hull_in_check )
++		return RP_HullCheckBoth( hull, num, p1f, p2f, p1, p2, trace );
++	/* kit 109's table for the world's point hull, R358's planes met for every hull */
++	rp_hull0 = rp_trace_clip && ( hull->clipnodes16 == rp_trace_clip || hull->clipnodes32 == rp_trace_clip );
++	rp_int = rp_hull_int && RP_TracePoint( p1, q1 ) && RP_TracePoint( p2, q2 );
  loc0:
  	// check for empty
  	if( num < 0 )
-@@ -239,23 +435,56 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+@@ -239,23 +591,61 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
  		plane = hull->planes + hull->clipnodes16[num].planenum;
  	}
  
@@ -2040,8 +2203,13 @@ index b1e8e57..4404a97 100644
 +	// to kit 61's floats below exactly as before
 +	if( rp_int && plane->type >= 3 )
 +	{
-+		int a = RP_TraceSide( num, q1 ), b = a < 0 ? -1 : RP_TraceSide( num, q2 );
++		int         a = -1, b = -1;
++		rp_tplane_t fx;
 +
++		if( rp_hull0 && ( a = RP_TraceSide( num, q1 )) >= 0 )
++			b = RP_TraceSide( num, q2 );
++		else if( RP_PlaneFix( plane, &fx ) && ( a = RP_FixSide( &fx, q1 )) >= 0 )
++			b = RP_FixSide( &fx, q2 );
 +		if( a >= 0 && a == b )
 +		{
 +			rp_trace_counts[0]++;
@@ -2089,7 +2257,21 @@ index b1e8e57..4404a97 100644
  
  	if( side ) frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );
  	else frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );
-@@ -320,9 +549,23 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+@@ -267,8 +657,11 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 		frac = 0.0f;
+ 	if( frac > 1.0f ) frac = 1.0f;
+ 
+-	midf = p1f + ( p2f - p1f ) * frac;
+-	VectorLerp( p1, frac, p2, mid );
++	/* R358: a component the same at both ends kept as it is (RP_Lerp1: the float code's own answer) */
++	midf = RP_Lerp1( p1f, frac, p2f );
++	mid[0] = RP_Lerp1( p1[0], frac, p2[0] );
++	mid[1] = RP_Lerp1( p1[1], frac, p2[1] );
++	mid[2] = RP_Lerp1( p1[2], frac, p2[2] );
+ 
+ 	// move up to the node
+ 	if( !PM_RecursiveHullCheck( hull, children[side], p1f, midf, p1, mid, trace ))
+@@ -320,9 +713,23 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
  	return false;
  }
  
@@ -2113,7 +2295,7 @@ index b1e8e57..4404a97 100644
  
  	memset( &trace_total, 0, sizeof( trace_total ));
  	VectorCopy( end, trace_total.endpos );
-@@ -504,7 +747,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
+@@ -504,7 +911,11 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
  		if( trace_bbox.startsolid )
  			trace_bbox.fraction = 0.0f;
  
@@ -3206,6 +3388,64 @@ index 54975d6..c74f1d5 100644
  		pData += sizeof( short );
  
  		size = Q_min( nFieldSize, MAX_STRING );
+diff --git a/engine/server/sv_world.c b/engine/server/sv_world.c
+index dbbb19a..a51634e 100644
+--- a/engine/server/sv_world.c
++++ b/engine/server/sv_world.c
+@@ -760,9 +760,10 @@ static void SV_WaterLinks( const vec3_t origin, int *pCont, areanode_t *node )
+ 	// recurse down both sides
+ 	if( node->axis == -1 ) return;
+ 
+-	if( origin[node->axis] > node->dist )
++	// R358: the compares on the floats' bits (RP_FloatGt: C's answers)
++	if( RP_FloatGt( origin[node->axis], node->dist ))
+ 		SV_WaterLinks( origin, pCont, node->children[0] );
+-	if( origin[node->axis] < node->dist )
++	if( RP_FloatGt( node->dist, origin[node->axis] ))
+ 		SV_WaterLinks( origin, pCont, node->children[1] );
+ }
+ 
+@@ -1081,6 +1082,17 @@ void SV_CustomClipMoveToEntity( edict_t *ent, const vec3_t start, vec3_t mins, v
+ 	}
+ }
+ 
++/* R358 -rphullcheck: a box test both ways (out of the hot code) */
++extern int      rp_hull_check;
++extern unsigned rp_hull_counts[8];
++static __attribute__(( noinline )) void RP_BoxCheckBoth( const moveclip_t *clip, const edict_t *touch )
++{
++	rp_hull_counts[4]++;
++	if( BoundsIntersectF( clip->boxmins, clip->boxmaxs, touch->v.absmin, touch->v.absmax )
++		!= BoundsIntersect( clip->boxmins, clip->boxmaxs, touch->v.absmin, touch->v.absmax ))
++		rp_hull_counts[5]++;
++}
++
+ /*
+ ====================
+ SV_ClipToEntity
+@@ -1132,6 +1144,9 @@ static qboolean SV_ClipToEntity( edict_t *touch, moveclip_t *clip )
+ 			return true;
+ 	}
+ 
++	/* R358 -rphullcheck: the box test both ways (the floats' compare, the bits') */
++	if( rp_hull_check )
++		RP_BoxCheckBoth( clip, touch );
+ 	if( !BoundsIntersect( clip->boxmins, clip->boxmaxs, touch->v.absmin, touch->v.absmax ))
+ 		return true;
+ 
+@@ -1206,9 +1221,10 @@ static void SV_ClipToLinks( areanode_t *node, moveclip_t *clip )
+ 	// recurse down both sides
+ 	if( node->axis == -1 ) return;
+ 
+-	if( clip->boxmaxs[node->axis] > node->dist )
++	// R358: the compares on the floats' bits (RP_FloatGt: C's answers)
++	if( RP_FloatGt( clip->boxmaxs[node->axis], node->dist ))
+ 		SV_ClipToLinks( node->children[0], clip );
+-	if( clip->boxmins[node->axis] < node->dist )
++	if( RP_FloatGt( node->dist, clip->boxmins[node->axis] ))
+ 		SV_ClipToLinks( node->children[1], clip );
+ }
+ 
 diff --git a/filesystem/dir.c b/filesystem/dir.c
 index 4541703..141c7d7 100644
 --- a/filesystem/dir.c
@@ -3398,7 +3638,7 @@ index d758049..6db4015 100644
  	out[0][1] = in1[0][0] * in2[0][1] + in1[0][1] * in2[1][1] + in1[0][2] * in2[2][1];
  	out[0][2] = in1[0][0] * in2[0][2] + in1[0][1] * in2[1][2] + in1[0][2] * in2[2][2];
 diff --git a/public/xash3d_mathlib.h b/public/xash3d_mathlib.h
-index afbc183..e509d67 100644
+index afbc183..1d037db 100644
 --- a/public/xash3d_mathlib.h
 +++ b/public/xash3d_mathlib.h
 @@ -91,7 +91,14 @@ CONSTANTS AND HELPER MACROS
@@ -3416,6 +3656,65 @@ index afbc183..e509d67 100644
  #define DotProductFabs(x,y) (fabs((x)[0]*(y)[0])+fabs((x)[1]*(y)[1])+fabs((x)[2]*(y)[2]))
  #define DotProductPrecise(x,y) ((double)(x)[0]*(double)(y)[0]+(double)(x)[1]*(double)(y)[1]+(double)(x)[2]*(double)(y)[2])
  #define CrossProduct(a,b,c) ((c)[0]=(a)[1]*(b)[2]-(a)[2]*(b)[1],(c)[1]=(a)[2]*(b)[0]-(a)[0]*(b)[2],(c)[2]=(a)[0]*(b)[1]-(a)[1]*(b)[0])
+@@ -460,7 +467,7 @@ static inline void ClearBounds( vec3_t mins, vec3_t maxs )
+ 	maxs[0] = maxs[1] = maxs[2] = -999999.0f;
+ }
+ 
+-static inline qboolean BoundsIntersect( const vec3_t mins1, const vec3_t maxs1, const vec3_t mins2, const vec3_t maxs2 )
++static inline qboolean BoundsIntersectF( const vec3_t mins1, const vec3_t maxs1, const vec3_t mins2, const vec3_t maxs2 )
+ {
+ 	if( mins1[0] > maxs2[0] || mins1[1] > maxs2[1] || mins1[2] > maxs2[2] )
+ 		return false;
+@@ -469,6 +476,49 @@ static inline qboolean BoundsIntersect( const vec3_t mins1, const vec3_t maxs1,
+ 	return true;
+ }
+ 
++#if defined( __retropane__ )
++/*
++RetroPane R358 (run 318, the alien grunts' fight ~16 fps: SV_ClipToEntity's
++box tests among the server's traces, each `>` a call to the soft-float
++compare, ~20 cycles). The textbook and Xash way: the float compare. Ours:
++a > b on the floats' bits, the IEEE order as signed-magnitude integers
++(-0 and +0 both 0), a NaN on either side false as C's compare: the same
++answer for every pair of floats, at two or three integer instructions.
++*/
++static inline int RP_FloatOrderKey( float f )
++{
++	unsigned int u;
++
++	__builtin_memcpy( &u, &f, sizeof( u ));
++	return (int)u >= 0 ? (int)u : (int)( 0x80000000u - u );
++}
++
++static inline int RP_FloatIsNan( float f )
++{
++	unsigned int u;
++
++	__builtin_memcpy( &u, &f, sizeof( u ));
++	return ( u & 0x7FFFFFFFu ) > 0x7F800000u;
++}
++
++/* a > b, exactly C's answer */
++static inline int RP_FloatGt( float a, float b )
++{
++	return !RP_FloatIsNan( a ) && !RP_FloatIsNan( b ) && RP_FloatOrderKey( a ) > RP_FloatOrderKey( b );
++}
++
++static inline qboolean BoundsIntersect( const vec3_t mins1, const vec3_t maxs1, const vec3_t mins2, const vec3_t maxs2 )
++{
++	if( RP_FloatGt( mins1[0], maxs2[0] ) || RP_FloatGt( mins1[1], maxs2[1] ) || RP_FloatGt( mins1[2], maxs2[2] ))
++		return false;
++	if( RP_FloatGt( mins2[0], maxs1[0] ) || RP_FloatGt( mins2[1], maxs1[1] ) || RP_FloatGt( mins2[2], maxs1[2] ))
++		return false;
++	return true;
++}
++#else
++#define BoundsIntersect BoundsIntersectF
++#endif
++
+ static inline qboolean BoundsAndSphereIntersect( const vec3_t mins, const vec3_t maxs, const vec3_t origin, float radius )
+ {
+ 	if( mins[0] > origin[0] + radius || mins[1] > origin[1] + radius || mins[2] > origin[2] + radius )
 diff --git a/ref/common/ref_common.h b/ref/common/ref_common.h
 index 32fa799..8587d18 100644
 --- a/ref/common/ref_common.h

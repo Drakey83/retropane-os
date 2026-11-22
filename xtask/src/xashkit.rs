@@ -883,4 +883,71 @@ engine c
             "the 16-bit edges' kept places cleared at the load"
         );
     }
+
+    /// R358's guard: the integer hull trace decides only sides, outside
+    /// kit 109's 1/32-unit margin, and keeps the float code's own
+    /// operations for every value a trace returns; `-rphullcheck` (the
+    /// emulator's proof, every trace and point both ways) and
+    /// `-rphullfloat` (the old way) stay in.
+    #[test]
+    fn the_integer_hull_trace_keeps_its_margin_and_its_check() {
+        let patch = include_str!("../../ports/xash/patches/xash3d-fwgs.patch");
+        let added: String = patch
+            .lines()
+            .filter(|l| l.starts_with('+'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needed in [
+            "\"-rphullcheck\"",
+            "\"-rphullfloat\"",
+            "RP_HullCheckBoth(",
+            "RP_PointCheckBoth(",
+            "RP_BoxCheckBoth(",
+            "if( v >= RP_TRACE_MARGIN )",
+            "if( sum > ( 1u << 31 ))",
+        ] {
+            assert!(added.contains(needed), "R358's trace lost {needed}");
+        }
+        // the crossing's own values still the float code's
+        assert!(
+            patch.contains("frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );")
+                && patch.contains("frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );"),
+            "DIST_EPSILON's crossing must stay as upstream wrote it"
+        );
+    }
+
+    /// R351's guard: the menus show no control that cannot act on the
+    /// X51v (multiplayer, previews, Xash's touch editor, the gamepad, the
+    /// update page, video modes, the GL renderer's boxes, vibration, raw
+    /// input), each left out under `XASH_RETROPANE` and not deleted.
+    #[test]
+    fn the_menus_show_no_control_that_cannot_act() {
+        let patch = include_str!("../../ports/xash/patches/mainui.patch");
+        // the patched files' lines (context and added), not the removed ones
+        let lines: Vec<&str> = patch.lines().filter(|l| !l.starts_with('-')).collect();
+        for item in [
+            "AddItem( multiPlayer );",
+            "AddItem( previews );",
+            "AddItem( vbo );",
+            "AddItem( filtering );",
+            "AddItem( hudscale );",
+            "AddItem( vibration );",
+            "AddItem( muteFocusLost );",
+            "AddItem( rawinput );",
+            "AddItem( inputDev );",
+            "UI_VidModes_Menu",
+            "UI_Touch_Menu",
+            "UI_GamePad_Menu",
+        ] {
+            let at = lines
+                .iter()
+                .position(|l| l.contains(item))
+                .unwrap_or_else(|| panic!("{item} not in the patch's context"));
+            let before = lines[at.saturating_sub(8)..at].join(" ");
+            assert!(
+                before.contains("#if !XASH_RETROPANE"),
+                "{item} shown on the X51v (R351)"
+            );
+        }
+    }
 }

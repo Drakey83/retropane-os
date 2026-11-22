@@ -351,13 +351,95 @@ index 1159ec9..50a02b9 100644
  
  
  	textHeight = m_scPos.y - (m_scChSize * 1.5f);
+diff --git a/menus/AdvancedControls.cpp b/menus/AdvancedControls.cpp
+index 3424ce3..88b5a1c 100644
+--- a/menus/AdvancedControls.cpp
++++ b/menus/AdvancedControls.cpp
+@@ -199,7 +199,9 @@ void CAdvancedControls::_Init( void )
+ 
+ 	AddItem( banner );
+ 	AddItem( done );
++#if !XASH_RETROPANE
+ 	AddItem( inputDev );
++#endif
+ 	AddItem( crosshair );
+ 	AddItem( invertMouse );
+ 	AddItem( mouseLook );
+@@ -207,7 +209,9 @@ void CAdvancedControls::_Init( void )
+ 	AddItem( lookStrafe );
+ 	AddItem( lookFilter );
+ 	AddItem( autoaim );
+-	AddItem( rawinput );
++#if !XASH_RETROPANE
++	AddItem( rawinput ); // (R351: Windows' raw mouse input; and Input devices above could switch the stylus's look off)
++#endif
+ 	AddItem( sensitivity );
+ }
+ 
+diff --git a/menus/Audio.cpp b/menus/Audio.cpp
+index 152fb47..826421e 100644
+--- a/menus/Audio.cpp
++++ b/menus/Audio.cpp
+@@ -166,9 +166,16 @@ void CMenuAudio::_Init( void )
+ 	AddItem( suitVolume );
+ 	AddItem( noDSP );
+ 	AddItem( useAlphaDSP );
++#if !XASH_RETROPANE
+ 	AddItem( muteFocusLost );
++#endif
++#if !XASH_RETROPANE
+ 	AddItem( vibrationEnable );
+ 	AddItem( vibration );
++#endif
++	// RetroPane R351 (every control must act): no Mute when inactive (the
++	// game is never in the background on the X51v) and no vibration (no
++	// motor driver; its board bit has no recorded owner)
+ }
+ 
+ void CMenuAudio::_VidInit( )
+diff --git a/menus/Configuration.cpp b/menus/Configuration.cpp
+index 6e0a981..1d9880f 100644
+--- a/menus/Configuration.cpp
++++ b/menus/Configuration.cpp
+@@ -61,12 +61,17 @@ void CMenuOptions::_Init( void )
+ 		PC_AUDIO, UI_Audio_Menu, QMF_NOTIFY );
+ 	AddButton( L( "GameUI_Video" ), L( "Change screen size, video mode and gamma" ),
+ 		PC_VIDEO, UI_Video_Menu, QMF_NOTIFY );
++#if !XASH_RETROPANE
+ 	AddButton( L( "Touch" ), L( "Change touch settings and buttons" ),
+ 		PC_TOUCH, UI_Touch_Menu, QMF_NOTIFY, 't' );
+ 	AddButton( L( "GameUI_Joystick" ), L( "Change gamepad axis and button settings" ),
+ 		PC_GAMEPAD, UI_GamePad_Menu, QMF_NOTIFY, 'g' );
+ 	AddButton( L( "Update" ), L( "Check for updates" ),
+ 		PC_UPDATE, msgBox.MakeOpenEvent(), QMF_NOTIFY );
++#endif
++	// RetroPane R351 (the owner, 2026-11-21: "none of those selections really work": every control must take a choice, keep it and act on it): no Touch (Xash's on-screen
++	// buttons and their editor: RetroPane's touch keys are its own, in_rp.c),
++	// no Gamepad (none on the X51v), no Update (a web page)
+ 	AddButton( L( "Done" ), L( "Go back to the Main menu" ),
+ 		PC_DONE, VoidCb( &CMenuOptions::Hide ), QMF_NOTIFY );
+ }
 diff --git a/menus/Main.cpp b/menus/Main.cpp
-index 4d1a382..5996049 100644
+index 4d1a382..41f7663 100644
 --- a/menus/Main.cpp
 +++ b/menus/Main.cpp
-@@ -299,8 +299,14 @@ void CMenuMain::_Init( void )
+@@ -292,15 +292,28 @@ void CMenuMain::_Init( void )
  
+ 	AddItem( configuration );
+ 	AddItem( saveRestore );
++#if !XASH_RETROPANE
+ 	AddItem( multiPlayer );
++#endif
+ 
+ 	if ( bCustomGame )
+ 		AddItem( customGame );
+ 
++#if !XASH_RETROPANE
  	AddItem( previews );
++#endif
++	// RetroPane R351 (the owner, 2026-11-21: "none of those selections really work": every control must take a choice, keep it and act on it): no Multiplayer (no network on the X51v
++	// yet: its server browser and game creation lead nowhere) and no
++	// Previews (a web page, no browser): Half-Life's single-player list
  	AddItem( quit );
 +#if !XASH_RETROPANE
  	AddItem( minimizeBtn );
@@ -370,8 +452,52 @@ index 4d1a382..5996049 100644
  }
  
  /*
+@@ -322,11 +335,17 @@ void CMenuMain::VidInit( bool connected )
+ 	minimizeBtn.SetRect( uiStatic.width - 72, 13, 32, 32 );
+ 	quitButton.SetRect( uiStatic.width - 36, 13, 32, 32 );
+ 
++#if XASH_RETROPANE
++	// (R351: Previews and Multiplayer not shown, Quit in Previews' place)
++	quit.SetCoord( hoffset, previews_voffset );
++	int yoffset = previews_voffset - ygap;
++#else
+ 	previews.SetCoord( hoffset, previews_voffset );
+ 	quit.SetCoord( hoffset, previews_voffset + ygap );
+ 
+ 	// let's start calculating positions
+ 	int yoffset = previews_voffset - ygap;
++#endif
+ 
+ 	if( bCustomGame )
+ 	{
+@@ -334,8 +353,10 @@ void CMenuMain::VidInit( bool connected )
+ 		yoffset -= ygap;
+ 	}
+ 
++#if !XASH_RETROPANE
+ 	multiPlayer.SetCoord( hoffset, yoffset );
+ 	yoffset -= ygap;
++#endif
+ 
+ 	bool single = gpGlobals->maxClients < 2;
+ 
+diff --git a/menus/Video.cpp b/menus/Video.cpp
+index d5216cb..3c6745d 100644
+--- a/menus/Video.cpp
++++ b/menus/Video.cpp
+@@ -45,7 +45,10 @@ void UI_Video_Menu( void )
+ 
+ 		menu_video->AddItem( menu_video->banner );
+ 		menu_video->AddButton( L( "Video options" ), L( "Set video options such as screen size, gamma and image quality." ), PC_VID_OPT, UI_VidOptions_Menu, QMF_NOTIFY );
++#if !XASH_RETROPANE
++		// (R351: the X51v has one mode, 640 x 480 on its panel, and one renderer)
+ 		menu_video->AddButton( L( "Video modes" ), L( "Set video modes and configure 3D accelerators." ), PC_VID_MODES, UI_VidModes_Menu, QMF_NOTIFY );
++#endif
+ 		menu_video->AddButton( L( "Done" ), L( "Go back to the previous menu" ), PC_DONE, VoidCb( &CMenuFramework::Hide ), QMF_NOTIFY );
+ 	}
+ 
 diff --git a/menus/VideoOptions.cpp b/menus/VideoOptions.cpp
-index 69dd50a..0b4f03f 100644
+index 69dd50a..2619f46 100644
 --- a/menus/VideoOptions.cpp
 +++ b/menus/VideoOptions.cpp
 @@ -180,6 +180,18 @@ void CMenuVidOptions::_Init( void )
@@ -401,13 +527,14 @@ index 69dd50a..0b4f03f 100644
  
  	done.szName = L( "GameUI_OK" );
  	done.SetCoord( 72, height );
-@@ -276,21 +289,29 @@ void CMenuVidOptions::_Init( void )
+@@ -276,21 +289,36 @@ void CMenuVidOptions::_Init( void )
  	AddItem( screenSize );
  #endif
  	AddItem( gammaIntensity );
 +#if !XASH_RETROPANE
  	AddItem( brightness );
 +#endif
++#if !XASH_RETROPANE
  	AddItem( detailtex );
  	AddItem( vbo );
  	AddItem( swwater );
@@ -415,6 +542,12 @@ index 69dd50a..0b4f03f 100644
  	AddItem( filtering );
  	AddItem( hudscale );
 -	AddItem( testImage );
++#endif
++	// RetroPane R351 (the owner, 2026-11-21: "none of those selections really work": every control must take a choice, keep it and act on it): the GL renderer's four boxes
++	// (greyed: ref_rp is not GL), the software scan's filter (the 2700G
++	// draws, filtered, R297) and the HUD scale (latched; the HUD laid out
++	// for 640 x 480 with the touch keys beside it) are not shown: Picture
++	// brightness is this window's control
 +#if !XASH_RETROPANE
 +	AddItem( testImage ); // (the gamma test picture: not in the game's files, and the screen itself shows the step)
 +#else
