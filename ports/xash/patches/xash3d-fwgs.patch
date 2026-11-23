@@ -1237,7 +1237,7 @@ index 2cd7030..00d288b 100644
  
  	if((int)(endtime - snd.soundtime) > samps )
 diff --git a/engine/client/sound/s_mix.c b/engine/client/sound/s_mix.c
-index fe5ece4..cd7a04f 100644
+index fe5ece4..e9aae12 100644
 --- a/engine/client/sound/s_mix.c
 +++ b/engine/client/sound/s_mix.c
 @@ -18,15 +18,49 @@ GNU General Public License for more details.
@@ -1292,7 +1292,7 @@ index fe5ece4..cd7a04f 100644
  		} \
  	} \
  
-@@ -34,25 +68,50 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -34,25 +68,122 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	static void S_MixStereo ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, int num_samples ) \
  	{ \
  		const int##x##_t *data = buf; \
@@ -1329,8 +1329,35 @@ index fe5ece4..cd7a04f 100644
 +		sample_idx += ( st_i + ( ph < was )) * ( n ); \
 +	}
 +
++/*
++RetroPane (R360 step 7, ADR-0040 7f under ADR-0039): run 342a put ~90 of
++S_MixChannelToBuffer's 95 samples in this loop, 8-bit mono resampled:
++Half-Life's 11,025 Hz sounds into the 22,050 Hz mix, a step of exactly
++one half. Quake and Xash step the phase every output sample and load and
++multiply the source again for each; at a step of 2^31 the phase's carry
++alternates, so each source sample feeds exactly two outputs (the first
++alone when the phase starts in its upper half): loaded and multiplied
++once, added twice. -rpmixpair0 the old loop; -rpmixcheck the old loop on
++a copy, every sample compared. The pair added by iWMMXt (TMCRR, two WLDRD,
++two WADDW, two WSTRD against LDM, four ADD and STM) was measured no faster
++(runs 347a-e: 17,275 ms both) and taken out: the game's code keeps off the
++media unit's registers (runner, 7g1).
++*/
++static int      rp_mixpair = 1, rp_mixcheck;
++static uint32_t rp_mix_calls, rp_mix_pairs, rp_mix_differ, rp_mix_said;
++static portable_samplepair_t rp_mix_ref[PAINTBUFFER_SIZE + 1];
++
++static inline void RP_MixAddPair( portable_samplepair_t *p, int a, int b )
++{
++	p[0].left += a;
++	p[0].right += b;
++	p[1].left += a;
++	p[1].right += b;
++}
++
  #define S_MakeMixMonoPitch( x ) \
- 	static void S_MixMonoPitch ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, double offset_frac, double rate_scale, int num_samples ) \
+-	static void S_MixMonoPitch ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, double offset_frac, double rate_scale, int num_samples ) \
++	static void S_MixMonoPitchOld ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, double offset_frac, double rate_scale, int num_samples ) \
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1347,10 +1374,56 @@ index fe5ece4..cd7a04f 100644
 +			pbuf[i].left  += ( d * v0 ) >> ( x - 8 ); \
 +			pbuf[i].right += ( d * v1 ) >> ( x - 8 ); \
 +			RP_ADVANCE( 1 ) \
++		} \
++	} \
++	static void S_MixMonoPitch ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, double offset_frac, double rate_scale, int num_samples ) \
++	{ \
++		const int##x##_t *data = buf; \
++		uint sample_idx = 0; \
++		RP_PHASE( offset_frac, rate_scale ) \
++		const int v0 = volume[0], v1 = volume[1]; \
++		int i = 0; \
++		if( !rp_mixpair || st_i != 0 || st_f != 0x80000000u ) \
++		{ \
++			S_MixMonoPitchOld ## x( pbuf, volume, buf, offset_frac, rate_scale, num_samples ); \
++			return; \
++		} \
++		if( rp_mixcheck ) \
++		{ \
++			memcpy( rp_mix_ref, pbuf, num_samples * sizeof( *pbuf )); \
++			S_MixMonoPitchOld ## x( rp_mix_ref, volume, buf, offset_frac, rate_scale, num_samples ); \
++		} \
++		if( ph >= 0x80000000u && num_samples > 0 ) \
++		{ \
++			/* the phase in its upper half: the first output alone, then the carry */ \
++			const int d = data[sample_idx++]; \
++			pbuf[0].left  += ( d * v0 ) >> ( x - 8 ); \
++			pbuf[0].right += ( d * v1 ) >> ( x - 8 ); \
++			i = 1; \
++		} \
++		for( ; i + 1 < num_samples; i += 2 ) \
++		{ \
++			const int d = data[sample_idx++]; \
++			RP_MixAddPair( &pbuf[i], ( d * v0 ) >> ( x - 8 ), ( d * v1 ) >> ( x - 8 )); \
++		} \
++		if( i < num_samples ) \
++		{ \
++			const int d = data[sample_idx]; \
++			pbuf[i].left  += ( d * v0 ) >> ( x - 8 ); \
++			pbuf[i].right += ( d * v1 ) >> ( x - 8 ); \
++		} \
++		rp_mix_calls++; \
++		if( rp_mixcheck ) \
++		{ \
++			rp_mix_pairs += (uint32_t)num_samples; \
++			rp_mix_differ += memcmp( rp_mix_ref, pbuf, num_samples * sizeof( *pbuf )) != 0; \
++			if(( rp_mix_calls & 1023 ) == 1 && rp_mix_said++ < 64 ) \
++				Con_Printf( "rp-mix: -rpmixcheck: %u calls at a step of one half, %u samples compared, %u calls differed (must be 0)\n", \
++					rp_mix_calls, rp_mix_pairs, rp_mix_differ ); \
  		} \
  	} \
  
-@@ -61,13 +120,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -61,13 +192,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1370,7 +1443,7 @@ index fe5ece4..cd7a04f 100644
  		} \
  	} \
  
-@@ -76,14 +136,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -76,14 +208,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1392,7 +1465,7 @@ index fe5ece4..cd7a04f 100644
  		} \
  	} \
  
-@@ -92,15 +153,16 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -92,15 +225,16 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1416,7 +1489,7 @@ index fe5ece4..cd7a04f 100644
  		} \
  	} \
  
-@@ -443,7 +505,7 @@ static int S_MixRawChannels( int end )
+@@ -443,7 +577,7 @@ static int S_MixRawChannels( int end )
  		{
  			// for streams we don't have fancy things like volume controls
  			// or DSP processing or upsampling, so paint it directly into result buffer
@@ -1425,7 +1498,7 @@ index fe5ece4..cd7a04f 100644
  		}
  		else
  		{
-@@ -542,10 +604,48 @@ void S_ClearBuffers( int num_samples )
+@@ -542,10 +676,50 @@ void S_ClearBuffers( int num_samples )
  	memset( paintbuffer, 0, num_bytes );
  }
  
@@ -1470,11 +1543,13 @@ index fe5ece4..cd7a04f 100644
 +	{
 +		rp_sndfuse = !Sys_CheckParm( "-rpsndfuse0" );
 +		rp_sndcheck = Sys_CheckParm( "-rpsndcheck" ) != 0;
++		rp_mixpair = !Sys_CheckParm( "-rpmixpair0" );
++		rp_mixcheck = Sys_CheckParm( "-rpmixcheck" ) != 0;
 +	}
  	while( snd.paintedtime < endtime )
  	{
  		// if paintbuffer is smaller than DMA buffer
-@@ -555,7 +655,17 @@ void S_PaintChannels( int endtime )
+@@ -555,7 +729,17 @@ void S_PaintChannels( int endtime )
  
  		const int num_samples = end - snd.paintedtime;
  
@@ -1493,16 +1568,14 @@ index fe5ece4..cd7a04f 100644
  
  		int room_channels = S_MixNormalChannelsToRoombuffer( roombuffer, end );
  
-@@ -565,11 +675,52 @@ void S_PaintChannels( int endtime )
+@@ -565,11 +749,52 @@ void S_PaintChannels( int endtime )
  		if( cls.key_dest != key_menu )
  			SX_RoomFX( roombuffer, num_samples );
  
 -		if( room_channels > 0 || cls.key_dest != key_menu )
 -			S_MixBufferWithGain( paintbuffer, roombuffer, num_samples, gain );
 +		const int mixed = room_channels > 0 || cls.key_dest != key_menu;
- 
--		// transfer out according to DMA format
--		S_TransferPaintBuffer( paintbuffer, end );
++
 +		rp_snd_passes++;
 +		if( !rp_paint_used )
 +		{
@@ -1543,7 +1616,9 @@ index fe5ece4..cd7a04f 100644
 +		{
 +			if( mixed )
 +				S_MixBufferWithGain( paintbuffer, roombuffer, num_samples, gain );
-+
+ 
+-		// transfer out according to DMA format
+-		S_TransferPaintBuffer( paintbuffer, end );
 +			// transfer out according to DMA format
 +			S_TransferPaintBuffer( paintbuffer, end );
 +		}

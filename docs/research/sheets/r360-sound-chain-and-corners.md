@@ -198,3 +198,23 @@ fps), `-rpsndfuse0` 17,367 (the build before it: 17,360),
 `-rpsndcheck` 18,002 with 1,936,248 output samples compared, 0 differed,
 every pass straight from the room buffer. **Kept: ~60 ms over the 500
 frames.**
+
+## Step 7: the resampling loop at a step of one half, each source sample once (built, kept; iWMMXt measured, out)
+
+Run 342a: ~90 of `S_MixChannelToBuffer`'s 95 samples in one loop, 8-bit
+mono resampled (Half-Life's 11,025 Hz sounds into the 22,050 Hz mix).
+
+| | What it does |
+|---|---|
+| Quake / Xash | each output sample steps the phase, loads its source sample and multiplies it by both volumes |
+| **Ours** | at a step of exactly one half the phase's carry alternates, so each source sample feeds exactly two outputs (the first alone when the phase starts in its upper half): loaded and multiplied once, added twice; any other step the old loop |
+| iWMMXt (asked for, measured) | the pair added as 64-bit lanes (TMCRR, two WLDRD, two WADDW, two WSTRD): 17,275 ms, the same as the scalar pair (LDM, four ADD, STM): taken out, so the game's code stays off the media unit's registers |
+| Old way | `-rpmixpair0`; `-rpmixcheck` the old loop on a copy, every sample compared |
+| Proof | the PC: 2,000,000 calls (8- and 16-bit, every phase), 0 differ; the X51v (run 347d): 2,709,818 samples in 4,097 calls, 0 differ |
+
+**Runs 347a-e (2026-11-23, one kit):** the pair 17,272 and 17,275 ms
+(28.9 fps), `-rpmixpair0` 17,297 (the step 6 build: 17,304 / 17,308),
+`-rpmixwmmx` 17,275, the check 17,956. **Kept: ~25 ms.**
+
+**R360 since run 342a (17,404 ms):** steps 5 to 7 together 17,272 ms,
+132 ms (0.26 ms a frame) faster, every picture and sample the same.
