@@ -470,8 +470,9 @@ fn day(v: &[u8], omit: Option<&[u8]>) -> Option<Day> {
     };
     // Apple's "no year" year, and a year 0000 some phones write.
     let omit = omit.and_then(|o| {
-        o.iter()
-            .try_fold(0i32, |n, &c| c.is_ascii_digit().then(|| n * 10 + i32::from(c - b'0')))
+        o.iter().try_fold(0i32, |n, &c| {
+            c.is_ascii_digit().then(|| n * 10 + i32::from(c - b'0'))
+        })
     });
     let year = year.filter(|&y| Some(y) != omit && y >= 1000);
     let out = Day {
@@ -518,6 +519,12 @@ fn phone_label(h: &Head) -> &'static [u8] {
 /// (the caller's card: a reader on the stack of a program is kept small)
 /// until it answers false. The cards it handed over.
 pub fn each(text: &[u8], card: &mut Card, mut take: impl FnMut(&Card) -> bool) -> usize {
+    each_dyn(text, card, &mut take)
+}
+
+/// [`each`] built once.
+#[inline(never)]
+fn each_dyn(text: &[u8], card: &mut Card, take: &mut dyn FnMut(&Card) -> bool) -> usize {
     let mut inside = false;
     let mut cards = 0;
     let mut fname: Short<48> = Short::new();
@@ -570,7 +577,9 @@ pub fn each(text: &[u8], card: &mut Card, mut take: impl FnMut(&Card) -> bool) -
             }
             // Located, not copied: the value's raw bytes (folds and all).
             let raw = &line[value.at.min(line.len())..];
-            let is_uri = h.param(b"VALUE").is_some_and(|v| v == b"URI" || v == b"URL")
+            let is_uri = h
+                .param(b"VALUE")
+                .is_some_and(|v| v == b"URI" || v == b"URL")
                 || (raw.len() > 5 && raw[..5].eq_ignore_ascii_case(b"http:"))
                 || (raw.len() > 6 && raw[..6].eq_ignore_ascii_case(b"https:"));
             if is_uri || card.photo.is_some() {
@@ -741,38 +750,49 @@ pub enum Version {
 
 /// Lines folded at 75 bytes (never inside a UTF-8 character), each ended
 /// by CRLF.
-struct Folder<'f, F: FnMut(&[u8])> {
-    out: &'f mut F,
-    col: usize,
+pub(crate) struct Folder<'f> {
+    pub(crate) out: &'f mut dyn FnMut(&[u8]),
+    pub(crate) col: usize,
 }
 
-impl<F: FnMut(&[u8])> Folder<'_, F> {
-    fn put(&mut self, s: &[u8]) {
+impl Folder<'_> {
+    /// `s` written, a fold before any character that would pass the
+    /// 75th byte; handed on in runs, not a byte at a time.
+    #[inline(never)]
+    pub(crate) fn put(&mut self, s: &[u8]) {
+        let mut from = 0;
         for (k, &c) in s.iter().enumerate() {
             // A continuation byte stays with its character.
-            let starts_char = c & 0xC0 != 0x80;
-            if self.col >= 74 && starts_char && k < s.len() {
+            if self.col >= 74 && c & 0xC0 != 0x80 {
+                (self.out)(&s[from..k]);
                 (self.out)(b"\r\n ");
+                from = k;
                 self.col = 1;
             }
-            (self.out)(&[c]);
             self.col += 1;
         }
+        (self.out)(&s[from..]);
     }
     /// A value's text with `\`, `,`, `;` and line breaks escaped.
-    fn escaped(&mut self, s: &[u8]) {
-        for &c in s {
-            match c {
-                b'\\' => self.put(b"\\\\"),
-                b',' => self.put(b"\\,"),
-                b';' => self.put(b"\\;"),
-                b'\n' => self.put(b"\\n"),
-                b'\r' => {}
-                _ => self.put(&[c]),
-            }
+    #[inline(never)]
+    pub(crate) fn escaped(&mut self, s: &[u8]) {
+        let mut from = 0;
+        for (k, &c) in s.iter().enumerate() {
+            let esc: &[u8] = match c {
+                b'\\' => b"\\\\",
+                b',' => b"\\,",
+                b';' => b"\\;",
+                b'\n' => b"\\n",
+                b'\r' => b"",
+                _ => continue,
+            };
+            self.put(&s[from..k]);
+            self.put(esc);
+            from = k + 1;
         }
+        self.put(&s[from..]);
     }
-    fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         (self.out)(b"\r\n");
         self.col = 0;
     }
@@ -781,7 +801,7 @@ impl<F: FnMut(&[u8])> Folder<'_, F> {
 /// A day as vCard writes it: "1815-12-10", or with no year "--1210" (4.0)
 /// or Apple's "1604-12-10" with `X-APPLE-OMIT-YEAR` (3.0, which has no
 /// form for it).
-fn put_day<F: FnMut(&[u8])>(f: &mut Folder<'_, F>, name: &[u8], d: Day, v: Version) {
+fn put_day(f: &mut Folder<'_>, name: &[u8], d: Day, v: Version) {
     let two = |n: u8| [b'0' + n / 10, b'0' + n % 10];
     f.put(name);
     match (d.year, v) {
@@ -845,10 +865,14 @@ fn label_type(label: &[u8], phone: bool) -> Option<&'static [u8]> {
 /// `card` written as a vCard of `v`, a piece at a time to `out`; its
 /// picture, when given, as an inline PNG or JPEG (`mime`'s subtype).
 pub fn write(card: &Card, photo: Option<(&[u8], &[u8])>, v: Version, mut out: impl FnMut(&[u8])) {
-    let mut f = Folder {
-        out: &mut out,
-        col: 0,
-    };
+    write_dyn(card, photo, v, &mut out);
+}
+
+/// [`write`] built once (a writer per caller's closure was 10 KB each in
+/// an app built for speed).
+#[inline(never)]
+fn write_dyn(card: &Card, photo: Option<(&[u8], &[u8])>, v: Version, out: &mut dyn FnMut(&[u8])) {
+    let mut f = Folder { out, col: 0 };
     f.put(b"BEGIN:VCARD");
     f.end();
     f.put(match v {
@@ -885,7 +909,7 @@ pub fn write(card: &Card, photo: Option<(&[u8], &[u8])>, v: Version, mut out: im
         f.end();
     }
     let mut item = 0u8;
-    let mut labelled = |f: &mut Folder<'_, _>, name: &[u8], l: &Labelled, phone: bool| {
+    let mut labelled = |f: &mut Folder<'_>, name: &[u8], l: &Labelled, phone: bool| {
         let ty = label_type(l.label.get(), phone);
         let group = ty.is_none().then(|| {
             item += 1;
@@ -981,7 +1005,7 @@ pub fn write(card: &Card, photo: Option<(&[u8], &[u8])>, v: Version, mut out: im
     f.end();
 }
 
-fn base64<F: FnMut(&[u8])>(f: &mut Folder<'_, F>, b: &[u8]) {
+fn base64(f: &mut Folder<'_>, b: &[u8]) {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for c in b.chunks(3) {
         let n = u32::from(c[0]) << 16
@@ -990,8 +1014,16 @@ fn base64<F: FnMut(&[u8])>(f: &mut Folder<'_, F>, b: &[u8]) {
         let q = [
             A[(n >> 18) as usize & 63],
             A[(n >> 12) as usize & 63],
-            if c.len() > 1 { A[(n >> 6) as usize & 63] } else { b'=' },
-            if c.len() > 2 { A[n as usize & 63] } else { b'=' },
+            if c.len() > 1 {
+                A[(n >> 6) as usize & 63]
+            } else {
+                b'='
+            },
+            if c.len() > 2 {
+                A[n as usize & 63]
+            } else {
+                b'='
+            },
         ];
         f.put(&q);
     }

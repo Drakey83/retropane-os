@@ -169,12 +169,21 @@ fn sample() -> Card {
 fn round_trip(v: Version) {
     let c = sample();
     let mut out = Vec::new();
-    write(&c, Some((&[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3][..], &b"jpeg"[..])), v, |b| {
-        out.extend_from_slice(b);
-    });
+    write(
+        &c,
+        Some((&[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3][..], &b"jpeg"[..])),
+        v,
+        |b| {
+            out.extend_from_slice(b);
+        },
+    );
     // Folded at 75 bytes, every line ended by CRLF.
     for line in out.split(|&c| c == b'\n') {
-        assert!(line.len() <= 76, "{}", std::string::String::from_utf8_lossy(line));
+        assert!(
+            line.len() <= 76,
+            "{}",
+            std::string::String::from_utf8_lossy(line)
+        );
     }
     let back = all(&out);
     assert_eq!(back.len(), 1);
@@ -187,7 +196,10 @@ fn round_trip(v: Version) {
     for k in 0..4 {
         assert_eq!(b.phones[k].value, c.phones[k].value, "{v:?} phone {k}");
         assert!(
-            b.phones[k].label.get().eq_ignore_ascii_case(c.phones[k].label.get()),
+            b.phones[k]
+                .label
+                .get()
+                .eq_ignore_ascii_case(c.phones[k].label.get()),
             "{v:?} label {k}"
         );
     }
@@ -214,7 +226,11 @@ fn a_card_round_trips_through_30_and_40() {
 fn files_read_from_every_test_round_trip_back() {
     // Read, written, read again: the same card (what an export of an
     // import gives).
-    for (file, v) in [(IOS, Version::V3), (OUTLOOK_21, Version::V4), (V4, Version::V3)] {
+    for (file, v) in [
+        (IOS, Version::V3),
+        (OUTLOOK_21, Version::V4),
+        (V4, Version::V3),
+    ] {
         for c in all(file) {
             let mut out = Vec::new();
             write(&c, None, v, |b| out.extend_from_slice(b));
@@ -233,7 +249,10 @@ fn files_read_from_every_test_round_trip_back() {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u8 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         (self.0 >> 33) as u8
     }
 }
@@ -277,9 +296,18 @@ fn hostile_files_never_panic() {
     assert_eq!(got[0].n_phones, PHONES);
     assert_eq!(usize::from(got[0].skipped), 5000 - PHONES);
     // A picture that isn't base64, or bigger than its room: refused.
-    assert_eq!(photo_bytes(b"@@@@", Photo { start: 0, end: 4 }, &mut [0; 8]), None);
-    assert_eq!(photo_bytes(b"AAAAAAAA", Photo { start: 0, end: 8 }, &mut [0; 2]), None);
-    assert_eq!(photo_bytes(b"AAAA", Photo { start: 2, end: 9 }, &mut [0; 8]), None);
+    assert_eq!(
+        photo_bytes(b"@@@@", Photo { start: 0, end: 4 }, &mut [0; 8]),
+        None
+    );
+    assert_eq!(
+        photo_bytes(b"AAAAAAAA", Photo { start: 0, end: 8 }, &mut [0; 2]),
+        None
+    );
+    assert_eq!(
+        photo_bytes(b"AAAA", Photo { start: 2, end: 9 }, &mut [0; 8]),
+        None
+    );
 }
 
 #[test]
@@ -359,7 +387,10 @@ fn duplicates_are_found_by_a_number_or_a_mail_and_merged_whole() {
     let mut stranger = Card::new();
     stranger.first.push("Zo\u{eb}".as_bytes());
     stranger.add_phone(b"MOBILE", b"+12065550000").unwrap();
-    assert!(!same_person(&a, &stranger), "a name alone is not the same person");
+    assert!(
+        !same_person(&a, &stranger),
+        "a name alone is not the same person"
+    );
     let mut m = a;
     merge(&mut m, &b);
     // The shared number and mail once; the new ones added.
@@ -380,7 +411,21 @@ fn duplicates_are_found_by_a_number_or_a_mail_and_merged_whole() {
     // Full lists: counted, never silent.
     let mut full = Card::new();
     for k in 0..PHONES {
-        full.add_phone(b"Other", &[b'1', b'0' + k as u8, b'5', b'5', b'5', b'0', b'1', b'0', b'0']).unwrap();
+        full.add_phone(
+            b"Other",
+            &[
+                b'1',
+                b'0' + k as u8,
+                b'5',
+                b'5',
+                b'5',
+                b'0',
+                b'1',
+                b'0',
+                b'0',
+            ],
+        )
+        .unwrap();
     }
     merge(&mut full, &b);
     assert!(full.skipped >= 1);

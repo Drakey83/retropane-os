@@ -2867,6 +2867,51 @@ impl Shell {
         }
     }
 
+    /// The open program's body for its question in flight (a `PUT` to the
+    /// PC or a `CARDPUT`): its bytes from `at` into `out`, how many (0: no
+    /// more).
+    pub fn program_body(&mut self, at: usize, out: &mut [u8]) -> usize {
+        let (fonts, look) = (self.program_fonts(), self.program_look());
+        let cx = rp_app::Ctx {
+            fonts: &fonts,
+            look: &look,
+            now: self.program_now(),
+            pics: self.app_pics,
+            forecast: &self.forecast[..usize::from(self.forecast_n)],
+            us: true,
+            utc_offset: self.utc_offset,
+            shapes: &self.shapes,
+            clip: &self.clip,
+            pim: Some(&self.apps.store),
+        };
+        let mut p = self.program.borrow_mut();
+        p.as_mut().map_or(0, |p| p.net_body(at, out, &cx))
+    }
+
+    /// The open program's question for the device's own card
+    /// ([`rp_app::Program::card_ask`]), taken: its name, argument, and (a
+    /// `CARDPUT`) the body's length. The device answers it with
+    /// [`Shell::card_answer`]; no dock is needed.
+    pub fn card_ask(&mut self) -> Option<(&'static [u8], rp_app::Text<64>, usize)> {
+        let ask = self.program.borrow_mut().as_mut()?.card_ask()?;
+        let len = if ask.what == b"CARDPUT" {
+            ask.arg
+                .get()
+                .split(|&c| c == b' ')
+                .next()
+                .and_then(|w| core::str::from_utf8(w).ok()?.parse().ok())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Some((ask.what, ask.arg, len))
+    }
+
+    /// The device's answer to the open program's card question.
+    pub fn card_answer(&mut self, ok: bool, body: &[u8]) {
+        self.program_net(ok, body);
+    }
+
     /// Sends `e` to the open program and does what it answers.
     fn program_event(&mut self, e: rp_app::Event) -> Action {
         let (fonts, look) = (self.program_fonts(), self.program_look());

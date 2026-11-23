@@ -745,3 +745,251 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
     let e = c.edit.unwrap();
     assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
 }
+
+const FILE: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nDTSTART;TZID=America/New_York:20240101T150000\r\nDTEND;TZID=America/New_York:20240101T160000\r\nSUMMARY:Call New York\r\nDESCRIPTION:Bring the numbers\r\nBEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20240102\r\nSUMMARY:Holiday\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+fn tap(c: &mut Calendar, cx: &Ctx, r: Rect) -> Reply {
+    c.event(
+        Event::PenUp {
+            x: r.x + r.w / 2,
+            y: r.y + r.h / 2,
+        },
+        cx,
+    )
+}
+
+/// The device in Los Angeles (its zone chosen).
+fn in_los_angeles(c: &mut Calendar, cx: &Ctx) {
+    c.keep_zone_for_test(cx, rp_pim::zone::find(b"America/Los_Angeles"));
+    draw(c, cx);
+}
+
+#[test]
+fn a_card_file_is_imported_once_into_its_own_calendar_and_shown_in_the_device_zone() {
+    let pim = store();
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    in_los_angeles(&mut c, &cx);
+    c.view = View::Calendars;
+    draw(&mut c, &cx);
+    tap(&mut c, &cx, files::IMPORT_KEY);
+    assert_eq!(c.view, View::Files);
+    // The card and the PC are both asked for their files.
+    let ask = c.card_ask().expect("the card asked");
+    assert_eq!((ask.what, ask.arg.get()), (&b"CARDFILES"[..], &b"ics"[..]));
+    c.net_answer(true, b"0|WORK.ICS\n1|old.ics\n", &cx);
+    let ask = c.net_ask().expect("the PC asked");
+    assert_eq!((ask.what, ask.arg.get()), (&b"FILES"[..], &b"ics"[..]));
+    c.net_answer(false, b"", &cx);
+    draw(&mut c, &cx);
+    // The card's first file chosen and read.
+    let row = c.io_row(0).expect("a row");
+    tap(&mut c, &cx, row);
+    let ask = c.card_ask().expect("the file asked");
+    assert_eq!((ask.what, ask.arg.get()), (&b"CARDFILE"[..], &b"0 ics"[..]));
+    c.net_answer(true, FILE, &cx);
+    assert_eq!(c.view, View::Calendars);
+    assert_eq!(c.status_text.get(), b"Imported 2 appointments");
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let cal = s
+            .all(Kind::Calendar)
+            .find(|r| r.text(tag::NAME) == b"WORK")
+            .expect("its own calendar");
+        let ny = s
+            .all(Kind::Appointment)
+            .find(|r| r.text(tag::TITLE) == b"Call New York")
+            .unwrap();
+        assert_eq!(ny.num(tag::CAL), Some(cal.id));
+        assert_eq!(ny.text(tag::ZONE), b"America/New_York");
+        assert_eq!(ny.text(tag::NOTE), b"Bring the numbers");
+        assert_eq!(ny.num(tag::REMIND), Some(10));
+        // Kept as 3 PM New York time.
+        assert_eq!(ny.num(tag::START), Some(date::start_of(19_723) + 15 * 60));
+    }
+    // Shown at noon in Los Angeles.
+    c.view = View::Agenda;
+    draw(&mut c, &cx);
+    let (list, n) = c.on(19_723);
+    let a = list[..n]
+        .iter()
+        .find(|a| a.title.get() == b"Call New York")
+        .unwrap();
+    assert_eq!(a.start, 12 * 60);
+    // The same file again: nothing doubled, and no empty calendar left.
+    c.view = View::Calendars;
+    draw(&mut c, &cx);
+    tap(&mut c, &cx, files::IMPORT_KEY);
+    let _ = c.card_ask();
+    c.net_answer(true, b"0|WORK.ICS\n", &cx);
+    let _ = c.net_ask();
+    c.net_answer(false, b"", &cx);
+    draw(&mut c, &cx);
+    let row = c.io_row(0).unwrap();
+    tap(&mut c, &cx, row);
+    let _ = c.card_ask();
+    c.net_answer(true, FILE, &cx);
+    assert_eq!(c.status_text.get(), b"Imported 0 (2 already here)");
+    let g = pim.borrow();
+    let s = g.as_ref().unwrap();
+    assert_eq!(s.all(Kind::Appointment).count(), 2);
+    assert_eq!(
+        s.all(Kind::Calendar)
+            .filter(|r| r.text(tag::NAME) == b"WORK")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn the_calendar_is_exported_a_piece_at_a_time_and_reads_back_whole() {
+    let pim = store();
+    let cx = ctx(pim);
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        for k in 0..40u32 {
+            let at = (date::start_of(19_723 + k as i32) + 540).to_le_bytes();
+            let title = std::format!("Meeting number {k}, with a title long enough to fold");
+            s.put(
+                Kind::Appointment,
+                None,
+                &[
+                    (tag::TITLE, title.as_bytes()),
+                    (tag::START, &at),
+                    (tag::MINUTES, &45u32.to_le_bytes()),
+                    (
+                        tag::ZONE,
+                        if k % 2 == 0 {
+                            &b"Europe/London"[..]
+                        } else {
+                            b""
+                        },
+                    ),
+                ],
+            )
+            .unwrap();
+        }
+    }
+    let mut c = opened(19_723);
+    in_los_angeles(&mut c, &cx);
+    c.view = View::Calendars;
+    draw(&mut c, &cx);
+    tap(&mut c, &cx, files::EXPORT_KEY);
+    draw(&mut c, &cx);
+    tap(&mut c, &cx, files::TO_CARD_FOR_TEST);
+    let ask = c.card_ask().expect("the card asked to keep it");
+    assert_eq!(ask.what, b"CARDPUT");
+    let arg = ask.arg.get();
+    let sp = arg.iter().position(|&b| b == b' ').unwrap();
+    let len: usize = std::str::from_utf8(&arg[..sp]).unwrap().parse().unwrap();
+    assert_eq!(&arg[sp + 1..], b"Calendar 2024-01-01.ics");
+    // In pieces of 700 bytes, as the device asks.
+    let mut file = std::vec::Vec::new();
+    let mut piece = [0u8; 700];
+    loop {
+        let n = c.net_body(file.len(), &mut piece, &cx);
+        if n == 0 {
+            break;
+        }
+        file.extend_from_slice(&piece[..n]);
+    }
+    assert_eq!(file.len(), len);
+    // Asked whole (the card's way): the same bytes.
+    let mut whole = vec![0u8; len];
+    let mut at = 0;
+    while at < len {
+        let n = c.net_body(at, &mut whole[at..], &cx);
+        assert!(n > 0);
+        at += n;
+    }
+    assert_eq!(file, whole, "pieces and one read agree");
+    let mut back = std::vec::Vec::new();
+    rp_pim::ics::ics_each(&file, |e| {
+        back.push(*e);
+        true
+    });
+    assert_eq!(back.len(), 40);
+    assert_eq!(back[0].zone.get(), b"Europe/London");
+    // A floating time is written in the device's zone.
+    assert_eq!(back[1].zone.get(), b"America/Los_Angeles");
+    assert_eq!(back[1].minutes, 45);
+    assert!(
+        std::str::from_utf8(&file)
+            .unwrap()
+            .contains("BEGIN:VTIMEZONE\r\nTZID:Europe/London")
+    );
+    c.net_answer(true, b"", &cx);
+    assert_eq!(c.status, b"Saved in the card's RetroPane folder");
+}
+
+#[test]
+fn the_time_zone_is_guessed_from_the_pc_chosen_from_the_list_and_moves_times() {
+    let pim = store();
+    let mut cx = ctx(pim);
+    // The PC says UTC-5 in January: New York.
+    cx.utc_offset = -300;
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = (date::start_of(19_723) + 9 * 60).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Tokyo stand-up"),
+                (tag::START, &at),
+                (tag::ZONE, b"Asia/Tokyo"),
+            ],
+        )
+        .unwrap();
+    }
+    let mut c = opened(19_723);
+    c.day = 19_722;
+    draw(&mut c, &cx);
+    let mut name = [0u8; 40];
+    let n = c.io.device.unwrap().name(&mut name);
+    assert_eq!(&name[..n], b"America/New_York");
+    assert!(c.io.guessed);
+    // 9 AM in Tokyo is 7 PM the day before in New York.
+    let (list, k) = c.on(19_722);
+    assert!(
+        list[..k]
+            .iter()
+            .any(|a| a.title.get() == b"Tokyo stand-up" && a.start == 19 * 60)
+    );
+    // Chosen from the list by typing.
+    c.view = View::Calendars;
+    draw(&mut c, &cx);
+    tap(&mut c, &cx, files::ZONE_ROW);
+    assert_eq!(c.view, View::Zones);
+    draw(&mut c, &cx);
+    c.event(
+        Event::PenUp {
+            x: 100,
+            y: 36 + kit::TITLE_BAND + 20,
+        },
+        &cx,
+    );
+    assert_eq!(c.keyboard(), Some(Field::Line));
+    for ch in b"tokyo" {
+        c.event(Event::Char(*ch), &cx);
+    }
+    draw(&mut c, &cx);
+    let row = c.zone_row(1).expect("Tokyo listed");
+    tap(&mut c, &cx, row);
+    assert_eq!(c.view, View::Calendars);
+    c.day = 19_723;
+    draw(&mut c, &cx);
+    assert!(!c.io.guessed);
+    let (list, k) = c.on(19_723);
+    assert!(
+        list[..k]
+            .iter()
+            .any(|a| a.title.get() == b"Tokyo stand-up" && a.start == 9 * 60)
+    );
+    // A new appointment is kept in the device's zone.
+    c.open_edit(&cx, None);
+    assert_eq!(c.edit.unwrap().zone.get(), b"Asia/Tokyo");
+}

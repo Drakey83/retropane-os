@@ -74,6 +74,7 @@ pub const PIC_CLASSES: [(u16, u16, u8); 12] = [
 // list and not here fails the build).
 const _: () = assert!(rp_app::kit::PIC_CLASSES.len() == 6);
 
+pub mod cardfiles;
 pub mod clock;
 pub mod fonts;
 pub mod kept;
