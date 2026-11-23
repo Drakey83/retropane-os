@@ -221,6 +221,70 @@ fn rppl_cases() -> Vec<(Vec<u8>, usize, usize)> {
     ]
 }
 
+/// The test image's generated sky (what a checkout without
+/// `local/wallpapers` builds, shell/today/build.rs `sky`): 480 x 640 rows
+/// of one value each, and its half-size U and V.
+fn generated_sky() -> Vec<(Vec<u8>, usize, usize)> {
+    let (w, h) = (480usize, 640usize);
+    let y = (0..h).flat_map(|r| std::iter::repeat_n((24 + r * 255 / (h - 1) * 90 / 255) as u8, w));
+    let uv = |a: usize, b: usize, up: bool| -> Vec<u8> {
+        (0..h / 2)
+            .flat_map(|r| {
+                let t = r * 255 / (h / 2 - 1) * b / 255;
+                std::iter::repeat_n((if up { a + t } else { a - t }) as u8, w / 2)
+            })
+            .collect()
+    };
+    vec![
+        (y.collect(), w, h),
+        (uv(150, 40, false), w / 2, h / 2),
+        (uv(118, 30, true), w / 2, h / 2),
+    ]
+}
+
+/// Any picture round-trips at every adaptation rate, not only the one the
+/// packer picks: the generated sky (flat rows drive the probabilities to
+/// their ends, where a decoder normalising once fell out of step with the
+/// encoder, R208), all one value, noise, one row, one column, every value
+/// with clear low bits.
+#[test]
+fn rppl_every_picture_round_trips_at_every_rate() {
+    let noise: Vec<u8> = (0..300 * 200u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    let mut sets: Vec<Vec<(Vec<u8>, usize, usize)>> = vec![
+        generated_sky(),
+        vec![(vec![0; 480 * 64], 480, 64)],
+        vec![(vec![255; 480 * 64], 480, 64)],
+        vec![(noise, 300, 200)],
+        vec![((0..480).map(|i| (i * 7) as u8).collect(), 480, 1)],
+        vec![((0..640).map(|i| (i * 3) as u8 & 0xF0).collect(), 1, 640)],
+    ];
+    sets.extend(rppl_cases().into_iter().map(|c| vec![c]));
+    for (k, set) in sets.iter().enumerate() {
+        let planes: Vec<(&[u8], usize, usize)> =
+            set.iter().map(|(p, w, h)| (&p[..], *w, *h)).collect();
+        let dims: Vec<(usize, usize)> = planes.iter().map(|&(_, w, h)| (w, h)).collect();
+        let want: Vec<u8> = planes
+            .iter()
+            .flat_map(|&(p, _, _)| p.iter().copied())
+            .collect();
+        let mut zs: Vec<Vec<u8>> = plane::RATES
+            .map(|r| plane::pack::pack_planes_at(&planes, r))
+            .collect();
+        zs.push(plane::pack::pack_planes(&planes));
+        for (j, z) in zs.iter().enumerate() {
+            let mut out = vec![0u8; want.len()];
+            assert_eq!(
+                unpack_planes(z, &dims, &mut out),
+                Ok(want.len()),
+                "set {k}, try {j}"
+            );
+            assert!(out == want, "set {k}, try {j}: wrong bytes");
+        }
+    }
+}
+
 /// Every case packed alone and all together decodes byte for byte, and
 /// the photo-like plane packs well under half.
 #[test]

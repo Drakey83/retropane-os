@@ -38,7 +38,7 @@ const CTX: usize = 11;
 const PROB_BITS: u32 = 11;
 const HALF: u16 = 1 << (PROB_BITS - 1);
 /// The adaptation rates a stream may ask for.
-const RATES: core::ops::RangeInclusive<u8> = 3..=6;
+pub(crate) const RATES: core::ops::RangeInclusive<u8> = 3..=6;
 
 /// One binary decision coded (the encoder) or read (the decoder): `bit`
 /// is the encoder's; the bit coded is returned.
@@ -202,7 +202,12 @@ impl Coder for Decoder<'_> {
             self.range -= bound;
             1
         };
-        if self.range < 1 << 24 {
+        // A loop, as the encoder's: at the slowest rates a probability
+        // falls to 7 (of 2048), so one bit can take the range below 2^16
+        // and two bytes are due. LZMA's single test relies on its rate 5
+        // keeping every probability at 31 or more (R208: the generated
+        // sky, packed at rate 3, read short with one).
+        while self.range < 1 << 24 {
             self.range <<= 8;
             self.code = self.code << 8 | self.byte();
         }
@@ -418,9 +423,19 @@ pub mod pack {
         for &(px, w, h) in planes {
             assert!(w > 0 && h > 0 && w <= 0xFFFF && h <= 0xFFFF && px.len() >= w * h);
         }
-        RATES
+        let z = RATES
             .map(|r| with_rate(planes, r))
             .min_by_key(Vec::len)
-            .expect("at least one rate")
+            .expect("at least one rate");
+        // The packer reads its own stream back: a picture it can't
+        // round-trip stops the build, never reaches an image.
+        assert!(read_back(&z, planes), "RPPL: the stream doesn't read back");
+        z
+    }
+
+    /// [`pack_planes`] at adaptation rate `rate` only (the tests try each).
+    #[cfg(test)]
+    pub(crate) fn pack_planes_at(planes: &[(&[u8], usize, usize)], rate: u8) -> Vec<u8> {
+        with_rate(planes, rate)
     }
 }
