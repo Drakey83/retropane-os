@@ -91,7 +91,7 @@ What the numbers mean:
 ## The build order
 
 Each step: its rule 0 sheet, then an emulator test, then the device (when
-K1 lets it). G1 is built; the rest in this order.
+K1 lets it). G1 and G2 are built; the rest in this order.
 
 ### G1. Freeze a process's memory (built 2026-11-22)
 
@@ -142,7 +142,7 @@ only what is touched.
   `Vm::unmap` of a mapped device window computed a frame number below the
   RAM's base (an overflow in checked builds).
 
-### G2. Freeze a process's threads
+### G2. Freeze a process's threads (built 2026-11-23)
 
 Take every thread of a frozen process off the run queues (and its timers
 and waits held, not cancelled), so a frozen program can't run, touch a
@@ -153,6 +153,25 @@ and let in-flight system calls finish; ours, the same at the scheduler
 (ADR-0010), one flag per process checked where a thread is made ready,
 so a freeze is one pass over the process's threads and a wake while
 frozen is queued, not lost. Emulator test in `rp-kernel`.
+
+**As built:** `Scheduler::freeze(slot, now)` and `thaw(slot)` in
+`kernel/sched`, a bitmap of frozen slots (zero when none, so the empty
+scheduler stays all-zero memory) and a `Frozen` thread state. A ready or
+running thread of the slot leaves the run queues (the running one keeps
+what was left of its quantum, as a preempted thread does); a blocked one
+keeps its wait and deadline, and when the wait ends while frozen it
+becomes `Frozen` instead of ready, so the wake is kept for the thaw. The
+only cost on the hot path is one bit test in `wake`. Found while building
+it: a frozen waiter at the head of a mutex's or an auto-reset event's queue
+would take the mutex or the signal from a process that runs and hold it
+until the thaw; it is passed over while anyone else waits (it keeps its
+place), and `freeze` counts the mutexes a frozen thread owns while a
+running process waits for them (`held`), for G5's switch to refuse or
+report. Thawed threads go to the back of their queues in thread order
+(CE's place for a thread that becomes ready). Host tests (6, four mutants
+caught); `emu-kernel` freezes the IPC clients' process mid-run: 47 calls
+before, none in 30 ms frozen, 151 in the first moments after the thaw,
+both threads ready again, and every IPC result after it whole.
 
 ### G3. The return record
 

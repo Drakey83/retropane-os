@@ -81,6 +81,25 @@ pub enum State {
     Running,
     /// Waiting for an event (or a sleep deadline).
     Blocked,
+    /// Ready to run, but its process is frozen (Game Mode, design B, G2):
+    /// off every run queue until [`Scheduler::thaw`]. A thread of a frozen
+    /// process that was blocked stays [`Blocked`](Self::Blocked), its wait
+    /// and its deadline held; it becomes `Frozen` when the wait ends, so a
+    /// wake while frozen is kept, not lost.
+    Frozen,
+}
+
+/// What [`Scheduler::freeze`] did.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub struct Freeze {
+    /// Threads taken off the run queues (the running one included).
+    pub parked: u32,
+    /// Threads left blocked, their waits and deadlines held.
+    pub blocked: u32,
+    /// Mutexes a frozen thread owns while a thread of a process that runs
+    /// waits for one: the caller decides (that waiter waits for the thaw).
+    pub held: u32,
 }
 
 /// "No thread / no event": the sentinel slot 0.
@@ -231,6 +250,9 @@ pub struct Scheduler {
     /// Wake slice in ticks; 0 means [`DEFAULT_WAKE_SLICE`], `u32::MAX` off
     /// (CE's behaviour).
     wake_setting: u32,
+    /// Frozen process slots: bit `s % 32` of word `s / 32` (all zero:
+    /// none, so `new` stays all-zero).
+    frozen: [u32; 8],
 }
 
 impl Default for Scheduler {
@@ -260,6 +282,7 @@ impl Scheduler {
             cut: false,
             cut_burst: 0,
             wake_setting: 0,
+            frozen: [0; 8],
         }
     }
 
@@ -312,7 +335,11 @@ impl Scheduler {
             quantum,
             ..EMPTY
         };
-        self.make_ready(i as u8);
+        if self.is_frozen(slot) {
+            self.threads[i].state = State::Frozen;
+        } else {
+            self.make_ready(i as u8);
+        }
         Ok(Tid(i as u8))
     }
 
@@ -325,7 +352,7 @@ impl Scheduler {
             State::Ready => self.unlink_ready(i),
             State::Blocked => self.cancel_wait(i),
             State::Running => self.running = NONE,
-            State::Free => {}
+            State::Frozen | State::Free => {}
         }
         if self.charged == i {
             self.charged = NONE;
@@ -575,6 +602,12 @@ impl Scheduler {
     /// Otherwise CE's order: the back of its queue.
     #[inline(never)]
     fn wake(&mut self, i: u8) {
+        if self.is_frozen(self.threads[usize::from(i)].slot) {
+            // Kept for the thaw, its burst with it, so the wake slice
+            // treats it then as the thread it was.
+            self.threads[usize::from(i)].state = State::Frozen;
+            return;
+        }
         let burst =
             u32::from(core::mem::take(&mut self.threads[usize::from(i)].burst)) << BURST_SHIFT;
         let p = self.threads[usize::from(i)].priority;
@@ -710,15 +743,22 @@ impl Scheduler {
         }
     }
 
-    /// The most urgent waiter of wait object `m` (the first of equals).
+    /// The most urgent waiter of wait object `m` (the first of equals); a
+    /// waiter whose process is frozen only when no other waits, so a frozen
+    /// program never holds up one that runs.
     fn best_waiter(&self, m: u8) -> u8 {
         let mut best = NONE;
+        let mut best_frozen = true;
         let mut w = self.events[usize::from(m)].head;
         while w != NONE {
+            let th = &self.threads[usize::from(w)];
+            let frozen = self.is_frozen(th.slot);
             if best == NONE
-                || self.threads[usize::from(w)].priority < self.threads[usize::from(best)].priority
+                || (best_frozen && !frozen)
+                || (frozen == best_frozen && th.priority < self.threads[usize::from(best)].priority)
             {
                 best = w;
+                best_frozen = frozen;
             }
             w = self.threads[usize::from(w)].next;
         }
@@ -1023,9 +1063,21 @@ impl Scheduler {
         let manual = ev.manual;
         let mut woken = 0;
         loop {
-            let head = self.events[usize::from(e.0)].head;
+            let mut head = self.events[usize::from(e.0)].head;
             if head == NONE {
                 break;
+            }
+            if !manual {
+                // One waiter takes the signal: a running process's first,
+                // so a frozen one never holds up one that runs (it keeps
+                // its place for the next signal).
+                let mut w = head;
+                while w != NONE && self.is_frozen(self.threads[usize::from(w)].slot) {
+                    w = self.threads[usize::from(w)].next;
+                }
+                if w != NONE {
+                    head = w;
+                }
             }
             self.release(head);
             woken += 1;
@@ -1035,6 +1087,100 @@ impl Scheduler {
         }
         self.events[usize::from(e.0)].set = true;
         Ok(woken)
+    }
+
+    // ---- Game Mode: frozen processes (design B, G2) ------------------------
+
+    /// Is process `slot` frozen?
+    #[must_use]
+    pub fn is_frozen(&self, slot: u8) -> bool {
+        self.frozen[usize::from(slot / 32)] & (1 << (slot % 32)) != 0
+    }
+
+    /// Freezes process `slot`: none of its threads runs until
+    /// [`thaw`](Self::thaw). Its ready threads (and the running one, if it
+    /// is the process's) leave the run queues; its blocked threads keep
+    /// their waits and deadlines, and one whose wait ends while frozen is
+    /// kept [`State::Frozen`] for the thaw. One pass over the table; a
+    /// second freeze of the same slot changes nothing. CE suspends one
+    /// thread at a time by a count (racy with waits); Linux's cgroup
+    /// freezer and Android's stop a whole group: this is the group, at the
+    /// scheduler, with no signal to deliver and nothing to retry.
+    #[inline(never)]
+    pub fn freeze(&mut self, slot: u8, now: u32) -> Freeze {
+        let mut f = Freeze::default();
+        if self.is_frozen(slot) {
+            return f;
+        }
+        self.frozen[usize::from(slot / 32)] |= 1 << (slot % 32);
+        for i in 1..=MAX_THREADS as u8 {
+            let th = self.threads[usize::from(i)];
+            if th.state == State::Free || th.slot != slot {
+                continue;
+            }
+            match th.state {
+                State::Ready => {
+                    self.unlink_ready(i);
+                    self.threads[usize::from(i)].state = State::Frozen;
+                    f.parked += 1;
+                }
+                State::Running => {
+                    // Off the CPU with what is left of its quantum, as a
+                    // preempted thread keeps it.
+                    let left = self.quantum_end.wrapping_sub(now);
+                    let t = &mut self.threads[usize::from(i)];
+                    t.state = State::Frozen;
+                    t.quantum = if reached(self.quantum_end, now) {
+                        left
+                    } else {
+                        0
+                    };
+                    self.running = NONE;
+                    f.parked += 1;
+                }
+                State::Blocked => f.blocked += 1,
+                State::Frozen | State::Free => {}
+            }
+        }
+        let mut used = self.events_used;
+        while used != 0 {
+            let m = used.trailing_zeros() as usize + 1;
+            used &= used - 1;
+            let ev = self.events[m];
+            if !ev.mutex || ev.owner == NONE || self.threads[usize::from(ev.owner)].slot != slot {
+                continue;
+            }
+            let mut w = ev.head;
+            while w != NONE {
+                if !self.is_frozen(self.threads[usize::from(w)].slot) {
+                    f.held += 1;
+                    break;
+                }
+                w = self.threads[usize::from(w)].next;
+            }
+        }
+        f
+    }
+
+    /// Thaws process `slot`: every thread kept [`State::Frozen`] is ready
+    /// again, at the back of its priority's queue in thread order (CE's
+    /// place for a thread that becomes ready); blocked ones go on waiting.
+    /// Returns how many became ready.
+    #[inline(never)]
+    pub fn thaw(&mut self, slot: u8) -> u32 {
+        if !self.is_frozen(slot) {
+            return 0;
+        }
+        self.frozen[usize::from(slot / 32)] &= !(1 << (slot % 32));
+        let mut n = 0;
+        for i in 1..=MAX_THREADS as u8 {
+            let th = &self.threads[usize::from(i)];
+            if th.state == State::Frozen && th.slot == slot {
+                self.make_ready(i);
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Clears `e`.

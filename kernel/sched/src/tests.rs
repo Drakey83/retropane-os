@@ -733,3 +733,212 @@ fn the_last_thread_number_queues_waits_and_wakes() {
     s.exit(last).unwrap();
     assert_eq!(s.create(2, 200), Ok(Tid(255)), "its number is reused");
 }
+
+// ---- Game Mode: frozen processes (G2) ---------------------------------------
+
+#[test]
+fn a_frozen_process_runs_no_thread_and_thaws_in_order() {
+    let mut s = sched();
+    let a = s.create(3, NORMAL).unwrap();
+    let b = s.create(3, NORMAL).unwrap();
+    let game = s.create(4, NORMAL).unwrap();
+    assert_eq!(s.schedule(0), Some(a));
+    let f = s.freeze(3, 400);
+    assert_eq!(
+        f,
+        Freeze {
+            parked: 2,
+            blocked: 0,
+            held: 0
+        }
+    );
+    assert!(s.is_frozen(3) && !s.is_frozen(4));
+    assert_eq!((s.state(a), s.state(b)), (State::Frozen, State::Frozen));
+    assert_eq!(s.running(), None, "the running thread left the CPU");
+    for now in [400, 2000, 9000] {
+        assert_eq!(s.schedule(now), Some(game), "only the game runs");
+    }
+    assert_eq!(
+        s.freeze(3, 9000),
+        Freeze::default(),
+        "a second freeze changes nothing"
+    );
+    // A thread made in a frozen process waits for the thaw too.
+    let c = s.create(3, NORMAL).unwrap();
+    assert_eq!(s.state(c), State::Frozen);
+    assert_eq!(s.thaw(3), 3);
+    assert_eq!(s.thaw(3), 0, "a second thaw changes nothing");
+    // The game's quantum (renewed at 9000) isn't cut by the thaw.
+    assert_eq!(
+        s.schedule(9500),
+        Some(game),
+        "the thaw doesn't cut the game's quantum"
+    );
+    assert_eq!(s.schedule(10_000), Some(a));
+    assert_eq!(s.schedule(10_000 + Q), Some(b));
+    assert_eq!(s.schedule(10_000 + 2 * Q), Some(c));
+    assert_eq!(s.schedule(10_000 + 3 * Q), Some(game));
+}
+
+#[test]
+fn the_frozen_running_thread_keeps_what_was_left_of_its_quantum() {
+    let mut s = sched();
+    let a = s.create(3, NORMAL).unwrap();
+    assert_eq!(s.schedule(0), Some(a));
+    s.freeze(3, 300);
+    assert_eq!(s.schedule(300), None, "nothing else: idle");
+    s.thaw(3);
+    let _peer = s.create(5, NORMAL).unwrap();
+    assert_eq!(s.schedule(5000), Some(a));
+    assert_eq!(
+        s.next_deadline(),
+        Some(5000 + Q - 300),
+        "700 ticks left, not a fresh 1000"
+    );
+}
+
+#[test]
+fn waits_and_deadlines_hold_while_frozen_and_a_wake_is_kept() {
+    let mut s = sched();
+    let ev = s.create_event(true, false).unwrap();
+    let waiter = s.create(3, NORMAL).unwrap();
+    let sleeper = s.create(3, NORMAL).unwrap();
+    let game = s.create(4, LOWEST).unwrap();
+    assert_eq!(s.schedule(0), Some(waiter));
+    assert_eq!(s.wait(ev, None), Ok(None));
+    assert_eq!(s.schedule(1), Some(sleeper));
+    s.sleep_until(500).unwrap();
+    assert_eq!(s.schedule(2), Some(game));
+    assert_eq!(
+        s.freeze(3, 2),
+        Freeze {
+            parked: 0,
+            blocked: 2,
+            held: 0
+        }
+    );
+    // The event fires and the deadline passes while frozen: both kept.
+    assert_eq!(s.set_event(ev), Ok(1));
+    assert_eq!(s.schedule(600), Some(game));
+    assert_eq!(
+        (s.state(waiter), s.state(sleeper)),
+        (State::Frozen, State::Frozen)
+    );
+    assert!(!s.has_ready(), "nothing of the frozen process is queued");
+    assert_eq!(s.next_deadline(), None, "its timer doesn't wake the CPU");
+    assert_eq!(s.thaw(3), 2);
+    assert_eq!(
+        s.wait_result(waiter),
+        WaitResult::Signalled,
+        "the wake wasn't lost"
+    );
+    assert_eq!(s.wait_result(sleeper), WaitResult::TimedOut);
+    assert_eq!(s.schedule(700), Some(waiter), "more urgent than the game");
+}
+
+#[test]
+fn a_frozen_waiter_never_takes_a_signal_or_a_mutex_from_one_that_runs() {
+    let mut s = sched();
+    let ev = s.create_event(false, false).unwrap();
+    let m = s.create_mutex(false).unwrap();
+    let owner = s.create(5, 10).unwrap();
+    let frozen_w = s.create(3, 20).unwrap();
+    let live_w = s.create(4, 30).unwrap();
+    // The owner takes the mutex; both others queue for the mutex, frozen
+    // first and more urgent.
+    assert_eq!(s.schedule(0), Some(owner));
+    assert_eq!(s.wait(m, None), Ok(Some(WaitResult::Signalled)));
+    s.sleep_until(100).unwrap();
+    assert_eq!(s.schedule(1), Some(frozen_w));
+    assert_eq!(s.wait(m, None), Ok(None));
+    assert_eq!(s.schedule(2), Some(live_w));
+    assert_eq!(s.wait(m, None), Ok(None));
+    s.freeze(3, 3);
+    assert_eq!(s.schedule(100), Some(owner));
+    assert_eq!(s.release_mutex(m), Ok(true));
+    assert_eq!(
+        s.mutex_owner_of(m),
+        Some(live_w),
+        "the frozen waiter is passed over"
+    );
+    assert_eq!(s.state(frozen_w), State::Blocked, "and keeps waiting");
+    s.exit(owner).unwrap();
+    // An auto-reset event: the same.
+    let w1 = s.create(3, 40).unwrap();
+    let w2 = s.create(4, 41).unwrap();
+    s.thaw(3);
+    assert_eq!(s.schedule(200), Some(live_w));
+    s.exit(live_w).unwrap();
+    assert_eq!(
+        s.mutex_owner_of(m),
+        Some(frozen_w),
+        "thawed, it is handed the mutex next"
+    );
+    assert_eq!(s.schedule(202), Some(frozen_w));
+    s.exit(frozen_w).unwrap();
+    assert_eq!(s.schedule(203), Some(w1));
+    assert_eq!(s.wait(ev, None), Ok(None));
+    assert_eq!(s.schedule(204), Some(w2));
+    assert_eq!(s.wait(ev, None), Ok(None));
+    s.freeze(3, 205);
+    assert_eq!(s.set_event(ev), Ok(1));
+    assert_eq!(
+        s.state(w2),
+        State::Ready,
+        "the running process's waiter took it"
+    );
+    assert_eq!(
+        s.state(w1),
+        State::Blocked,
+        "the frozen one keeps its place"
+    );
+    assert_eq!(s.set_event(ev), Ok(1));
+    assert_eq!(
+        s.state(w1),
+        State::Frozen,
+        "with no other waiter it takes the next"
+    );
+}
+
+#[test]
+fn freeze_counts_mutexes_a_running_process_waits_for() {
+    let mut s = sched();
+    let m = s.create_mutex(false).unwrap();
+    let holder = s.create(3, 10).unwrap();
+    let waiter = s.create(4, 20).unwrap();
+    assert_eq!(s.schedule(0), Some(holder));
+    assert_eq!(s.wait(m, None), Ok(Some(WaitResult::Signalled)));
+    s.sleep_until(50).unwrap();
+    assert_eq!(s.schedule(1), Some(waiter));
+    assert_eq!(s.wait(m, None), Ok(None));
+    assert_eq!(
+        s.freeze(3, 2),
+        Freeze {
+            parked: 0,
+            blocked: 1,
+            held: 1
+        }
+    );
+    // Exiting a frozen thread frees it as any other.
+    s.thaw(3);
+    s.freeze(3, 3);
+    s.exit(holder).unwrap();
+    assert_eq!(s.mutex_owner_of(m), Some(waiter));
+}
+
+#[test]
+fn freezing_one_slot_leaves_its_neighbours_in_the_bitmap_alone() {
+    let mut s = sched();
+    for slot in [0u8, 31, 32, 63, 255] {
+        s.freeze(slot, 0);
+    }
+    for slot in 0..=255u8 {
+        assert_eq!(
+            s.is_frozen(slot),
+            [0, 31, 32, 63, 255].contains(&slot),
+            "slot {slot}"
+        );
+    }
+    s.thaw(32);
+    assert!(!s.is_frozen(32) && s.is_frozen(31) && s.is_frozen(63));
+}

@@ -585,6 +585,9 @@ const KERNEL_EXPECT: &[&str] = &[
     // IPC (ADR-0016): two user processes, a migrating call and back 1000
     // times, a faulting server unwound to its caller, a forged handle
     // refused, and each process's memory its own.
+    // Game Mode G2: the clients' process frozen at the scheduler, no call
+    // made while frozen, all going on after the thaw.
+    "THREADS freeze OK",
     "IPC call OK",
     "IPC server fault OK",
     "IPC foreign handle OK",

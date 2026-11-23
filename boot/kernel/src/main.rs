@@ -93,7 +93,7 @@ mod image {
     use rp_kernel_mm::zpool::{ZBuffers, ZPool};
     use rp_kernel_pe::build::{self, Header, SectionSpec};
     use rp_kernel_pe::{Dir, Image, Protection, Relocations, dir, scn};
-    use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
+    use rp_kernel_sched::{Eid, LOWEST, Scheduler, State as TState, Tid};
     use rp_kernel_trace::{Kind, Persistent};
 
     rp_image::entry!(main);
@@ -1356,6 +1356,7 @@ mod image {
         user::set_user_fault_handler(on_user_fault);
         rt::set_preempt_hook(reschedule);
         let _ = writeln!(uart, "IPC {CLIENTS} clients starting (handle {})", h.0);
+        ok &= freeze_clients(&mut uart);
         while RUN.with(|r| r.finished) < CLIENTS {
             wait(done);
         }
@@ -1373,6 +1374,78 @@ mod image {
             power_button(&mut uart);
         }
         halt()
+    }
+
+    /// The boot thread sleeps `ticks` (3.25 MHz), other threads running.
+    fn nap(ticks: u32) {
+        let at = rt::ticks().wrapping_add(ticks);
+        if SCHED.with(|s| s.sleep_until(at)).is_ok() {
+            reschedule();
+        }
+    }
+
+    /// Game Mode G2 live: once the clients are calling, their process is
+    /// frozen at the scheduler for ~30 ms (60 of their quanta) while only
+    /// the idle thread could run; not one call may be made in that time,
+    /// and every one of their threads must be off the run queues. Thawed,
+    /// they go on and finish (the IPC checks after this see their results
+    /// whole).
+    fn freeze_clients(uart: &mut PxaUart<Mmio>) -> bool {
+        // ~1 ms naps until the clients have made some calls.
+        let mut waited = 0;
+        while IPC.with(|i| i.calls) < 20 && RUN.with(|r| r.finished) == 0 && waited < 2000 {
+            nap(3_250);
+            waited += 1;
+        }
+        let before = (IPC.with(|i| i.calls), RUN.with(|r| r.finished));
+        let t0 = rt::ticks();
+        let f = SCHED.with(|s| s.freeze(PROC_SLOT as u8, t0));
+        let t_freeze = rt::ticks().wrapping_sub(t0);
+        let parked_ok = SCHED.with(|s| {
+            (1..=rp_kernel_sched::MAX_THREADS as u8).all(|i| {
+                let t = Tid(i);
+                s.state(t) == TState::Free
+                    || s.slot(t) != PROC_SLOT as u8
+                    || matches!(s.state(t), TState::Frozen | TState::Blocked)
+            })
+        });
+        nap(97_500);
+        let during = (IPC.with(|i| i.calls), RUN.with(|r| r.finished));
+        let t1 = rt::ticks();
+        let thawed = SCHED.with(|s| s.thaw(PROC_SLOT as u8));
+        let t_thaw = rt::ticks().wrapping_sub(t1);
+        // The thawed clients run again: some calls within ~10 ms.
+        let mut waited = 0;
+        while IPC.with(|i| i.calls) == during.0
+            && RUN.with(|r| r.finished) < CLIENTS
+            && waited < 100
+        {
+            nap(3_250);
+            waited += 1;
+        }
+        let after = IPC.with(|i| i.calls);
+        let pass = before.1 < CLIENTS
+            && before.0 > 0
+            && f.parked + f.blocked == CLIENTS as u32
+            && parked_ok
+            && during == before
+            && thawed == f.parked
+            && (after > during.0 || RUN.with(|r| r.finished) == CLIENTS);
+        let _ = writeln!(
+            uart,
+            "THREADS freeze {}: {} parked, {} blocked, {} held; {} calls before, {} during 30 ms frozen, {} after the thaw ({} ready again); freeze {} us, thaw {} us",
+            if pass { "OK" } else { "FAIL" },
+            f.parked,
+            f.blocked,
+            f.held,
+            before.0,
+            during.0 - before.0,
+            after - during.0,
+            thawed,
+            t_freeze * 4 / 13,
+            t_thaw * 4 / 13
+        );
+        pass
     }
 
     /// Starts the display client (a thread of the host's image in its own
