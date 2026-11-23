@@ -224,11 +224,23 @@ pub fn sample_people_v3(s: &mut rp_shell::Shell) {
     let mut more = [0u8; 200];
     let mut n = 0;
     for (kind, label, value) in [
-        (rp_pim::contact::Kind::Phone, &b"Cabin"[..], &b"+13605550199"[..]),
-        (rp_pim::contact::Kind::Email, b"School", b"ada@school.example"),
+        (
+            rp_pim::contact::Kind::Phone,
+            &b"Cabin"[..],
+            &b"+13605550199"[..],
+        ),
+        (
+            rp_pim::contact::Kind::Email,
+            b"School",
+            b"ada@school.example",
+        ),
     ] {
-        n = rp_pim::contact::push_entry(&mut more, n, rp_pim::contact::Entry { kind, label, value })
-            .expect("fits");
+        n = rp_pim::contact::push_entry(
+            &mut more,
+            n,
+            rp_pim::contact::Entry { kind, label, value },
+        )
+        .expect("fits");
     }
     let bday = rp_pim::contact::Day {
         year: Some(1815),
@@ -879,9 +891,19 @@ fn base() -> Vec<Mock> {
                 c.ask_import();
                 let cx = mock_ctx();
                 let _ = rp_app::Program::card_ask(&mut c);
-                rp_app::Program::net_answer(&mut c, true, b"0|people.vcf\n1|From my old phone.vcf\n", &cx);
+                rp_app::Program::net_answer(
+                    &mut c,
+                    true,
+                    b"0|people.vcf\n1|From my old phone.vcf\n",
+                    &cx,
+                );
                 let _ = rp_app::Program::net_ask(&mut c);
-                rp_app::Program::net_answer(&mut c, true, b"0|Outlook contacts.vcf\n1|Google contacts.vcf\n", &cx);
+                rp_app::Program::net_answer(
+                    &mut c,
+                    true,
+                    b"0|Outlook contacts.vcf\n1|Google contacts.vcf\n",
+                    &cx,
+                );
                 open(s, c);
             }),
         },
@@ -919,7 +941,14 @@ fn base() -> Vec<Mock> {
                 let mut c = calendar(View::Calendars, b"");
                 let cx = mock_ctx();
                 let k = rp_app_calendar::IMPORT_KEY_FOR_PREVIEW;
-                let _ = rp_app::Program::event(&mut c, rp_app::Event::PenUp { x: k.x + 20, y: k.y + 20 }, &cx);
+                let _ = rp_app::Program::event(
+                    &mut c,
+                    rp_app::Event::PenUp {
+                        x: k.x + 20,
+                        y: k.y + 20,
+                    },
+                    &cx,
+                );
                 let _ = rp_app::Program::card_ask(&mut c);
                 rp_app::Program::net_answer(&mut c, true, b"0|Work.ics\n1|School year.ics\n", &cx);
                 let _ = rp_app::Program::net_ask(&mut c);
@@ -935,7 +964,14 @@ fn base() -> Vec<Mock> {
                 let mut c = calendar(View::Calendars, b"");
                 let cx = mock_ctx();
                 let k = rp_app_calendar::EXPORT_KEY_FOR_PREVIEW;
-                let _ = rp_app::Program::event(&mut c, rp_app::Event::PenUp { x: k.x + 20, y: k.y + 20 }, &cx);
+                let _ = rp_app::Program::event(
+                    &mut c,
+                    rp_app::Event::PenUp {
+                        x: k.x + 20,
+                        y: k.y + 20,
+                    },
+                    &cx,
+                );
                 open(s, c);
             }),
         },
