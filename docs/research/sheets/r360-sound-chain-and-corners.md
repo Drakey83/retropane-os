@@ -526,3 +526,24 @@ words (`0xF00` = 0x1020000, `0xF10` = 0x10000), and none moves. **The
 2700G's core block `0x000`-`0xFFC` holds no register that counts a
 render's progress** (and reading all of it is safe on this unit). The
 certain overlap is left to the vendor's way: answering bit 9 (batch 359).
+
+**Batch 359 (2026-11-23, the menu's text scene, `-rpmenu -rpmenutext`,
+hands-free; run 313's test, where a TA and a render take about the same
+time):**
+
+| Run | Chip order | fps (last ~50 s) | bit 9 | stalls, resets | end picture against strict |
+|---|---|---|---|---|---|
+| 359a | strict | 53.2 | 1 | 0, 0 | - |
+| 359b | free overlap (`-rpnoholdend`) | **68.3 (+28%)** | 3,728 | 0, 0 | **0 pixels differ** |
+| 359c | free overlap, the event answered (`-rpev9`) | 68.3 | 3,747, and as many bit 7 | 1 hang, 1 full reset | not written |
+
+What it means: a render ending under a TA, thousands of times, spoiled
+neither the run nor its last picture here; answering the event alone
+(`0x834` = 1, a part of Dell's sequence) brings a second event each time
+and a hang, so it is out. The plays' glitches under overlap (runs 297,
+314: checkerboards, flashing, stretched models) came "especially with
+the flashlight on", from lightmap rewrites into pages a render in flight
+read (R340, run 297), a hazard the lightmap ring removed in run 338
+(after the strict order was chosen). Whether free overlap is now clean
+in play is a play's question: the owner's eye on a 10-minute play with
+`-rpnoholdend` (and the bit 9, stall and reset counts beside run 316's).
