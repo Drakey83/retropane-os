@@ -2,7 +2,9 @@
 
 The owner, 2026-11-15: "can we use this port as a basis for how we build
 all of our ports in the future?" Yes: the Half-Life port was built so that
-everything but the game's own backend is shared. This page is the recipe,
+everything but the game's own backend is shared. **Read
+[porting-lessons.md](porting-lessons.md) first**: what Half-Life's 330-odd
+device runs proved will and won't work. This page is the recipe,
 read off what that port did (docs/research/half-life-evaluation.md); the
 next port (Doom, Heretic, Quake: apps-and-packs.md) follows it and
 improves it.
