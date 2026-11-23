@@ -1710,6 +1710,9 @@ mod image {
         // R340's measure: the parameter memory manager's snapshots
         let (pm_mem, room) = room.split_at_mut(super::gfx::PM_WATCH_ROOM);
         super::gfx::PM_WATCH.with(|w| *w = super::gfx::PmWatch::new(pm_mem));
+        // R340's next measure: the chip's stages frame by frame
+        let (fl_mem, room) = room.split_at_mut(super::gfx::FRAME_LOG_ROOM);
+        super::gfx::FRAME_LOG.with(|l| *l = super::gfx::FrameLog::new(fl_mem));
         let mut files: Files<'static, Disk, HANDLES> = Files::new(vol, work, room);
         files.remember(Names::new(names));
 
@@ -2348,6 +2351,15 @@ mod image {
                 Out,
                 "runner: R340: the parameter memory manager's snapshots ({} KiB) {put}",
                 w.bytes().len() / 1024
+            );
+        }
+        // R340's next measure: the chip's stages frame by frame to the card
+        if let Some(mut l) = super::gfx::FRAME_LOG.with(Option::take) {
+            let put = write_card(super::gfx::FRAME_LOG_FILE, &[l.bytes()]);
+            let _ = writeln!(
+                Out,
+                "runner: R340: the chip's stages frame by frame ({} bytes) {put}",
+                l.bytes().len()
             );
         }
         // The program's end stopped the DMA engine (`Sys::end`): the codec

@@ -119,6 +119,8 @@ pub struct Chain {
     ends: usize,
     /// Descriptors the last frame took.
     pub last_descriptors: u32,
+    /// Words the last frame fed (its parts and background; R340's frame log).
+    pub last_words: u32,
     /// The last frame seen done: microseconds from the look before the
     /// one that saw it (the most its render can have started late).
     pub last_gap_us: u32,
@@ -171,6 +173,7 @@ impl Chain {
             looks: 0,
             last_fail: None,
             last_descriptors: 0,
+            last_words: 0,
         })
     }
 
@@ -452,6 +455,7 @@ impl Chain {
         }
         cpu::clean_range(self.addr(0), 4 * ZERO as u32);
         self.last_descriptors = self.n as u32;
+        self.last_words = (bg.len() + parts.iter().map(|p| p.len()).sum::<usize>()) as u32;
         self.waiting = Some(grid);
         true
     }
