@@ -134,3 +134,28 @@ code made each vertex), the sort -25. **Lever 3 is taken out** (the stop
 rule; r_emit.c back to f2d782b9's). What it leaves: the state loop was
 about a third of the sort's samples; the rest is the run emission (the
 inlined `RP_StudioRun`, the TA's words), the next place to read.
+
+## Step 4: the run emission, read (run 342a, no lever)
+
+The lead step 3 left was wrong, and the samples say so: the TA's words
+are copied by `RP_StudioWords`, a function of its own at **11 samples
+(0.2%)**. `RP_StudioCmdSend`'s 324 samples are its passes over the
+triangle states, each a few instructions a triangle: the state loop
+~120, the run loop that builds each run's indices ~45, the three
+`RP_LitFill` calls a kept triangle ~25, the gap fill ~15, the entry ~25,
+counters stored to memory. Lever 3 showed that reshaping those passes
+costs more where the corners are built than it saves, so no lever here.
+
+**Where the fight's time is (run 342a), for the next session:** no
+function above 5.1%; the software-float, division and copy helpers
+**18.1%** together, their callers spread (`rp_fadd_asm` 3.1%: 13% from
+`RP_HullCheckQ`, 8% `R_StudioSetupChrome`, 7% `R_AddDynamicLights`;
+`rp_fmul_asm` 2.3%: `R_AddDynamicLights` 13%, chrome 9%, lighting 9%);
+sound ~5.3% (`rp_snd_write` 2.5%, `rp_snd_played` 1.3%, the engine's
+`S_MixChannelToBuffer` 1.5%: ROADMAP 7f); `rp_gfx_frame_parts` 3.4% (the
+runner); the models' path (`RP_StudioCmdSend`, `RP_StudioCmdLit`,
+`RP_StudioVertsFixed`, `RP_ProjectS`) ~13.5% together. A gain toward 40
+fps (~30% of the frame) has to come from a stage removed, not a function
+tuned: ADR-0040's 7d (collision on the integer hulls) and 7f (the
+engine's mixing into the OS mixer), and the float callers above moved to
+integers as a class.
