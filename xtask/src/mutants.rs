@@ -2071,12 +2071,25 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "chain: dither on every sample (a lone 44.1 kHz stream not bit-exact, silence hisses)",
         file: "services/audio/src/chain.rs",
-        from: "if s & 0xFF == 0 {",
-        to: "if false {",
+        // R360's fused pass (`dither_fast`, what `State::run` uses).
+        from: "let t = if s & 0xFF == 0 {",
+        to: "let t = if false {",
         check: Check::Host(&[
             "-p",
             "rp-audio",
             "a_16_bit_signal_at_unity_comes_out_bit_exact",
+        ]),
+    },
+    Mutant {
+        name: "chain: the old way dithers every sample (the fused pass no longer matches it)",
+        file: "services/audio/src/chain.rs",
+        // `State::dither`, what `run_reference` (`-rpsndchain0`) uses.
+        from: "if s & 0xFF == 0 {\n                return (s >> 8) as i16;",
+        to: "if false {\n                return (s >> 8) as i16;",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_fused_pass_is_the_old_way_exactly",
         ]),
     },
     Mutant {
