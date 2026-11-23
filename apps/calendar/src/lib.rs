@@ -680,6 +680,7 @@ impl Calendar {
                 n: 1,
                 days: 0,
                 until: None,
+                after: false,
             }
             .pack(e.day))
         });

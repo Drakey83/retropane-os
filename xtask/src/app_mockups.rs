@@ -283,6 +283,7 @@ pub fn sample_tasks(s: &mut rp_shell::Shell) {
             n: 1,
             days: 0,
             until: None,
+            after: false,
         }
         .pack(TODAY));
         let mut fields: Vec<(u8, &[u8])> = vec![(tag::TITLE, title), (tag::LIST, &li)];
