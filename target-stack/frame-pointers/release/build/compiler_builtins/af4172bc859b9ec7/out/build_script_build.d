@@ -1,6 +1,0 @@
-C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack/frame-pointers\release\build\compiler_builtins/af4172bc859b9ec7\out\build_script_build.d: C:\Users\reidc\.rustup\toolchains\nightly-2026-09-15-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins\build.rs C:\Users\reidc\.rustup\toolchains\nightly-2026-09-15-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins\..\libm\configure.rs
-
-C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack/frame-pointers\release\build\compiler_builtins/af4172bc859b9ec7\out\build_script_build.exe: C:\Users\reidc\.rustup\toolchains\nightly-2026-09-15-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins\build.rs C:\Users\reidc\.rustup\toolchains\nightly-2026-09-15-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins\..\libm\configure.rs
-
-C:\Users\reidc\.rustup\toolchains\nightly-2026-09-15-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins\build.rs:
-C:\Users\reidc\.rustup\toolchains\nightly-2026-09-15-x86_64-pc-windows-msvc\lib\rustlib\src\rust\library\compiler-builtins\compiler-builtins\..\libm\configure.rs:

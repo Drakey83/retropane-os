@@ -1,1 +1,0 @@
-C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack\armv5te-x51v-none-eabi\release\librp_vram_map.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\drivers\vram-map\src\lib.rs

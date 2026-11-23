@@ -1,1 +1,0 @@
-C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack\armv5te-x51v-none-eabi\release\librp_drv_pxa_i2s.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\drivers\pxa-i2s\src\lib.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\hal\api\src\lib.rs

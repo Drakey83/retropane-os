@@ -1,3 +1,0 @@
-cargo:rerun-if-changed=../link.x
-cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\boot\probe/../link.x
-cargo:rustc-link-arg-bins=--defsym=__stack_size=32768

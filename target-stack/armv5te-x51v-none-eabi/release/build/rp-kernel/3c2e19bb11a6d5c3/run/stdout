@@ -1,4 +1,0 @@
-cargo:rerun-if-changed=../link.x
-cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\boot\kernel/../link.x
-cargo:rustc-link-arg-bins=--defsym=__abt_stack_size=4096
-cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack\armv5te-x51v-none-eabi\release\rp-display-host.pe

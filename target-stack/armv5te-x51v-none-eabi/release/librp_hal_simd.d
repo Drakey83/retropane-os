@@ -1,1 +1,0 @@
-C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack\armv5te-x51v-none-eabi\release\librp_hal_simd.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\hal\simd\src\lib.rs

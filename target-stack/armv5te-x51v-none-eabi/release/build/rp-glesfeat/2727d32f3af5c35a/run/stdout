@@ -1,3 +1,0 @@
-cargo:rerun-if-changed=../link.x
-cargo:rerun-if-env-changed=RP_GLESFEAT_G7_FRAME
-cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\boot\glesfeat/../link.x
