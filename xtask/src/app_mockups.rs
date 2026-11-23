@@ -25,7 +25,7 @@ pub struct Mock {
 /// The previews' today: Monday 1 January 2024 (their clock reads noon).
 const TODAY: i32 = 19_723;
 
-static CALS: [Cal; 4] = [
+pub(crate) static CALS: [Cal; 4] = [
     Cal {
         name: b"Personal",
         colour: IDENTITY[0],
@@ -216,6 +216,29 @@ pub fn sample_people(s: &mut rp_shell::Shell) {
             .expect("the sample people fit");
     }
     s.pim_loaded();
+}
+
+/// Grace's map page: the shell asked for her place's map (as the image's
+/// loop asks), then given the relay's layers from `RP_PREVIEW_MAP`.
+fn map_page(s: &mut rp_shell::Shell) {
+    sample_people(s);
+    let mut c = contacts(rp_app_contacts::View::List);
+    // 2100 Clarendon Blvd, Arlington: where Photon puts it.
+    c.mock_map(0, (38_887_100, -77_094_700), None);
+    open(s, c);
+    let Some(key) = s.prog_map_wanted() else {
+        return;
+    };
+    let Some(file) = std::env::var("RP_PREVIEW_MAP")
+        .ok()
+        .and_then(|p| std::fs::read(p).ok())
+    else {
+        return;
+    };
+    let mut layers = vec![0u8; rp_weather::maplayers::BYTES];
+    if rp_weather::maplayers::unpack(&file, &mut layers).is_ok() {
+        s.prog_map_layers(key, &layers);
+    }
 }
 
 /// The sample people, Ada with every field of version 3 (a job, a
@@ -721,6 +744,9 @@ pub fn mocks() -> Vec<Mock> {
                 name: Box::leak(format!("{}{suffix}", m.name).into_boxed_str()),
                 what: m.what,
                 prepare: Box::new(move |s| {
+                    // (The look first too: what a program is lent while it
+                    // is prepared, a map's colours, follows it.)
+                    s.set_appearance(look);
                     prepare(s);
                     s.set_appearance(look);
                     // Light behind the glass (design-language.md version 3).
@@ -917,6 +943,40 @@ fn base() -> Vec<Mock> {
                 open(s, calendar(View::Month, b""));
             }),
         },
+        // Group E's motion (calendar-rule0.md): frames of the real code
+        // for the owner's pick of the looks.
+        Mock {
+            name: "e-strip-drag",
+            what: "Week strip (the owner's pick B): dragged left, the week arriving named on a glass chip",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Day, b"");
+                c.mock_motion(-170, None, true);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "e-strip-back",
+            what: "Week strip: dragged right into last year's last week, the chip naming both months",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Agenda, b"");
+                c.mock_motion(250, None, true);
+                open(s, c);
+            }),
+        },
+    ]
+    .into_iter()
+    // The map page (contacts-rule0.md "Where they are"): Grace's address
+    // on a map the relay's drawer made (`RP_PREVIEW_MAP=<file.rpml>`,
+    // tools/maps/radar_layers.py at her place, zoom 10), coloured by the
+    // shell's own path (prog_map.rs); without the file, the page waiting.
+    .chain(std::iter::once(Mock {
+        name: "e-map",
+        what: "Map (the owner's pick A): the map with the pin and the zoom keys over it, the address on glass under it",
+        prepare: Box::new(map_page),
+    }))
+    .chain(vec![
         Mock {
             name: "v2-calendar-new",
             what: "Calendar: quick add, the understood words in the tint, the preview card",
@@ -1385,5 +1445,6 @@ fn base() -> Vec<Mock> {
                 })
             }),
         },
-    ]
+    ])
+    .collect()
 }

@@ -190,6 +190,13 @@ pub mod tag {
     /// first after the note's own text (`rp_app_notes::doc`). Tags 60-64
     /// are Notes' (group D, 2026-11-23).
     pub const ORDER: u8 = 60;
+
+    // Group E's (70-72; group A owns 50-59, group D 60-64).
+    /// Contact: where its address is, latitude then longitude, millionths
+    /// of a degree, each four bytes little-endian (signed). Kept with the
+    /// address so its map's pin shows with no connection; dropped when
+    /// the address changes (contacts-rule0.md "Where they are").
+    pub const GEO: u8 = 70;
 }
 
 /// A record as stored: read-only.

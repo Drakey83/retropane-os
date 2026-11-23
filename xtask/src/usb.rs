@@ -1680,6 +1680,42 @@ fn stderr_note(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
 
+    /// The relay's address check (R382): every script's letters come as
+    /// %XX, decoded strictly as UTF-8 (refused if not), then held to
+    /// letters of any script with their marks, digits and ` ,.'#/-`, 2 to
+    /// 60, case-sensitively (upper-case hex only, as the device sends it);
+    /// only then asked of Photon. Checked in the source: running PowerShell
+    /// here would pass by the device lock's guard (`devlock.rs`: only
+    /// `fn powershell` may start it), and the run of 2026-11-23 (0adbd838)
+    /// took every script and refused non-UTF-8, cut sequences, symbols and
+    /// lower-case hex.
+    #[test]
+    fn the_relay_takes_addresses_of_every_script_and_nothing_else() {
+        let src = include_str!("usb.rs");
+        let start = src
+            .find(&["function Address", "-Text($raw)"].concat())
+            .expect("the check");
+        let end = start
+            + src[start..]
+                .find(
+                    "
+}}
+",
+                )
+                .expect("its end");
+        let f = &src[start..end];
+        for want in [
+            r#"$raw -cnotmatch "^([A-Za-z0-9 ,.'#/-]|%[0-9A-F]{{2}}){{2,240}}$""#,
+            "[Text.UTF8Encoding]::new($false, $true)",
+            "catch {{ return $null }}",
+            r#"$t -cnotmatch "^[\p{{L}}\p{{M}}\p{{N}} ,.'#/-]{{2,60}}$""#,
+        ] {
+            assert!(f.contains(want), "the check holds {want}");
+        }
+        assert!(src.contains(&["$q = Address", "-Text $line.Substring(11)"].concat()));
+        assert!(src.contains(&["if ($null -eq $q) {{ Refuse 400 'not an ", "address'"].concat()));
+    }
+
     /// The relay takes every frame number RainViewer's two hours give
     /// (R184 step 2: 13 frames; a one-digit check refused 10-12 and the
     /// newest frames showed dry, run today-0054), and keeps all of them.
@@ -2230,6 +2266,22 @@ function Fetch($url) {{
     $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
     [Text.Encoding]::UTF8.GetBytes($r.Content)
 }}
+# An address as the device sends it (R382): ASCII letters, digits and
+# ` ,.'#/-` as they are, every other script's letters as their UTF-8 bytes
+# in %XX. Decoded strictly (a byte sequence that isn't UTF-8 is refused),
+# then held to letters (any script, with their marks), digits and those
+# signs, 2 to 60 of them; $null when it isn't one.
+function Address-Text($raw) {{
+    if ($raw -cnotmatch "^([A-Za-z0-9 ,.'#/-]|%[0-9A-F]{{2}}){{2,240}}$") {{ return $null }}
+    $bytes = New-Object 'Collections.Generic.List[byte]'
+    for ($i = 0; $i -lt $raw.Length; $i++) {{
+        if ($raw[$i] -eq '%') {{ $bytes.Add([Convert]::ToByte($raw.Substring($i + 1, 2), 16)); $i += 2 }}
+        else {{ $bytes.Add([byte][char]$raw[$i]) }}
+    }}
+    try {{ $t = ([Text.UTF8Encoding]::new($false, $true)).GetString($bytes.ToArray()) }} catch {{ return $null }}
+    if ($t -cnotmatch "^[\p{{L}}\p{{M}}\p{{N}} ,.'#/-]{{2,60}}$") {{ return $null }}
+    $t
+}}
 # The pictures in local\photos, by name.
 function Photo-Files {{
     # local\photos first, then the user's own Pictures folder and the
@@ -2299,8 +2351,9 @@ while ($true) {{
                 # Photon, OpenStreetMap's search built for typing (Nominatim's
                 # public server forbids as-you-type use). Raw GeoJSON: the
                 # device reads it (rp_pim::net::photon), as it will over Wi-Fi.
-                $q = $line.Substring(11)
-                if ($q -notmatch "^[A-Za-z0-9 ,.'#/-]{{2,60}}$") {{ Refuse 400 'not an address'; continue }}
+                # Any country's (R382): letters of every script come as %XX.
+                $q = Address-Text $line.Substring(11)
+                if ($null -eq $q) {{ Refuse 400 'not an address'; continue }}
                 if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\photon-410-pi.json")); continue }}
                 $b = Fetch "https://photon.komoot.io/api/?q=$([uri]::EscapeDataString($q))&limit=5&lang=en"
                 "ADDR for '$q': $($b.Length) bytes"

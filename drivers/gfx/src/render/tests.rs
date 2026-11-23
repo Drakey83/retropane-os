@@ -276,3 +276,51 @@ fn a_store_picture_draws_as_the_same_image_and_a_stale_one_draws_nothing() {
     );
     assert_eq!(missed.get().last, Some((pic, rp_draw::pics::Miss::Stale)));
 }
+
+#[test]
+fn a_16_bit_picture_draws_as_its_pixels_widened() {
+    // `Cmd::Pic16`: two RGB565 pixels a word, the first in the low half,
+    // drawn as the opaque 32-bit picture of the same pixels widened as the
+    // 2D engine widens them (each channel's top bits repeated).
+    use rp_draw::pics::Pics;
+    let pics = Pics::new(
+        Box::leak(vec![0; 4 * 2 + 8 * 2].into_boxed_slice()),
+        &[(4, 2, 1), (8, 2, 1)],
+    );
+    let p = |i: usize| (i as u16).wrapping_mul(0x1F3D) ^ 0xA5C3;
+    let half = pics.alloc(4, 2).unwrap();
+    assert!(pics.write(half, |w| {
+        for (i, word) in w.iter_mut().enumerate() {
+            *word = u32::from(p(2 * i)) | u32::from(p(2 * i + 1)) << 16;
+        }
+    }));
+    let full = pics.alloc(8, 2).unwrap();
+    assert!(pics.write(full, |px| {
+        for (i, q) in px.iter_mut().enumerate() {
+            *q = from565(p(i));
+        }
+    }));
+    let draw = |c: Cmd| {
+        let (mut px, mut plane) = (vec![0; (W * H) as usize], vec![0; (W * H * 4) as usize]);
+        {
+            let mut r = renderer(&mut px, &mut plane);
+            r.set_pics(&pics);
+            let mut f = Frame::new();
+            f.push(c);
+            f.damage(rp_draw::Rect::new(0, 0, W as u16, H as u16));
+            r.draw(&f);
+            assert_eq!(r.missed.n, 0);
+        }
+        plane
+    };
+    for (x, y) in [(5, 3), (0, -1)] {
+        assert_eq!(
+            draw(Cmd::Pic16 { x, y, pic: half }),
+            draw(Cmd::Pic { x, y, pic: full }),
+            "at ({x}, {y})"
+        );
+    }
+    // Black and white widen to the ends (no channel short of 255).
+    assert_eq!(from565(0), 0xFF00_0000);
+    assert_eq!(from565(0xFFFF), 0xFFFF_FFFF);
+}

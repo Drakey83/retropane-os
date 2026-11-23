@@ -286,7 +286,9 @@ impl<'a> CpuRenderer<'a> {
                 self.set_columns(rect(r).intersect(&clip), (color, color, 0, 1));
             }
             Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),
-            Cmd::Clip { .. } => {}
+            // No layers here: the frame's other commands hold the arriving
+            // view whole (the change made at once).
+            Cmd::Clip { .. } | Cmd::Layers { .. } => {}
             Cmd::HGradient { r, left, right } => {
                 let full = rect(r);
                 let to = full.intersect(&clip);
@@ -340,6 +342,36 @@ impl<'a> CpuRenderer<'a> {
                         h: u32::from(pic.h),
                     };
                     layer.draw_over_in(&src, i32::from(x), i32::from(y), clip);
+                });
+                if drawn.is_none() {
+                    self.missed.note(pic, pics.why_not(pic));
+                }
+            }
+            Cmd::Pic16 { x, y, pic } => {
+                let Some(pics) = self.pics else {
+                    self.missed.note(pic, rp_draw::pics::Miss::NoStore);
+                    return;
+                };
+                let layer = &mut self.layer;
+                let drawn = pics.read(pic, |words| {
+                    // Each row widened to opaque ARGB as the engine widens
+                    // RGB565 (each channel's top bits repeated below).
+                    let w = usize::from(pic.w) * 2;
+                    let mut row = [0u32; MAX_W];
+                    for (k, line) in words.chunks_exact(usize::from(pic.w)).enumerate() {
+                        for (i, &pair) in line.iter().enumerate() {
+                            if 2 * i + 1 < MAX_W {
+                                row[2 * i] = from565(pair as u16);
+                                row[2 * i + 1] = from565((pair >> 16) as u16);
+                            }
+                        }
+                        let src = ArgbImage {
+                            px: &row[..w.min(MAX_W)],
+                            w: w.min(MAX_W) as u32,
+                            h: 1,
+                        };
+                        layer.draw_over_in(&src, i32::from(x), i32::from(y) + k as i32, clip);
+                    }
                 });
                 if drawn.is_none() {
                     self.missed.note(pic, pics.why_not(pic));
@@ -438,3 +470,15 @@ impl Renderer for CpuRenderer<'_> {
 
 #[cfg(test)]
 mod tests;
+
+/// An RGB565 pixel as opaque ARGB, each channel's top bits repeated below
+/// (the 2D engine's widening: rp-mbx-blend B1-B3, modelled in the fork).
+#[must_use]
+pub const fn from565(p: u16) -> u32 {
+    let (r, g, b) = (
+        (p >> 11) as u32,
+        ((p >> 5) & 0x3F) as u32,
+        (p & 0x1F) as u32,
+    );
+    0xFF00_0000 | (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2)
+}

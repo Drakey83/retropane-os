@@ -161,7 +161,7 @@ pub const fn alpha(c: Argb, alpha: u8) -> Argb {
 /// the PC model's alike (2026-11-14: Notes' ink sizes were the model's
 /// only, so the X51v drew no ink once the pen lifted and every check
 /// passed). An app that needs a new size adds it here.
-pub const PIC_CLASSES: [(u16, u16, u8); 6] = [
+pub const PIC_CLASSES: [(u16, u16, u8); 7] = [
     (24, 24, 24),
     (40, 40, 24),
     // The big avatars of a favourites row and small dials.
@@ -169,7 +169,17 @@ pub const PIC_CLASSES: [(u16, u16, u8); 6] = [
     (96, 96, 2),
     (INK_LAYER.0, INK_LAYER.1, INK_LAYERS),
     (INK_MINI.0, INK_MINI.1, 4),
+    // A program's map (Contacts' address, [`crate::MapAsk`]): one, at 16
+    // bits two pixels a word (`Cmd::Pic16`), 301 KB of the 48 MiB RAM
+    // pool, only while a program holds it.
+    (MAP_PIC.0 / 2, MAP_PIC.1, 1),
 ];
+
+/// A program's map picture in pixels ([`crate::MapAsk`]): the radar's 480
+/// x 462 view less a margin, the content's width inside its margins. It is
+/// a 16-bit picture (`Cmd::Pic16`): its handle is `MAP_PIC.0 / 2` words
+/// wide.
+pub const MAP_PIC: (u16, u16) = (448, 336);
 
 /// The first ink panel's picture (the design concepts name it still; the
 /// store has no such class any more).
@@ -676,6 +686,12 @@ impl<T: Copy, const N: usize> Hits<T, N> {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.n == 0
+    }
+
+    /// Forgets those added after the first `n` (a frame that draws two
+    /// screens, a zoom's, keeps only the targets of the one arriving).
+    pub fn keep(&mut self, n: usize) {
+        self.n = self.n.min(n);
     }
 }
 

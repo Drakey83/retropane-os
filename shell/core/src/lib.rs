@@ -32,6 +32,7 @@ mod keyboard;
 pub mod motion;
 pub mod panel;
 mod panel_art;
+pub mod prog_map;
 pub mod sky;
 pub mod station;
 mod today_feed;
@@ -334,6 +335,12 @@ pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
 /// 2026-11-14: design for both looks, everything cohesive).
 #[must_use]
 pub fn look_color(c: Argb, text: bool, style: LightStyle) -> Argb {
+    // A clear (a fill of nothing: "the window here", rp_draw::CLEAR) stays
+    // one in either look (Calendar's zoom clears its card to the window;
+    // made glass it showed the month through the day, 2026-11-23).
+    if c == rp_draw::CLEAR {
+        return c;
+    }
     if sky::is_ink(c)
         || panel::is_panel(c)
         || c == WASH
@@ -1047,6 +1054,8 @@ pub struct Shell {
     radar_map_for: Option<(i32, i32)>,
     radar_card: weather_net::CardMap,
     asked_map: bool,
+    /// The open program's map (prog_map.rs).
+    pmap: prog_map::ProgMap,
     /// The default icon pack's offset asked next ([`Ask::Pack`]).
     pack_at: u32,
     /// The station's instruments and when they came (ms).
@@ -1238,6 +1247,7 @@ macro_rules! shell_start {
             radar_map_for: None,
             radar_card: weather_net::CardMap::Unknown,
             asked_map: false,
+            pmap: prog_map::ProgMap::default(),
             pack_at: 0,
             station: None,
             station_at: 0,
@@ -2297,6 +2307,7 @@ impl Shell {
                 pics.free_owned(PROGRAM_PICS);
             }
             self.shapes.forget();
+            self.prog_map_closed();
         }
         if self.screen != Screen::Today {
             // A key half typed is forgotten on the way.
@@ -2580,6 +2591,7 @@ impl Shell {
             pics.free_owned(PROGRAM_PICS);
         }
         self.shapes.forget();
+        self.prog_map_closed();
         *self.program.borrow_mut() = Some(p);
         self.screen = Screen::Program;
         self.prog_field = None;
@@ -2983,16 +2995,23 @@ impl Shell {
         self.program_keyboard();
         self.reminders_follow();
         self.program_caps();
+        // What changed is found from the draw lists (R191's difference,
+        // `rp_draw::changes`): a program can't say where its answer shows,
+        // and marking the whole screen drew all of it again for every
+        // reply, ~500 blits and ~47 ms a frame for Calendar's Day (priced,
+        // `cargo xtask motion-cost`), a week strip's 448 x 62 slide
+        // included. With no lists kept, a restatement is the whole screen
+        // as before.
         match reply {
             rp_app::Reply::Nothing => Action::Nothing,
             rp_app::Reply::Redraw => {
-                self.dirty(Rect::new(0, 0, W, H));
+                self.restate();
                 Action::Redraw
             }
             rp_app::Reply::Animate => {
                 // The next step about a frame later (the 33 ms rule).
                 self.prog_anim = Some(self.now.wrapping_add(30));
-                self.dirty(Rect::new(0, 0, W, H));
+                self.restate();
                 Action::Redraw
             }
             rp_app::Reply::Close => {

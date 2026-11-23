@@ -471,18 +471,32 @@ fn a_card_shows_every_line_and_each_copies_by_tap_or_dpad() {
     // Three numbers, the e-mail, the address and the Copy key, all on the
     // card (the address was dropped when the rest filled it).
     let kinds: std::vec::Vec<u8> = c.card_at[..c.n_card].iter().map(|t| t.1).collect();
-    assert_eq!(kinds, [PICTURE, 5, 10, 11, 12, 13, 14]);
+    assert_eq!(kinds, [PICTURE, MAP_KEY, 5, 10, 11, 12, 13, 14]);
     // (Past the avatar, which opens the picture chooser.)
     c.event(Event::Key(Key::Down), &cx);
     assert!(c.card_at[..c.n_card].iter().all(|(r, _)| r.bottom() <= 596));
     // The D-pad reaches each, the centre copies it; the mark shows, then
     // goes.
     let mut seen = std::vec::Vec::new();
-    for _ in 0..8 {
+    let mut mapped = false;
+    for _ in 0..9 {
         c.event(Event::Key(Key::Down), &cx);
-        assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Animate);
+        let focus = c.focus;
+        let r = c.event(Event::Key(Key::Enter), &cx);
+        if let View::Map(i) = c.view {
+            // The Map key opens the address's map; Back returns to the card
+            // with the D-pad where it was.
+            mapped = true;
+            c.event(Event::Key(Key::SoftLeft), &cx);
+            assert_eq!(c.view, View::Card(i));
+            draw(&mut c, &cx);
+            c.focus = focus;
+            continue;
+        }
+        assert_eq!(r, Reply::Animate);
         seen.push(std::string::String::from_utf8_lossy(cx.clip.borrow().get()).into_owned());
     }
+    assert!(mapped, "the Map key reached by the D-pad");
     for want in [
         "(703) 555-0107",
         "(703) 555-0108",
@@ -1415,4 +1429,130 @@ fn made_in_its_slot_it_is_the_same_app() {
     assert_eq!(c.view, d.view);
     assert_eq!(c.n_rows, d.n_rows);
     assert!(c.n_rows > 0);
+}
+
+#[test]
+fn the_map_key_shows_the_address_kept_found_once_and_never_stale() {
+    // contacts-rule0.md "Where they are" (group E, the owner's pick A).
+    let pim = store();
+    let cx = ctx(pim);
+    let id = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Contact,
+            None,
+            &[
+                (tag::FIRST, b"Grace"),
+                (tag::ADDRESS, b"2100 Clarendon Blvd\nArlington, VA 22201"),
+            ],
+        )
+        .unwrap();
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    c.view = View::Card(0);
+    draw(&mut c, &cx);
+    // The Map key is live with an address, and opens the page.
+    let key = c.card_at[..c.n_card]
+        .iter()
+        .find(|t| t.1 == MAP_KEY)
+        .expect("live")
+        .0;
+    c.event(
+        Event::PenUp {
+            x: key.x + 5,
+            y: key.y + 5,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Map(0));
+    // No place kept: the address asked about once, nothing to map yet.
+    assert_eq!(c.map_ask(), None);
+    let q = c.net_ask().expect("the address asked");
+    assert_eq!(
+        (q.what, q.arg.get()),
+        (
+            &b"ADDR"[..],
+            &b"2100 Clarendon Blvd, Arlington, VA 22201"[..]
+        )
+    );
+    assert!(c.net_ask().is_none(), "once");
+    // No connection: said so, nothing asked again.
+    c.net_answer(false, b"", &cx);
+    assert_eq!(c.map.unwrap().status, map::Status::Offline);
+    // Again with a connection: the first place found is kept on the record.
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    c.open_map(0, &cx);
+    c.net_ask().unwrap();
+    let answer = br#"{"features":[{"properties":{"housenumber":"2100","street":"Clarendon Blvd","city":"Arlington"},"geometry":{"coordinates":[-77.0947,38.8871]}}]}"#;
+    c.net_answer(true, answer, &cx);
+    let want = rp_app::MapAsk {
+        lat: 38_887_100,
+        lon: -77_094_700,
+        zoom: map::OPENS_AT,
+    };
+    assert_eq!(c.map_ask(), Some(want));
+    let kept = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        map::geo_of(
+            pim.borrow()
+                .as_ref()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .text(tag::GEO),
+        )
+    };
+    assert_eq!(kept(pim), Some((38_887_100, -77_094_700)));
+    // The shell's answer: none to be had, then a picture.
+    assert_eq!(c.map_answer(want, None, &cx), Reply::Redraw);
+    assert_eq!(c.map.unwrap().status, map::Status::NoMap);
+    draw(&mut c, &cx);
+    // Zoom: out to 8 and no further, in to 10 and no further; each a new ask.
+    for (k, want_zoom) in [
+        (Key::Down, 9),
+        (Key::Down, 8),
+        (Key::Down, 8),
+        (Key::Up, 9),
+        (Key::Up, 10),
+        (Key::Up, 10),
+    ] {
+        c.event(Event::Key(k), &cx);
+        assert_eq!(c.map_ask().map(|a| a.zoom), Some(want_zoom));
+    }
+    // The centre key copies the address, with its mark.
+    assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Animate);
+    assert_eq!(
+        cx.clip.borrow().get(),
+        b"2100 Clarendon Blvd, Arlington, VA 22201"
+    );
+    // Opened again: the kept place, no question.
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    assert_eq!(c.view, View::Card(0));
+    c.open_map(0, &cx);
+    assert!(c.net_ask().is_none());
+    assert_eq!(c.map_ask(), Some(want));
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    // An address changed by hand takes the place off (a stale pin is worse
+    // than none); unchanged, it stays.
+    c.open_edit(0, &cx);
+    c.keep(&cx);
+    assert_eq!(
+        kept(pim),
+        Some((38_887_100, -77_094_700)),
+        "unchanged: kept"
+    );
+    draw(&mut c, &cx);
+    c.open_edit(0, &cx);
+    c.put(EditField::Street, b"1 Other St");
+    c.keep(&cx);
+    assert_eq!(kept(pim), None, "changed: dropped");
+    // A suggestion picked brings its place with it.
+    draw(&mut c, &cx);
+    c.open_edit(0, &cx);
+    c.view = View::Edit(EditField::Street);
+    c.set_places_from(answer);
+    c.event(Event::Suggestion(0), &cx);
+    c.keep(&cx);
+    assert_eq!(kept(pim), Some((38_887_100, -77_094_700)), "picked: kept");
 }

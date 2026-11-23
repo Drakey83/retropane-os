@@ -82,7 +82,7 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | built | shell/pim/src/net.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |
 | Capitals at each word in names, companies and addresses; e-mail keyboard | apps-and-packs: capitals at each word in names and addresses | built | shell/core/src/lib.rs |
 | Structured address, + add for more phones and e-mails, custom labels, birthday, anniversary, website | sheet | built | shell/pim/src/contact.rs, apps/contacts/src/form.rs, apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
-| Map: the address on the radar's map tiles with a pin | sheet | pending | |
+| Map: the address on the radar's map tiles with a pin | sheet | built | apps/contacts/src/map.rs, apps/contacts/src/lib.rs, shell/core/src/prog_map.rs, shell/today/src/main.rs, shell/pim/src/net.rs, drivers/draw/src/lib.rs |
 | Duplicates offered as one merge | sheet | built | shell/pim/src/contact.rs, shell/pim/src/vcard.rs, apps/contacts/src/io.rs, apps/contacts/src/tests.rs |
 | vCard 3 and 4 import and export | apps-and-packs: vCard import/export | built | shell/pim/src/vcard.rs, shell/pim/src/jpeg_out.rs, apps/contacts/src/io.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs |
 | CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |
@@ -92,6 +92,22 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/contacts/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | blocked: owner 2026-11-15 sign off without it: internal storage waits on the flash driver; the card stands in, same code and format | |
+
+## The map as built (group E, 2026-11-23; the owner's pick A)
+
+Mock-up: [mockups/e-map.jpg](mockups/e-map.jpg). The card's Map key opens
+the address on the radar's own map (Natural Earth layers drawn once by the
+dock's relay, `RPNET LAYERS`, kept on the card in `RPMAPS` beside the
+radar's, coloured on the device in Paper or Night by the look), the pin in
+the person's colour at the place, + and - for zooms 8-10, the address on a
+glass card under it (a tap or the centre key copies it). The place rides
+with the address suggestions (Photon's coordinates: no second question) and
+is kept on the record (`tag::GEO`); an address typed by hand is asked once
+when its map is first opened; an address changed any other way drops its
+place. The picture is 16-bit (`Cmd::Pic16`: at 32 bits it was past the 2D
+engine's 384 KiB picture cache). Offline with no kept map the page says so
+and shows the coordinates. Addresses of every script reach the service (R382,
+fixed 0adbd838).
 
 ### Version 3 (2026-11-23): records and files, as built
 

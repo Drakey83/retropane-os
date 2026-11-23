@@ -718,6 +718,13 @@ thread_local! {
                 &classes,
             )));
         pics.wall(&classes[..shell]);
+        // Every slot asked for made (the store leaves out past its room in
+        // silence: the previews lost a program's map and ink layers so).
+        assert_eq!(
+            pics.slots(),
+            classes.iter().map(|c| usize::from(c.2)).sum::<usize>(),
+            "the previews' picture store is short of slots"
+        );
         pics
     };
 }
