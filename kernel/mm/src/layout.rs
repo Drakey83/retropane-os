@@ -204,9 +204,9 @@ mod tests {
         assert_eq!(NATIVE_BASE, 0xC000_0000);
         assert_eq!(NATIVE_END, 0xFE00_0000);
         // The kernel's own windows stay below them (devmap ends at
-        // 0x9C100000, RAM at 0xAC000000).
+        // 0x9C300000, RAM at 0xAC000000).
         const { assert!(DIRECT_MAP_BASE + RAM_SIZE <= NATIVE_BASE) };
-        const { assert!(0x9C10_0000 <= NATIVE_BASE) };
+        const { assert!(0x9C30_0000 <= NATIVE_BASE) };
         // FCSE's process ID is 7 bits: every slot is reachable.
         const { assert!(LAST_NATIVE_SLOT < 128) };
         assert_eq!(PROCESS_SLOTS, 62);

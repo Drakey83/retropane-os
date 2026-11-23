@@ -261,9 +261,11 @@ pub fn take_cf() -> Option<(Mmio, Mmio)> {
         // socket's and are only written here, under the flag above.
         unsafe { mc.byte_add(reg).write_volatile(value) };
     }
-    let base = va(region("pcmcia1_cf")?.base as usize);
-    let attr = NonNull::new((base + CF_ATTR) as *mut u32)?;
-    let common = NonNull::new((base + CF_COMMON) as *mut u32)?;
+    // Each window translated at its own address: the socket's base (its
+    // I/O space) has no window under the kernel's device map.
+    let base = region("pcmcia1_cf")?.base as usize;
+    let attr = NonNull::new(va(base + CF_ATTR) as *mut u32)?;
+    let common = NonNull::new(va(base + CF_COMMON) as *mut u32)?;
     // SAFETY: the socket's attribute and common memory windows (64 MiB
     // each; 4 KiB handed out), identity-mapped device memory; the flag
     // guarantees one owner.
@@ -323,8 +325,8 @@ pub(crate) fn cf_if_untaken() -> Option<Mmio> {
     // SAFETY: `MCMEM1`, the CF socket's own timing; no owner exists in this
     // program (the flag above), single core.
     unsafe { mc.byte_add(MCMEM1).write_volatile(CF_MEM_TIMING_WM) };
-    let base = va(region("pcmcia1_cf")?.base as usize);
-    let common = NonNull::new((base + CF_COMMON) as *mut u32)?;
+    let base = region("pcmcia1_cf")?.base as usize;
+    let common = NonNull::new(va(base + CF_COMMON) as *mut u32)?;
     // SAFETY: as in `take_cf` (its common memory window); the flag
     // (checked above) says no handle from `take_cf` exists in this program.
     Some(unsafe { Mmio::new(common, 0x1000) })

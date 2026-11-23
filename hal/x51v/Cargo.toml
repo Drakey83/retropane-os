@@ -21,6 +21,8 @@ rp-hal-pxa27x = { path = "../pxa27x" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
 rp-drv-cf = { path = "../../drivers/cf" }
+# The kernel's device map, checked against every window handed out here.
+rp-hal-pxa27x = { path = "../pxa27x" }
 
 [lints]
 workspace = true

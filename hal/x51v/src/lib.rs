@@ -184,6 +184,38 @@ mod tests {
         assert!(!a.overlaps(&c));
     }
 
+    /// Every device window this HAL hands out (`va(region(..))` in
+    /// devices.rs, and the CF socket's windows inside its region) is in the
+    /// kernel's device map, or a program under the kernel panics on its
+    /// first touch: the kernel's first X51v run (2026-11-23) did, on the CF
+    /// card log's window.
+    #[test]
+    fn every_device_handed_out_is_in_the_kernel_map() {
+        use rp_hal_pxa27x::devmap::{KERNEL_WINDOWS, translate};
+        let src = include_str!("devices.rs");
+        let mut seen = 0;
+        for (i, _) in src.match_indices("va(region(\"") {
+            let rest = &src[i + "va(region(\"".len()..];
+            let name = &rest[..rest.find('"').unwrap()];
+            seen += 1;
+            let r = region(name).unwrap();
+            assert!(
+                translate(KERNEL_WINDOWS, r.base).is_some(),
+                "{name} at {:#x} is handed out but not in the kernel map",
+                r.base
+            );
+        }
+        assert!(seen >= 6, "the scan found the hand-outs ({seen})");
+        let cf = region("pcmcia1_cf").unwrap().base;
+        for off in [0x0800_0000u32, 0x0C00_0000] {
+            for at in [cf + off, cf + off + 0xFFC] {
+                assert!(translate(KERNEL_WINDOWS, at).is_some(), "CF window {at:#x}");
+            }
+        }
+        let cs3 = region("cs3_2700g").unwrap();
+        assert!(translate(KERNEL_WINDOWS, cs3.base + cs3.size - 4).is_some());
+    }
+
     #[test]
     fn unknown_region_is_none() {
         assert!(region("nope").is_none());

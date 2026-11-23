@@ -257,6 +257,20 @@ emulator: every check in the run log, back at the loader. Variant builds
 now get the packaged user programs (`rp-display-host.pe`) in their own
 folder (they were embedded empty, so IPC's setup failed in any variant).
 
+**Run 1 on the X51v (2026-11-23, unattended, `local/rp-kernel-g5-run1.txt`,
+sha `ddc113502cdbc8e7`):** the kernel built its tables ("VM tables OK, 12276
+frames free") and panicked on its next line, "device not in the kernel
+map": the line went to the card log, whose CF socket the X51v HAL
+translated at the socket's base (`0x30000000`, its I/O space), which the
+kernel's device map doesn't cover. It came back to the loader with its
+report (no reset, no restore screen): the safety path worked. Fixed as a
+class: each CF window translated at its own address, the CF socket's
+attribute and common windows added to the kernel map, a host test that
+every device window the HAL hands out is in the kernel map, and
+`emu-kernel-loader` now runs with an SD and a CF card and requires the
+kernel's log on both (it reproduces the panic without the fix; the first
+emulator check had no cards, so the card log never ran).
+
 ### G6. Exclusivity grants and the mode manager
 
 The display, input and audio hosts take a grant token for one slot and

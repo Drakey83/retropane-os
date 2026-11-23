@@ -89,6 +89,22 @@ pub const KERNEL_WINDOWS: &[Window] = &[
         len: MIB,
         memory: Memory::Device,
     },
+    // CompactFlash (PC Card socket 1): its attribute and common memory
+    // windows' first MiB (the X51v HAL hands out 4 KiB of each; the card
+    // log writes there). Missing until 2026-11-23: the kernel's first run
+    // on the X51v panicked on its first line to the CF card's log.
+    Window {
+        phys: 0x3800_0000,
+        virt: 0x9C10_0000,
+        len: MIB,
+        memory: Memory::Device,
+    },
+    Window {
+        phys: 0x3C00_0000,
+        virt: 0x9C20_0000,
+        len: MIB,
+        memory: Memory::Device,
+    },
 ];
 
 /// The kernel virtual address of physical `phys` under `windows`.

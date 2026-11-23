@@ -684,16 +684,25 @@ pub fn boot_loader_kernel(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
     let image = variant_image(root, "rp-kernel", ("RP_KERNEL_RETURN", "1"))?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
-    let frame = rp_loadproto::frame(&payload);
+    // An SD and a CF card, as the X51v had: the kernel's lines go to both
+    // cards' logs through its own device map (its first X51v run panicked
+    // there: the CF window wasn't mapped, and no card was in this check).
+    let sd = scratch(root, "sd-kernel.img")?;
+    let cf = scratch(root, "cf-kernel.img")?;
+    cardlog_card(&sd, b"kept", 0)?;
+    cardlog_card(&cf, b"kept", 0)?;
+    let cf_drive = drive_arg(root, "ide", &cf)?;
+    let mut frame = rp_loadproto::control_frame("name kernel");
+    frame.extend(rp_loadproto::frame(&payload));
     let output = boot(
         root,
         &Boot {
             image: &loader,
             marker: LOADER_MARKER,
             screenshot: None,
-            sd_image: None,
+            sd_image: Some(&sd),
             steps: &[],
-            extra: &[],
+            extra: &["-drive", &cf_drive],
             input: Some((&frame, "RPL END")),
             during: None,
             then: None,
@@ -717,8 +726,22 @@ pub fn boot_loader_kernel(root: &Path) -> Result<(), String> {
     if log.contains("DISPLAY waiting for the power button") {
         return Err("kernel under the loader: the device build waited for the button".into());
     }
+    for (which, img) in [("SD", &sd), ("CF", &cf)] {
+        slot_file(img, "kernel", 1).map_err(|e| {
+            format!("kernel under the loader: no card log on the {which} card: {e}")
+        })?;
+    }
+    let card = joined_card_log(&sd, &cf, "kernel", 1)
+        .map_err(|e| format!("kernel under the loader: the card log: {e}"))?;
+    for want in ["GAMEMODE full tier OK", KERNEL_MARKER] {
+        if !card.contains(want) {
+            return Err(format!(
+                "kernel under the loader: no `{want}` in the card log:{card}"
+            ));
+        }
+    }
     eprintln!(
-        "    kernel under the loader OK: every check in the run log, back at the loader (the G5 device build)"
+        "    kernel under the loader OK: every check in the run log and both cards' logs, back at the loader (the G5 device build)"
     );
     Ok(())
 }
