@@ -48,3 +48,14 @@ A Linux-style model with cache flushing: simpler, but much slower and less compa
 > FCSE has 128 slots, so RetroPane's own processes now use slots 96-126
 > above the kernel and CE programs keep all of CE's layout: 62 processes
 > (docs/research/process-limit.md).
+
+> **Amendment (2026-11-23, the owner's yes; Game Mode design B, R363):**
+> "32 MB per process" no longer holds for a native game port: Half-Life
+> needs about 53 MB (27 MiB of modules and 26 MiB of heap). In Game Mode
+> the one game process gets its modules and large blocks mapped in the
+> large-allocation region outside the 32 MB slots (the area CE5's own large
+> `VirtualAlloc`s use), and the kernel phase reserves at least 64 MB of
+> address space for it when it sizes the address map. CE programs keep
+> CE5's layout exactly; only a native port that asks for more gets the
+> region. See docs/design/game-mode-b.md "Open for the owner: ruled
+> 2026-11-23".
