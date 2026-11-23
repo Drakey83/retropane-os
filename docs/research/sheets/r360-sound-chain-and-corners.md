@@ -426,3 +426,28 @@ committed code, from 17,404 at run 342a. The exact levers sized on this
 fight are spent (steps 3-12). What is left is the owner's: the server's
 tick, simpler distant models, the clock past 624 MHz (the options table
 above), or a new measurement that finds a stage to remove.
+
+## Step 13: option C again, simpler distant models, sized look-free (not built)
+
+The owner chose option C (2026-11-23, "Simpler distant models") from a
+table of mine that wrongly called it unmeasured at ~4-6%: run 254 had
+sized it (models past 512 units 0.2-1.0 ms a frame, the 256-512 band
+1.9-3.2 ms, ~7.7 ms of models a frame) and set it aside, assuming any
+simplification shows nearer than 512 units.
+
+| | What it does |
+|---|---|
+| GoldSrc | no levels of detail: every model whole at any distance |
+| Source, modern engines | levels made offline (Source's `$lod` by distance; meshoptimizer-style error-bounded simplification today), picked by the model's size on the screen |
+| Ours, sized | levels by quadric edge collapse (Garland-Heckbert) under HL's constraints (a vertex joins only one of its own bone; texture seams and open edges stay), each level's error bound in units, picked so its error stays under half a pixel at the model's distance: look-free by construction (the X51v's 640-wide view, ~320 pixels of focal length: half a pixel is 0.4 units at 256, 0.8 at 512) |
+
+**Measured offline** (scratchpad `mdlsize.py` on the game's own models):
+triangles kept at an error of 0.4 / 0.8 / 1.6 units: `hgrunt.mdl` (731
+triangles) 95% / 87% / 74%; `hgibs.mdl` (90) 93% / 84% / 73%;
+`gib_hgrunt.mdl` (92) 100% / 97% / 93%; `shell.mdl` (20) 80% at every
+bound. Without the seam locks `hgrunt` keeps 86% at 0.8 units: the seams
+are not the limit, HL's models are already low in triangles. With run
+254's bands this saves ~5-13% of 1.9-3.2 ms and ~13-25% of 0.2-1.0 ms:
+**~0.3 ms a frame, ~1% of the fight**, for a model cooker, a level
+picker and the levels' memory. A bigger cut is a visible one (the bound
+in pixels raised), which is the owner's look.
