@@ -267,3 +267,33 @@ to ~40 ms (0.25%) on its layout alone** (the modules sit one after
 another, so a change in the engine moves the client's and server's
 addresses too). A lever smaller than that is believed only when its own
 switch in the same kit and the build before it both say so.
+
+## Step 10: the hull crossings (ADR-0040 7d), read, not built
+
+Run 351a (the committed code): `RP_HullCheckQ` 127 samples, 2.0% of the
+fight. 85 are its own, the hottest on loading each clip node's children
+and its plane's type (the walk's memory, not its arithmetic); 42 in the
+float helpers, the crossings' work (`rp_fadd_asm` 23, `rp_fdot3_asm` 6,
+`rp_fmul_asm` 4): two plane differences, the fraction's add, subtract
+and divide, four lerps, ~17 operations a crossing.
+
+- **No exact integer form:** the fraction is an IEEE divide and the mid
+  point float multiplies and adds; the physics must get the same bits,
+  which means the same roundings, which is what our software-float
+  routines do. In integers it would be the soft float written again.
+- **The exact speed-up left is a fused routine** (`a + f (b - a)` in one
+  call with the same roundings, as `rp_fdot3_asm` is for the dot): the
+  fused dot measured about its separate calls' cost (run 239), so the
+  most this could save is ~0.2% of the fight, below the ~0.25% a kit's
+  layout alone moves it (step 9): not measurable, not built.
+
+**The larger lead in this area:** `CL_PredictMovement` replays every
+command not yet acknowledged, from the last server frame, on every
+rendered frame (1.0% with its copies, plus its player traces in
+`PM_PlayerTraceExt` and the hull walk), and a packet comes only at the
+server's 20 Hz tick: the same commands from the same state give the same
+moves until a packet arrives. Keeping each replayed command's result
+while its inputs (the state it starts from, the command, the physics
+entities it can touch) are unchanged would run each command once, not
+once a frame. It needs a design that proves the inputs the same (the
+moving physics entities are part of them), so it is a sheet first.
