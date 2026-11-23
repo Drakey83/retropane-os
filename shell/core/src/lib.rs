@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod align;
+mod app_files;
 pub mod apps;
 pub mod chart;
 mod keyboard;
@@ -2890,6 +2891,7 @@ impl Shell {
             }
         };
         self.program_keyboard();
+        self.program_caps();
         match reply {
             rp_app::Reply::Nothing => Action::Nothing,
             rp_app::Reply::Redraw => {

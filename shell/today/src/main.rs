@@ -1628,6 +1628,10 @@ mod image {
         let prog_file: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(file_words);
         let (scratch_words, rest) = rest.split_at_mut(rp_today::program::SCRATCH / 4);
         let prog_scratch: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(scratch_words);
+        // An app's file step on the card (Notes' export and import,
+        // rp_today::appfiles): rp-fat's scratch and a piece, 8 KB.
+        let (appfile_words, rest) = rest.split_at_mut(rp_today::appfiles::BUF / 4);
+        let appfile_buf: &'static mut [u8] = rp_hal_mem::words_as_bytes_mut(appfile_words);
         let mut kept = KeptMap {
             key: None,
             len: 0,
@@ -3053,6 +3057,22 @@ mod image {
                             "organiser: the card refused three writes; the changes stay in RAM and are tried again each minute"
                         );
                     }
+                }
+            }
+            // An app's file step (Notes' export and import), one a still
+            // pass: on the SD card, in the app's own folder; nothing
+            // logged while the card is written (C59).
+            if still && let Some(ask) = shell.file_ask() {
+                if !card_tried {
+                    card_tried = true;
+                    *card = take_card();
+                }
+                match card.as_mut() {
+                    Some((c, start)) => {
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::appfiles::serve(&mut *c, *start, ask, &mut *shell, appfile_buf);
+                    }
+                    None => shell.file_answer(rp_app::FileAnswer::Failed("NO CARD")),
                 }
             }
             if still && def_index.is_none() && !def_failed {

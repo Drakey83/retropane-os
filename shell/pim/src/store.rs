@@ -159,6 +159,11 @@ pub mod tag {
     pub const HIDDEN: u8 = 37;
     /// Note: its paper (0 ruled, 1 plain, 2 grid).
     pub const PAPER: u8 = 38;
+    /// A page of a note's text (a [`super::Kind::Ink`] record holding
+    /// [`TEXT`] and this): where it goes among the note's pages, lowest
+    /// first after the note's own text (`rp_app_notes::doc`). Tags 60-64
+    /// are Notes' (group D, 2026-11-23).
+    pub const ORDER: u8 = 60;
 }
 
 /// A record as stored: read-only.

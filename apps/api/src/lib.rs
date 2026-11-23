@@ -386,6 +386,61 @@ pub struct NetAsk {
     pub arg: Text<64>,
 }
 
+/// A file step an app asks of the shell (the shell does it on the card,
+/// one at a time, and answers with [`Program::file_answer`]). The app
+/// names its own folder and a file in it, never a path: the shell puts
+/// every folder under the card's `RetroPane` folder and checks the name
+/// again (letters, digits, space, `-`, `_` and one `.`: no path, no device
+/// name). Iterate, don't imitate (rule 0): Windows Mobile handed apps the
+/// whole file system; ours hands an app its folder, and a file streams a
+/// piece at a time so no app needs a buffer a file's size.
+#[derive(Clone, Copy, Debug)]
+pub enum FileAsk {
+    /// The names in the app's folder.
+    List {
+        /// The app's folder (`b"Notes"`).
+        dir: &'static [u8],
+    },
+    /// A file read: the shell answers with its pieces in order.
+    Read {
+        /// The app's folder.
+        dir: &'static [u8],
+        /// The file's name.
+        name: Text<64>,
+    },
+    /// A file written whole, `len` bytes the shell takes with
+    /// [`Program::file_piece`] (the old file kept until the new one is).
+    Write {
+        /// The app's folder.
+        dir: &'static [u8],
+        /// The file's name.
+        name: Text<64>,
+        /// Its length.
+        len: u32,
+    },
+}
+
+/// The shell's answer to a [`FileAsk`].
+#[derive(Clone, Copy, Debug)]
+pub enum FileAnswer<'a> {
+    /// The folder's file names, one a line (none: an empty folder or none).
+    Listed(&'a [u8]),
+    /// A piece of the file read, at `off` of `total` bytes (the last piece
+    /// ends at `total`; an empty file is one empty piece).
+    Piece {
+        /// Where it starts.
+        off: u32,
+        /// The file's length.
+        total: u32,
+        /// Its bytes.
+        bytes: &'a [u8],
+    },
+    /// The file was written.
+    Wrote,
+    /// The step failed, and why (said to the user).
+    Failed(&'static str),
+}
+
 /// [`Opening::intent`]: start something new at once.
 pub const INTENT_NEW: u8 = 1;
 
@@ -412,6 +467,27 @@ pub trait Program {
     /// The keyboard strip's suggestions for the field being typed.
     fn suggestions(&self) -> [&[u8]; 3] {
         [&[], &[], &[]]
+    }
+    /// Whether the next letter typed is a capital (the app knows where its
+    /// caret is: a sentence's start), when the app says; `None` leaves it
+    /// to the keyboard's own rule.
+    fn caps(&self) -> Option<bool> {
+        None
+    }
+    /// A file step, if the app has one (taken: asked once).
+    fn file_ask(&mut self) -> Option<FileAsk> {
+        None
+    }
+    /// Bytes of the file being written ([`FileAsk::Write`]) from `off` into
+    /// `out`: how many (the shell asks until it has `len`).
+    fn file_piece(&mut self, off: u32, out: &mut [u8], cx: &Ctx) -> usize {
+        let _ = (off, out, cx);
+        0
+    }
+    /// The answer to the app's last file step.
+    fn file_answer(&mut self, a: FileAnswer<'_>, cx: &Ctx) -> Reply {
+        let _ = (a, cx);
+        Reply::Nothing
     }
     /// A question for the network, if the app has one (taken: asked once).
     fn net_ask(&mut self) -> Option<NetAsk> {
