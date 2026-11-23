@@ -1,4 +1,6 @@
 /target/
+# The stack rule's own build (`cargo xtask stacks`, xtask/src/stacks.rs DIR)
+/target-stack/
 **/*.rs.bk
 *.profraw
 lcov.info
