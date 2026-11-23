@@ -197,6 +197,36 @@ impl PageTables {
         Ok(())
     }
 
+    /// Unmaps the 1 MiB section at `mva` (megabyte aligned), dropping its
+    /// TLB entry; the physical base it mapped, or `None` (nothing changed)
+    /// if the megabyte isn't a section. The caller has written back the
+    /// section's cache lines while it was still mapped.
+    pub fn unmap_section(
+        &mut self,
+        mem: &mut impl PhysMem,
+        mmu: &mut impl Mmu,
+        mva: u32,
+    ) -> Option<u32> {
+        let idx = (mva >> 20) as usize;
+        let L1::Section { phys, .. } = arm::l1_decode(mem.l1()[idx]) else {
+            return None;
+        };
+        mem.l1()[idx] = 0;
+        let at = mem.l1_phys() + idx as u32 * 4;
+        mem.sync(at, 4);
+        mmu.invalidate_tlb(mva & !(MIB - 1));
+        Some(phys)
+    }
+
+    /// Whether the megabyte holding `mva` is mapped as a section.
+    #[must_use]
+    pub fn is_section(&self, mem: &mut impl PhysMem, mva: u32) -> bool {
+        matches!(
+            arm::l1_decode(mem.l1()[(mva >> 20) as usize]),
+            L1::Section { .. }
+        )
+    }
+
     /// Maps the 4 KiB page at `mva` to `phys`.
     pub fn map_small(
         &mut self,
@@ -278,6 +308,29 @@ impl PageTables {
     ) -> u32 {
         let mut changed = 0;
         let big = len / PAGE > CLEAN_ALL_THRESHOLD;
+        // Sections wholly inside the range (a section is changed whole).
+        if len > 0 {
+            let last = mva.saturating_add(len - 1) >> 20;
+            for idx in (mva >> 20)..=last {
+                let sec = idx << 20;
+                let inside = sec >= mva
+                    && u64::from(sec) + u64::from(MIB) <= u64::from(mva) + u64::from(len);
+                if let L1::Section {
+                    phys,
+                    domain,
+                    attrs,
+                } = arm::l1_decode(mem.l1()[idx as usize])
+                    && inside
+                    && attrs.ap != ap
+                {
+                    mem.l1()[idx as usize] = arm::l1_section(phys, domain, Attrs { ap, ..attrs });
+                    let at = mem.l1_phys() + idx * 4;
+                    mem.sync(at, 4);
+                    mmu.invalidate_tlb(sec);
+                    changed += 1;
+                }
+            }
+        }
         self.for_each_entry(mem, mva, len, |t, i, page_mva| {
             let new = match arm::l2_decode(t[i]) {
                 L2::Small { phys, attrs } => arm::l2_small(phys, Attrs { ap, ..attrs }),
@@ -490,7 +543,7 @@ impl PageTables {
         }
     }
 
-    /// Moves every coarse table in `mva..mva + len` to `domain` (a process
+    /// Moves every coarse table and section in `mva..mva + len` to `domain` (a process
     /// gaining or losing its ARM domain, see [`crate::domains`]): rewrites
     /// the first-level descriptors, syncs them and drops the TLB entries,
     /// which cache the old domain. Returns how many tables moved.
@@ -506,17 +559,24 @@ impl PageTables {
         let first = (mva >> 20) as usize;
         let count = (len as usize).div_ceil(MIB as usize);
         for idx in first..(first + count).min(4096) {
-            if let L1::Coarse {
-                table_phys,
-                domain: d,
-            } = arm::l1_decode(mem.l1()[idx])
-                && d != domain
-            {
-                mem.l1()[idx] = arm::l1_coarse(table_phys, domain);
-                let at = mem.l1_phys() + idx as u32 * 4;
-                mem.sync(at, 4);
-                moved += 1;
-            }
+            let new = match arm::l1_decode(mem.l1()[idx]) {
+                L1::Coarse {
+                    table_phys,
+                    domain: d,
+                } if d != domain => arm::l1_coarse(table_phys, domain),
+                // A section carries its domain itself (Game Mode's big
+                // blocks, R363).
+                L1::Section {
+                    phys,
+                    domain: d,
+                    attrs,
+                } if d != domain => arm::l1_section(phys, domain, attrs),
+                _ => continue,
+            };
+            mem.l1()[idx] = new;
+            let at = mem.l1_phys() + idx as u32 * 4;
+            mem.sync(at, 4);
+            moved += 1;
         }
         if moved > 0 {
             mmu.invalidate_tlb_all();

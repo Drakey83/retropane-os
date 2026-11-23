@@ -91,7 +91,7 @@ What the numbers mean:
 ## The build order
 
 Each step: its rule 0 sheet, then an emulator test, then the device (when
-K1 lets it). G1, G2 and G3 are built; the rest in this order.
+K1 lets it). G1 to G4 are built; the rest in this order.
 
 ### G1. Freeze a process's memory (built 2026-11-22)
 
@@ -207,7 +207,7 @@ writes the magic and again after, or a watchdog reset with RAM kept could
 leave the magic in RAM ahead of the body (the D-cache is write-back); the
 reserve's place (outside every slot) comes with G4's layout.
 
-### G4. The large-allocation region (R363) and 1 MiB sections
+### G4. The large-allocation region (R363) and 1 MiB sections (built 2026-11-23)
 
 At least 64 MB of address space outside the 32 MB slots for a Game Mode
 port's modules and big blocks (ADR-0003 as amended 2026-11-23), mapped in
@@ -217,6 +217,25 @@ as the bare test image's 1:1 map does). Rule 0: CE5 maps its large
 `VirtualAlloc`s there at 4 KiB pages; ours maps the game's in sections
 because the game's frame time is the number that matters (to measure
 against the bare image: R270).
+
+**As built:** `layout::LARGE_BASE..LARGE_END` = `0x78000000..0x80000000`,
+128 MiB at the top of CE5's shared area (where CE5 itself put large
+`VirtualAlloc`s); CE programs' shared mappings keep the 822 MiB below it
+(`layout::SHARED_END`), and the large window takes no shared writable file
+mappings. It is its own `AddressSpace::large(domain)` in the game
+process's ARM domain, so only that process reaches it. `Vm::map_sections`
+adds a pinned, zero-filled region on megabyte boundaries and maps each
+megabyte it can at once as one section of a free 1 MiB block of RAM,
+zeroed; a megabyte with no free block is left to 4 KiB demand pages, so
+fragmentation costs speed, never the allocation. Pinned: reclaim and
+freeze never touch it. `unmap` refuses to split a section (nothing
+changes), writes the caches back while it is still mapped, then frees
+each block; `protect` and `retag` change a section whole. Host tests 4
+(nine mutants caught); `emu-kernel` maps 4 MiB as 4 sections, writes and
+reads each through its address and through RAM's own, takes no fault,
+and gets every frame back. The frame-time gain against 4 KiB pages
+(design B's reason for sections) is measured on the X51v once the kernel
+runs there (K1, R270).
 
 ### G5. The kernel on the X51v (K1)
 

@@ -581,6 +581,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "VM pinned OK",
     "VM freeze OK",
     "GAMEMODE return record OK",
+    "GAMEMODE large region OK",
     "VM many regions OK",
     "VM unmap OK",
     // IPC (ADR-0016): two user processes, a migrating call and back 1000

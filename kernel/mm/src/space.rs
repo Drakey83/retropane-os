@@ -174,6 +174,21 @@ impl Region {
     }
 }
 
+/// 1 MiB: a section.
+const MIB: u32 = 1 << 20;
+/// The frame order of a 1 MiB block (2^8 frames).
+const SECTION_ORDER: usize = 8;
+
+/// What [`Vm::map_sections`] did, in megabytes.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub struct Sections {
+    /// Mapped now, each as one section.
+    pub sections: u32,
+    /// Left to demand paging (no free 1 MiB block for them).
+    pub paged: u32,
+}
+
 /// Pinned memory a space may hold unless the kernel raises its limit (a
 /// trusted service such as the compositor): an app can't pin the device
 /// full.
@@ -262,7 +277,16 @@ impl AddressSpace {
     /// The shared area for memory-mapped files.
     #[must_use]
     pub const fn shared(domain: u32) -> Self {
-        Self::window(layout::SHARED_BASE, layout::KERNEL_BASE, domain)
+        Self::window(layout::SHARED_BASE, layout::SHARED_END, domain)
+    }
+
+    /// The large-allocation region ([`layout::LARGE_BASE`], R363): the one
+    /// Game Mode port's second window, in its process's ARM `domain`, so
+    /// only that process reaches it. Its big blocks go in with
+    /// [`Vm::map_sections`].
+    #[must_use]
+    pub const fn large(domain: u32) -> Self {
+        Self::window(layout::LARGE_BASE, layout::LARGE_END, domain)
     }
 
     const fn window(lo: u32, hi: u32, domain: u32) -> Self {
@@ -342,7 +366,7 @@ impl AddressSpace {
 
     fn is_shared_area(&self) -> bool {
         // Only CE's shared area: the native slots lie above the kernel.
-        self.lo >= layout::SHARED_BASE && self.lo < layout::KERNEL_BASE
+        self.lo >= layout::SHARED_BASE && self.lo < layout::SHARED_END
     }
 
     /// The regions, in address order.
@@ -1205,8 +1229,64 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         }
     }
 
+    /// Adds `r` (zero-filled, megabyte aligned start and length) as a
+    /// pinned region and maps each of its megabytes it can now as one 1 MiB
+    /// section of contiguous RAM, zeroed: one TLB entry a megabyte and no
+    /// page walks, as the bare test image's 1:1 map gives a game (ADR-0039
+    /// rule 1, Game Mode G4). A megabyte with no free 1 MiB block left is
+    /// left to demand paging (4 KiB pages as it is touched), so a
+    /// fragmented RAM costs speed, never the allocation. Pinned: never aged,
+    /// compressed or frozen, and counted against the space's pin limit
+    /// (the kernel raises it for the game). CE5 maps its large
+    /// `VirtualAlloc`s at 4 KiB pages; Linux's huge pages come later, by a
+    /// daemon; ours are there at the allocation.
+    pub fn map_sections(
+        &mut self,
+        space: &mut AddressSpace,
+        r: Region,
+    ) -> Result<Sections, SpaceError> {
+        if r.backing != Backing::Zero || !r.start.is_multiple_of(MIB) || !r.len.is_multiple_of(MIB)
+        {
+            return Err(SpaceError::BadRange);
+        }
+        let r = Region {
+            prot: r.prot.pinned(),
+            ..r
+        };
+        space.map(&mut self.region_pages(), r)?;
+        let attrs = attrs_for(&r, r.prot.write());
+        let mut done = Sections::default();
+        let mut mb = r.start;
+        while u64::from(mb) < r.end() {
+            let block = self.frames.alloc(SECTION_ORDER);
+            let mapped = block.is_some_and(|f| {
+                let phys = self.mem.frame_phys(f);
+                for k in 0..(MIB / PAGE) {
+                    self.mem.zero(phys + k * PAGE);
+                }
+                let ok = self
+                    .tables
+                    .map_section(self.mem, mb, phys, space.domain(), attrs)
+                    .is_ok();
+                if !ok {
+                    // An empty table left in this megabyte: pages instead.
+                    self.frames.free(f);
+                }
+                ok
+            });
+            if mapped {
+                done.sections += 1;
+            } else {
+                done.paged += 1;
+            }
+            mb += MIB;
+        }
+        Ok(done)
+    }
+
     /// Removes `start..start + len` from `space`, unmapping its pages and
-    /// returning their frames.
+    /// returning their frames. A megabyte mapped as a section must be
+    /// removed whole ([`SpaceError::BadRange`] before anything changes).
     pub fn unmap(
         &mut self,
         space: &mut AddressSpace,
@@ -1214,10 +1294,37 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         len: u32,
     ) -> Result<(), SpaceError> {
         let base = self.mem.frame_phys(0);
+        let end = u64::from(start) + u64::from(len);
+        if len > 0 {
+            let last = start.saturating_add(len - 1) >> 20;
+            for idx in (start >> 20)..=last {
+                let mb = idx << 20;
+                let whole = mb >= start && u64::from(mb) + u64::from(MIB) <= end;
+                if !whole && self.tables.is_section(self.mem, mb) {
+                    return Err(SpaceError::BadRange);
+                }
+            }
+        }
         // One piece at a time: carved out of the list, then its pages freed
         // (no list-sized copy on the kernel stack).
         while let Some(piece) = space.carve_next(&mut self.region_pages(), start, len)? {
             let p = &piece;
+            // Its sections first: written back whole while still mapped,
+            // then each megabyte's block freed.
+            let mut mb = p.start.next_multiple_of(MIB);
+            let mut cleaned = false;
+            while u64::from(mb) + u64::from(MIB) <= p.end() {
+                if self.tables.is_section(self.mem, mb) {
+                    if !cleaned {
+                        self.mmu.clean_all();
+                        cleaned = true;
+                    }
+                    if let Some(phys) = self.tables.unmap_section(self.mem, self.mmu, mb) {
+                        self.frames.free(self.mem.phys_frame(phys));
+                    }
+                }
+                mb += MIB;
+            }
             // Compressed pages first: free their copies, in bounded batches.
             let end = p.start + p.len;
             let mut at = p.start;
@@ -2364,6 +2471,269 @@ mod tests {
             x ^= x << 5;
             *word = x;
         }
+    }
+
+    // ---- Game Mode G4: the large region's sections -------------------------
+
+    /// A world whose RAM is 8 MiB, so several 1 MiB blocks are free.
+    fn big_world() -> (
+        PageTables,
+        Ram,
+        Frames<2048>,
+        Log,
+        Cache,
+        ZPool,
+        Box<ZBuffers>,
+    ) {
+        let mut frames = Frames::<2048>::new();
+        frames.add_range(0, 2048).unwrap();
+        (
+            PageTables::new(),
+            Ram::new(),
+            frames,
+            Log::default(),
+            Cache::default(),
+            ZPool::new(),
+            Box::new(ZBuffers::new()),
+        )
+    }
+
+    macro_rules! big_vm {
+        ($w:expr) => {
+            Vm {
+                tables: &mut $w.0,
+                mem: &mut $w.1,
+                frames: &mut $w.2,
+                mmu: &mut $w.3,
+                cache: &mut $w.4,
+                zpool: &mut $w.5,
+                zbuf: &mut $w.6,
+            }
+        };
+    }
+
+    #[test]
+    fn big_blocks_map_as_zeroed_sections_and_go_back_whole() {
+        let mut w = big_world();
+        let mut s = AddressSpace::large(4);
+        s.set_pin_limit(64 << 20);
+        let a = layout::LARGE_BASE + (3 << 20);
+        let free0 = w.2.free_frames();
+        // Dirty the RAM first, so the zeroing is seen.
+        for f in 0..2048u32 {
+            w.1.page(layout::RAM_PHYS + f * 4096).fill(0x5A5A_5A5A);
+        }
+        let done = big_vm!(w)
+            .map_sections(&mut s, zero(a, 3 << 20, Prot::RW))
+            .unwrap();
+        assert_eq!(
+            done,
+            Sections {
+                sections: 3,
+                paged: 0
+            }
+        );
+        let r = s
+            .find(
+                &mut KernelPages {
+                    mem: &mut w.1,
+                    frames: &mut w.2,
+                },
+                a,
+            )
+            .unwrap();
+        assert!(
+            r.prot.is_pinned(),
+            "pinned: never aged, compressed or frozen"
+        );
+        for mb in 0..3u32 {
+            let va = a + (mb << 20);
+            assert!(w.0.is_section(&mut w.1, va));
+            let (phys, attrs) = w.0.translate(&mut w.1, va + 0x1_2344).unwrap();
+            assert_eq!(phys & 0xF_FFFF, 0x1_2344, "one contiguous megabyte");
+            assert_eq!(attrs.ap, Ap::UserWrite);
+            for k in [0u32, 0x7F000, 0xFF000] {
+                assert_eq!(w.1.page((phys & !0xF_FFFF) + k)[7], 0, "zeroed");
+            }
+            assert_eq!(
+                crate::arm::l1_decode(w.1.l1[(va >> 20) as usize]),
+                crate::arm::L1::Section {
+                    phys: phys & !0xF_FFFF,
+                    domain: 4,
+                    attrs
+                },
+                "in the space's domain"
+            );
+        }
+        // Touching it never faults: it is mapped.
+        assert!(
+            big_vm!(w)
+                .handle_fault(&s, a + 0x2_0000, Access::Read)
+                .is_err()
+                || w.0.translate(&mut w.1, a + 0x2_0000).is_some()
+        );
+        // Reclaim and freeze leave it alone.
+        let mut hand = a;
+        let rec = big_vm!(w).reclaim(&s, &mut hand, 4096, 4096).unwrap();
+        assert_eq!((rec.scanned, rec.aged, rec.compressed), (0, 0, 0));
+        let f = big_vm!(w).freeze(&s, true).unwrap();
+        assert_eq!(f, Frozen::default());
+        assert!(w.0.is_section(&mut w.1, a));
+        // A piece of a megabyte can't be removed; the whole can.
+        assert_eq!(
+            big_vm!(w).unmap(&mut s, a + 0x1000, 0x1000),
+            Err(SpaceError::BadRange)
+        );
+        assert_eq!(
+            big_vm!(w).unmap(&mut s, a, (1 << 20) + 0x1000),
+            Err(SpaceError::BadRange)
+        );
+        assert!(
+            w.0.is_section(&mut w.1, a),
+            "a refused unmap changed nothing"
+        );
+        big_vm!(w).unmap(&mut s, a, 3 << 20).unwrap();
+        for mb in 0..3u32 {
+            assert!(!w.0.is_section(&mut w.1, a + (mb << 20)));
+        }
+        assert_eq!(
+            w.3.0.first().map(String::as_str),
+            Some("clean all"),
+            "written back while mapped"
+        );
+        assert_eq!(
+            w.2.free_frames(),
+            free0,
+            "every frame back, region pages too"
+        );
+        assert_eq!(s.region_count(), 0);
+    }
+
+    #[test]
+    fn without_a_free_megabyte_a_block_falls_back_to_pages() {
+        let mut w = big_world();
+        let mut s = AddressSpace::large(4);
+        s.set_pin_limit(64 << 20);
+        // Take every 1 MiB block but one, as single frames scattered in
+        // each (so none can merge back).
+        let mut held = Vec::new();
+        while let Some(f) = w.2.alloc(SECTION_ORDER) {
+            held.push(f);
+        }
+        let spare = held.pop().unwrap();
+        for &f in &held {
+            w.2.free(f).unwrap();
+            // Pin one frame inside each block again: the block can't form.
+            let mut taken = Vec::new();
+            loop {
+                let g = w.2.alloc(0).unwrap();
+                if (f..f + 256).contains(&g) {
+                    break;
+                }
+                taken.push(g);
+            }
+            for g in taken {
+                w.2.free(g).unwrap();
+            }
+        }
+        w.2.free(spare).unwrap();
+        let a = layout::LARGE_BASE;
+        let done = big_vm!(w)
+            .map_sections(&mut s, zero(a, 2 << 20, Prot::RW))
+            .unwrap();
+        assert_eq!(
+            done,
+            Sections {
+                sections: 1,
+                paged: 1
+            }
+        );
+        assert!(w.0.is_section(&mut w.1, a));
+        // The paged megabyte works page by page, zero-filled on demand.
+        let b = a + (1 << 20) + 0x5000;
+        assert!(w.0.translate(&mut w.1, b).is_none());
+        big_vm!(w).handle_fault(&s, b, Access::Write).unwrap();
+        let (phys, _) = w.0.translate(&mut w.1, b).unwrap();
+        assert_eq!(w.1.page(phys)[0], 0);
+        let free_before = w.2.free_frames();
+        big_vm!(w).unmap(&mut s, a, 2 << 20).unwrap();
+        assert_eq!(
+            w.2.free_frames(),
+            free_before + 256 + 1 + 1 + 1,
+            "the section, the page, its table, the emptied region list's page"
+        );
+    }
+
+    #[test]
+    fn sections_are_refused_off_megabytes_or_for_other_backings_and_count_as_pinned() {
+        let mut w = big_world();
+        let mut s = AddressSpace::large(4);
+        let a = layout::LARGE_BASE;
+        for r in [
+            zero(a + 0x1000, 1 << 20, Prot::RW),
+            zero(a, (1 << 20) + 0x1000, Prot::RW),
+            file(a, 1 << 20, Prot::R, false),
+        ] {
+            assert_eq!(
+                big_vm!(w).map_sections(&mut s, r),
+                Err(SpaceError::BadRange)
+            );
+        }
+        // The default pin limit (64 KiB) refuses a megabyte until the kernel
+        // raises it; outside the window is refused too.
+        assert_eq!(
+            big_vm!(w).map_sections(&mut s, zero(a, 1 << 20, Prot::RW)),
+            Err(SpaceError::PinLimit)
+        );
+        s.set_pin_limit(1 << 20);
+        assert_eq!(
+            big_vm!(w).map_sections(&mut s, zero(layout::LARGE_END, 1 << 20, Prot::RW)),
+            Err(SpaceError::BadRange)
+        );
+        let free0 = w.2.free_frames();
+        assert!(
+            big_vm!(w)
+                .map_sections(&mut s, zero(a, 1 << 20, Prot::R))
+                .is_ok()
+        );
+        assert!(w.2.free_frames() < free0);
+        // The large window takes no shared writable file mappings.
+        let mut t = AddressSpace::large(4);
+        assert_eq!(
+            t.map(
+                &mut KernelPages {
+                    mem: &mut w.1,
+                    frames: &mut w.2
+                },
+                file(a, 0x1000, Prot::RW, true)
+            ),
+            Err(SpaceError::SharedWriteNotGlobal)
+        );
+    }
+
+    #[test]
+    fn a_section_changes_permissions_and_domain_whole() {
+        let mut w = big_world();
+        let mut s = AddressSpace::large(4);
+        s.set_pin_limit(4 << 20);
+        let a = layout::LARGE_BASE + (8 << 20);
+        big_vm!(w)
+            .map_sections(&mut s, zero(a, 2 << 20, Prot::RW))
+            .unwrap();
+        // Part of a megabyte leaves it as it was; the whole changes.
+        assert_eq!(w.0.protect(&mut w.1, &mut w.3, a, 0x1000, Ap::UserRead), 0);
+        assert_eq!(w.0.protect(&mut w.1, &mut w.3, a, 2 << 20, Ap::UserRead), 2);
+        assert_eq!(w.0.translate(&mut w.1, a).unwrap().1.ap, Ap::UserRead);
+        assert_eq!(w.0.retag(&mut w.1, &mut w.3, a, 2 << 20, 9), 2);
+        match crate::arm::l1_decode(w.1.l1[(a >> 20) as usize]) {
+            crate::arm::L1::Section { domain, .. } => assert_eq!(domain, 9),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            w.0.retag(&mut w.1, &mut w.3, a, 2 << 20, 9),
+            0,
+            "already there"
+        );
     }
 
     #[test]

@@ -1146,6 +1146,7 @@ mod image {
         let _ = writeln!(uart, "BENCH vm_freeze_process {freeze_ticks} {n}");
         let _ = writeln!(uart, "BENCH vm_thaw_page {thaw_ticks} {RECLAIM_PAGES}");
         ok &= return_record(&mut uart);
+        ok &= large_region(&mut uart);
 
         // Many regions (ADR-0019): far more than the old fixed table's 64,
         // in kernel pages that follow use. 300 one-page reservations with
@@ -2526,6 +2527,84 @@ mod image {
             t * 4 / 13
         );
         let _ = writeln!(uart, "BENCH gm_xxh32_64k {t} 65536");
+        pass
+    }
+
+    /// Game Mode G4 on the target: 4 MiB of the large-allocation region
+    /// (R363) mapped for the test process as 1 MiB sections where RAM has
+    /// free megabytes; each written through its address and read back
+    /// through RAM's own (one contiguous megabyte each), zeroed first, no
+    /// fault taken; a word every 4 KiB read across it timed (one TLB entry
+    /// a megabyte, against one a page for paged memory); then removed and
+    /// every frame back.
+    fn large_region(uart: &mut PxaUart<Mmio>) -> bool {
+        const LEN: u32 = 4 << 20;
+        let base = layout::LARGE_BASE;
+        let free0 = FRAMES.with(|f| f.free_frames() as u32);
+        let mut space = AddressSpace::large(with_vm(|_, s| s.procs[0].space.domain()));
+        space.set_pin_limit(LEN);
+        let region = Region {
+            start: base,
+            len: LEN,
+            prot: Prot::RW,
+            backing: Backing::Zero,
+        };
+        let done = with_vm(|vm, _| vm.map_sections(&mut space, region));
+        let state = || STATE.with(|s| s.faults);
+        let faults0 = state();
+        let mut zeroed = true;
+        let mut contiguous = true;
+        let mut sections = 0;
+        for mb in 0..LEN >> 20 {
+            let va = base + (mb << 20);
+            let phys = with_vm(|vm, _| vm.tables.translate(vm.mem, va).map(|(p, _)| p));
+            let Some(phys) = phys else { continue };
+            if with_vm(|vm, _| vm.tables.is_section(vm.mem, va)) {
+                sections += 1;
+            }
+            for off in [0u32, 0x4_0004, 0xF_FFFC] {
+                zeroed &= rt::try_read((va + off) as usize) == Some(0);
+                cpu::poke((va + off) as usize, 0x1A26_0000 + mb);
+                let p = with_vm(|vm, _| vm.tables.translate(vm.mem, va + off).map(|(p, _)| p));
+                contiguous &= p == Some(phys + off);
+            }
+        }
+        // Read back through RAM's own address (the direct map), after the
+        // caches are written back.
+        XscaleMmu.clean_all();
+        let mut through_ram = true;
+        for mb in 0..LEN >> 20 {
+            let va = base + (mb << 20) + 0x4_0004;
+            let phys = with_vm(|vm, _| vm.tables.translate(vm.mem, va).map(|(p, _)| p));
+            through_ram &= phys.and_then(|p| rt::try_read(p as usize)) == Some(0x1A26_0000 + mb);
+        }
+        let t0 = rt::ticks();
+        let mut sum = 0u32;
+        for _ in 0..4 {
+            for page in 0..LEN / 4096 {
+                sum = sum.wrapping_add(rt::try_read((base + page * 4096) as usize).unwrap_or(0));
+            }
+        }
+        let walk = rt::ticks().wrapping_sub(t0);
+        let faults = state() - faults0;
+        let gone = with_vm(|vm, _| vm.unmap(&mut space, base, LEN));
+        let back = FRAMES.with(|f| f.free_frames() as u32) == free0;
+        let pass = matches!(done, Ok(d) if d.sections + d.paged == 4 && d.sections == sections)
+            && sections >= 1
+            && zeroed
+            && contiguous
+            && through_ram
+            && faults == 0
+            && gone.is_ok()
+            && back
+            && sum != 1;
+        let (s, p) = done.map_or((0, 0), |d| (d.sections, d.paged));
+        let _ = writeln!(
+            uart,
+            "GAMEMODE large region {}: 4 MiB at {base:#x}, {s} sections and {p} paged megabytes; zeroed, one megabyte each, read back through RAM, {faults} faults; every frame back",
+            if pass { "OK" } else { "FAIL" }
+        );
+        let _ = writeln!(uart, "BENCH gm_section_walk {walk} {}", 4 * LEN / 4096);
         pass
     }
 

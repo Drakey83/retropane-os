@@ -6,7 +6,8 @@
 //! | `0x00000000..0x02000000` | Slot 0: the running process (FCSE relocates it) |
 //! | `0x02000000..0x04000000` | Slot 1: shared code (CE5 put XIP DLL code here) |
 //! | `0x04000000..0x42000000` | Slots 2-32: CE processes (Windows Mobile programs) |
-//! | `0x42000000..0x80000000` | Shared memory-mapped files |
+//! | `0x42000000..0x78000000` | Shared memory-mapped files |
+//! | `0x78000000..0x80000000` | The large-allocation region: a Game Mode port's modules and big blocks (128 MiB, ADR-0003 amendment of 2026-11-23, R363) |
 //! | `0x80000000..0xC0000000` | The kernel: device windows at `0x90000000` (`rp_hal_pxa27x::devmap`), RAM at its own address `0xA8000000` |
 //! | `0xC0000000..0xFE000000` | Slots 96-126: native processes (RetroPane's services, drivers, own programs) |
 //! | `0xFE000000..` | Slot 127, the kernel's: exception vectors (`0xFFFF0000`), KData (`0xFFFFC000`) |
@@ -44,6 +45,19 @@ pub const PROCESS_SLOTS: usize = (LAST_PROCESS_SLOT - FIRST_PROCESS_SLOT + 1 + L
     + 1) as usize;
 /// Base of the shared memory-mapped file area.
 pub const SHARED_BASE: u32 = 0x4200_0000;
+/// End of the shared memory-mapped file area.
+pub const SHARED_END: u32 = LARGE_BASE;
+/// The large-allocation region (ADR-0003 amended 2026-11-23, Game Mode
+/// design B, R363): address space outside the 32 MiB slots for the one
+/// Game Mode port's modules and big blocks, mapped in 1 MiB sections where
+/// RAM is contiguous. 128 MiB: the amendment's 64 MiB at least, and room to
+/// place blocks on megabyte boundaries without running out of addresses
+/// (the RAM behind them is the limit, not this). The top of CE5's shared
+/// area, where CE5 itself put large `VirtualAlloc`s; CE programs' shared
+/// mappings keep the 822 MiB below it.
+pub const LARGE_BASE: u32 = 0x7800_0000;
+/// End of the large-allocation region.
+pub const LARGE_END: u32 = KERNEL_BASE;
 /// Base of the kernel's range (up to [`NATIVE_BASE`]).
 pub const KERNEL_BASE: u32 = 0x8000_0000;
 /// Base of the native processes' slots.
@@ -138,6 +152,14 @@ mod tests {
         // of them below 0x42000000, then the shared area up to 2 GB.
         assert_eq!(SLOT_SIZE, 0x0200_0000);
         assert_eq!(slot_base(LAST_PROCESS_SLOT) + SLOT_SIZE, SHARED_BASE);
+        // The large region: at least the amendment's 64 MiB, megabyte
+        // aligned, user space, no process slot, after the shared area.
+        const { assert!(LARGE_END - LARGE_BASE >= 64 << 20) };
+        assert_eq!(LARGE_BASE % (1 << 20), 0);
+        assert_eq!((SHARED_END, LARGE_END), (LARGE_BASE, KERNEL_BASE));
+        for mva in [LARGE_BASE, LARGE_END - 1] {
+            assert!(is_user(mva) && slot_of(mva).is_none());
+        }
         assert_eq!(slot_base(FIRST_PROCESS_SLOT), 0x0400_0000);
         assert_eq!(KERNEL_BASE, 0x8000_0000);
     }
