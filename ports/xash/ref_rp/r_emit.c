@@ -175,6 +175,7 @@ static struct
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
 	uint32_t staged, stage_flushes, stage_full; /* R352 after run 330: rewrites in place held to the frame's end (squares), the frames that had any, early flushes */
+	uint32_t ring_lm, ring_squares, ring_full, lm_direct; /* R360 fix 1: lightmaps rewritten into the ring (a frame in flight read their home), its squares, those with no ring room (held the old way), rewrites at home written at once (no frame in flight reads it) */
 	uint32_t decals, decal_cut, decals_lit, decals_built, decal_arena_resets; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, sky_faces, water_faces, water_cells, water_missed, conveyors; /* R309 */
@@ -198,6 +199,11 @@ static uint32_t rp_nm_lazy, rp_nm_made;
    normal (a vertex): items made both ways, items that differed */
 static uint32_t rp_b61_items, rp_b61_differ;
 static uint32_t rp_tex_used, rp_tex_room; /* R297 B: the texture pool's bytes */
+/* R360 fix 1: the lightmap ring (RP_RingAlloc) */
+#define RP_RING_SLOTS      3
+#define RP_RING_SIDE       32 /* squares: a Morton-ordered square block is one run of memory */
+#define RP_RING_SLOT_BYTES ( RP_RING_SIDE * RP_RING_SIDE * 128u )
+static uint32_t rp_ring_bytes; /* R360 fix 1: the lightmap ring at the pool's start (0: none) */
 
 static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures under the plain TEX2 word */
 /* Run 305 (the owner's play with the decals drawn as polygons): 14 stalls
@@ -216,6 +222,7 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
 static int rp_decal_on = 1;
 static int rp_skyface_off; /* R352 after run 331: -rpskybox, the sky faces not drawn (R309's way) */
 static int rp_nostage; /* R360: -rpnostage, rewrites in place written at once (before a68545bb: no wait, the hazard back) */
+static int rp_lmhold; /* R360: -rplmhold, every lightmap rewrite in place held to the frame's end (a68545bb's way: the wait), no ring */
 static int rp_coplanar_off; /* R352 after run 333: -rpcoplanar, brush entities' faces in a world plane at their own depth (the old way) */
 static uint8_t *rp_cop; /* R352 after run 333: a bit a face, set for a brush entity's face in a world face's plane and side (RP_CoplanarMark) */
 static uint32_t rp_cop_marked; /* how many the map has */
@@ -241,6 +248,8 @@ void RP_EmitInit( void )
 		rp_skyface_off = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpnostage" ))
 		rp_nostage = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rplmhold" ))
+		rp_lmhold = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpcoplanar" ))
 		rp_coplanar_off = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352: decals baked into the lit surface, the old way */
@@ -490,6 +499,10 @@ static void RP_EmitReport( void )
 			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut, rp_count.decals_lit, rp_count.decals_built, rp_count.decal_arena_resets );
 		fprintf( stderr, "rp-emit: R352: rewrites in place held to the frame's end: %u squares (%u KiB) in %u frames, %u times copied early (the 64 KiB full)\n",
 			rp_count.staged, rp_count.staged >> 3, rp_count.stage_flushes, rp_count.stage_full );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: R360: lightmap rewrites: %u into the ring (%u squares, a frame in flight read their home), %u with no ring room (held), %u at home at once (no frame in flight read it); the ring %s\n",
+			rp_count.ring_lm, rp_count.ring_squares, rp_count.ring_full, rp_count.lm_direct,
+			rp_ring_bytes ? "on" : rp_lmhold ? "off (-rplmhold)" : rp_nostage ? "off (-rpnostage)" : "off (no texture pool)" );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -1317,6 +1330,10 @@ static void RP_AtlasInit( void )
 	rp_tex_pages = rp_pages >= RP_TEX_PAGES + 4 ? RP_TEX_PAGES : 0;
 	rp_pages -= rp_tex_pages;
 	rp_tex_room = (uint32_t)rp_tex_pages * RP_PAGE_BYTES;
+	/* R360 fix 1: the lightmap ring at the pool's start (the borrowed
+	   pictures take its last two pages) */
+	rp_ring_bytes = rp_tex_pages > 0 && !rp_lmhold && !rp_nostage ? RP_RING_SLOTS * RP_RING_SLOT_BYTES : 0;
+	rp_tex_used = rp_ring_bytes;
 	for( int b = 0; b < 256; b++ )
 	{
 		uint32_t v = 0;
@@ -1382,6 +1399,69 @@ page is nearly always far older, so the wait is rare) and counts the
 frames the chip really holds.
 */
 #define RP_IN_FLIGHT 2
+
+/*
+R360 fix 1 (runs 337a-b: with the flashlight on, R352's hold on rewrites
+in place cost 1.3 ms a frame, the CPU waiting for the render before). A
+face whose light changed has its lightmap written again, and the place it
+lives (its home) may be read by the two frames in flight. Rule 0: a GL
+driver renames a texture written while in use (a copy in memory we do not
+have); Dell's GLES and the textbook wait for the render; ref_gl and
+ref_soft draw serially and never meet the case. Ours asks only what is
+true: was the home drawn by a frame that may still be on the chip
+(RP_IN_FLIGHT, counted in frames handed to the chip, rp_submits)? No: it
+is written in place at once, no hold. Yes: the new lightmap goes into a
+ring of three slots at the texture pool's start (frame mod 3, 32 x 32
+squares each, 384 KiB in all, shelf placed, a slot reused only when its
+frame has left the chip), and the home is left as it was: a flashlight's
+spot moving over a wall never rewrites the wall's plain lightmap, which is
+there, untouched, when the light leaves. No wait and no copy. A slot with
+no room falls back to the hold (counted). -rplmhold keeps the old hold for
+an A/B; -rpnostage the hazard's way.
+*/
+#define RP_RING_PG         RP_MAX_PAGES /* page numbers RP_RING_PG + slot name the ring's slots */
+static uint32_t rp_submits;       /* frames handed to the chip (RP_EmitSubmit) */
+static uint32_t rp_ring_frame = ~0u;
+static int      rp_ring_x, rp_ring_y, rp_ring_h;
+static uint8_t  rp_lm_drawn[32768]; /* each face's home last drawn: rp_submits' low byte (RP_FACES_KEPT) */
+/* the place the face being drawn takes its lightmap from this frame (home
+   or ring): its decals read it (RP_FaceDecals) */
+static const msurface_t *rp_lm_cur_fa;
+static int      rp_lm_cur_pg, rp_lm_cur_x, rp_lm_cur_y;
+
+/* A page's address on the chip (an atlas page or a ring slot). */
+static inline uint32_t RP_PageAddr( int pg )
+{
+	if( pg >= RP_RING_PG )
+		return rp_g.tex_at + (uint32_t)rp_pages * RP_PAGE_BYTES + (uint32_t)( pg - RP_RING_PG ) * RP_RING_SLOT_BYTES;
+	return rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES;
+}
+
+/* Room for `w` x `h` squares in this frame's ring slot (shelves): the
+   slot's page number, its column and row; or -1. */
+static int RP_RingAlloc( int w, int h, int *x, int *y )
+{
+	if( rp_ring_frame != rp_submits )
+	{
+		rp_ring_frame = rp_submits;
+		rp_ring_x = rp_ring_y = rp_ring_h = 0;
+	}
+	if( w > RP_RING_SIDE || h > RP_RING_SIDE )
+		return -1;
+	if( rp_ring_x + w > RP_RING_SIDE )
+	{
+		rp_ring_y += rp_ring_h;
+		rp_ring_x = rp_ring_h = 0;
+	}
+	if( rp_ring_y + h > RP_RING_SIDE )
+		return -1;
+	*x = rp_ring_x;
+	*y = rp_ring_y;
+	rp_ring_x += w;
+	if( h > rp_ring_h )
+		rp_ring_h = h;
+	return RP_RING_PG + (int)( rp_submits % RP_RING_SLOTS );
+}
 
 static void RP_AtlasUnjam( void )
 {
@@ -1558,7 +1638,7 @@ static void RP_StageFlush( void )
 
 static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy )
 {
-	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
+	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + ( RP_PageAddr( pg ) - rp_g.tex_at ));
 	int       w8 = ( w + 7 ) >> 3, h8 = ( h + 7 ) >> 3;
 
 	if( !RP_ChipWrite( ))
@@ -1899,7 +1979,7 @@ static uint16_t rp_lm_texels[RP_LM_TEXELS];
 static void RP_TexReset( void )
 {
 	rp_tex_gen++; /* (RP_BorrowReturn: what was borrowed from this room is not put back) */
-	rp_tex_used = 0;
+	rp_tex_used = rp_ring_bytes; /* R360: the ring stays */
 	rp_tex_full = 0;
 }
 
@@ -2302,14 +2382,23 @@ static rp_tex_t *RP_TexPlace( const image_t *image, int sky )
    changed (D_CacheSurface's tests); its page and place, or -1. */
 static int RP_LmPlace( msurface_t *fa, int *x, int *y )
 {
-	uint32_t loc = (uint32_t)RP_LOC( fa );
-	int      pg = loc >> 16 & 0xFF, placed, stale, w, h, r;
+	uint32_t  loc = (uint32_t)RP_LOC( fa );
+	int       pg = loc >> 16 & 0xFF, placed, stale, w, h, r, recent, rpg, rx, ry;
+	uintptr_t fi = (uintptr_t)( fa - WORLDMODEL->surfaces );
+	int       kept[MAXLIGHTMAPS];
 
 	placed = ( loc & RP_VALID ) && ( loc & RP_LMAP ) && pg < rp_pages && (int)( RP_GEN( fa ) >> 1 ) == rp_page[pg].gen;
-	stale = !placed || ( RP_GEN( fa ) & 1 ) || fa->dlightframe == tr.framecount;
+	stale = !placed || ( RP_GEN( fa ) & 1 );
 	for( int maps = 0; !stale && maps < MAXLIGHTMAPS && fa->styles[maps] != 255; maps++ )
 		if( g_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps] )
 			stale = 1;
+	/* R360 fix 1: the ring when the home is drawn by a frame that may still
+	   be on the chip (a face past the table's end always counts as drawn),
+	   and whenever only a dynamic light is on a home that holds the plain
+	   light (the home stays plain while the light is on it) */
+	recent = fi >= sizeof( rp_lm_drawn ) || (uint8_t)( rp_submits - rp_lm_drawn[fi] ) <= RP_IN_FLIGHT;
+	if( !stale && fa->dlightframe == tr.framecount )
+		stale = recent = 1;
 	if( placed )
 	{
 		*x = loc & 0xFF;
@@ -2317,7 +2406,15 @@ static int RP_LmPlace( msurface_t *fa, int *x, int *y )
 		rp_page[pg].used = tr.framecount;
 		rp_page[pg].live += 128;
 		if( !stale )
+		{
+			if( fi < sizeof( rp_lm_drawn ))
+				rp_lm_drawn[fi] = (uint8_t)rp_submits;
+			rp_lm_cur_fa = fa;
+			rp_lm_cur_pg = pg;
+			rp_lm_cur_x = *x;
+			rp_lm_cur_y = *y;
 			return pg;
+		}
 	}
 	if( fa->dlightframe == tr.framecount )
 	{
@@ -2330,9 +2427,33 @@ static int RP_LmPlace( msurface_t *fa, int *x, int *y )
 			tr.modelviewIdentity = false;
 		}
 	}
+	memcpy( kept, fa->cached_light, sizeof( kept )); /* the home's light (RP_SurfLightmap moves it on) */
 	r = RP_SurfLightmap( fa, rp_lm_texels, RP_LM_TEXELS, &w, &h );
 	if( !r )
 		return -1;
+	if( placed && recent && rp_ring_bytes
+		&& ( rpg = RP_RingAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, &rx, &ry )) >= 0 )
+	{
+		/* R360 fix 1: into this frame's ring slot; the home, its light
+		   (cached_light, the dynamic-light bit) and its place unchanged, so
+		   the face is asked again next frame against what its home holds */
+		memcpy( fa->cached_light, kept, sizeof( kept ));
+		rp_upload_raw = 1;
+		RP_Upload((const pixel_t *)rp_lm_texels, w, h, rpg, rx, ry );
+		rp_upload_raw = 0;
+		*x = rx;
+		*y = ry;
+		rp_lm_cur_fa = fa;
+		rp_lm_cur_pg = rpg;
+		rp_lm_cur_x = rx;
+		rp_lm_cur_y = ry;
+		rp_count.lm_built++;
+		rp_count.ring_lm++;
+		rp_count.ring_squares += (uint32_t)((( w + 7 ) >> 3 ) * (( h + 7 ) >> 3 ));
+		if( r & 2 )
+			rp_count.lm_dlit++;
+		return rpg;
+	}
 	if( !placed )
 	{
 		pg = RP_AtlasAlloc(( w + 7 ) >> 3, ( h + 7 ) >> 3, x, y );
@@ -2342,10 +2463,24 @@ static int RP_LmPlace( msurface_t *fa, int *x, int *y )
 		rp_page[pg].live += 128;
 	}
 	rp_upload_raw = 1;
-	rp_upload_stage = placed && !rp_nostage; /* R352: a rewrite in place held to the frame's end */
+	/* R352: a rewrite in place held to the frame's end: -rplmhold always
+	   (a68545bb's way), else only when a frame in flight reads the home and
+	   the ring had no room (R360); a home no frame in flight reads is
+	   written at once */
+	rp_upload_stage = placed && !rp_nostage && ( rp_lmhold || !rp_ring_bytes || recent );
+	if( placed && recent && rp_ring_bytes )
+		rp_count.ring_full++;
+	else if( placed && !rp_upload_stage )
+		rp_count.lm_direct++;
 	RP_Upload((const pixel_t *)rp_lm_texels, w, h, pg, *x, *y );
 	rp_upload_stage = 0;
 	rp_upload_raw = 0;
+	if( fi < sizeof( rp_lm_drawn ))
+		rp_lm_drawn[fi] = (uint8_t)rp_submits;
+	rp_lm_cur_fa = fa;
+	rp_lm_cur_pg = pg;
+	rp_lm_cur_x = *x;
+	rp_lm_cur_y = *y;
 	RP_LOC( fa ) = (intptr_t)( RP_VALID | RP_LMAP | (uint32_t)pg << 16 | (uint32_t)*y << 8 | (uint32_t)*x );
 	RP_GEN( fa ) = (intptr_t)( rp_page[pg].gen << 1 | ( r & 2 ? 1 : 0 ));
 	rp_count.lm_built++;
@@ -2418,7 +2553,7 @@ static __attribute__(( noinline )) int RP_ChipFaceLm1( int n, const uint32_t *zi
 		RP_Put( t->tex1 );
 		RP_Put( RP_TEX2 );
 		RP_Put( RP_TEX0_PAGE );
-		RP_Put( RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+		RP_Put( RP_TEX1_LINEAR( RP_PageAddr( pg )));
 		RP_Put( RP_TEX2_UNIT1 );
 		RP_Put( RP_CLIP );
 		RP_Put( 0 );
@@ -2583,7 +2718,7 @@ static int RP_ChipFaceLmTry( msurface_t *fa, int n, const uint32_t *zis, const i
 		RP_LmPut( RP_TSP_LMAP );
 		RP_LmPut( RP_ISP_ALWAYS );
 		RP_LmPut( RP_TEX0_PAGE );
-		RP_LmPut( RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)pg * RP_PAGE_BYTES ));
+		RP_LmPut( RP_TEX1_LINEAR( RP_PageAddr( pg )));
 		RP_LmPut( RP_TEX2 );
 		RP_LmPut( RP_CLIP );
 		RP_LmPut( 0 );
@@ -6278,6 +6413,8 @@ void RP_EmitSubmit( void )
 		return;
 	RP_LmFlush();
 	RP_StageFlush( ); /* R352: the rewrites in place, the render before ended */
+	rp_submits++; /* R360: this frame is the chip's from here (the ring and the homes count by it) */
+	rp_lm_cur_fa = NULL;
 	{
 		/* the sky's six sides drawn first (below everything), then the
 		   parts in their order: the words where they lie */
@@ -7480,7 +7617,7 @@ static void RP_DecalLitStrip( const rp_skin_t *e, int lpg, int lqx, int lqy, int
 		RP_Put( RP_TEX1( rp_g.tex_at + (uint32_t)e->pg * RP_PAGE_BYTES ));
 		RP_Put( rp_tex2_plain ? RP_TEX2 : 0x86084610u ); /* the texel's alpha */
 		RP_Put( RP_TEX0_PAGE );
-		RP_Put( RP_TEX1_LINEAR( rp_g.tex_at + (uint32_t)lpg * RP_PAGE_BYTES ));
+		RP_Put( RP_TEX1_LINEAR( RP_PageAddr( lpg )));
 		RP_Put( RP_TEX2_UNIT1 );
 		RP_Put( RP_CLIP );
 		RP_Put( 0 );
@@ -7697,18 +7834,20 @@ static void RP_FaceDecals( msurface_t *fa, const int32_t m[3][3], const int32_t 
 			rp_count.decal_cut++;
 		if( n2 >= 3 && rp_decal_lit && RP_Lm1Pass( ) && R_TexHasAlpha( img ) && img->width <= RP_PAGE_SIDE && img->height <= RP_PAGE_SIDE )
 		{
-			/* lit by its wall's lightmap (above): the face's place, as
-			   RP_LmPlace keeps it, still valid this frame */
-			uint32_t         loc = (uint32_t)RP_LOC( fa );
-			int              lpg = loc >> 16 & 0xFF;
+			/* lit by its wall's lightmap (above): the place the face took
+			   it from this frame (RP_LmPlace: its home, or R360's ring) */
+			const int        lpg = rp_lm_cur_pg;
+			const int        ring = lpg >= RP_RING_PG;
+			const int        gen = ring ? 0 : rp_page[lpg].gen;
 			const rp_skin_t *e;
 
-			if(( loc & RP_VALID ) && ( loc & RP_LMAP ) && lpg < rp_pages && (int)( RP_GEN( fa ) >> 1 ) == rp_page[lpg].gen
+			if( rp_lm_cur_fa == fa
 				&& ( e = RP_PicPlace( (image_t *)img, 0, img->width, img->width, img->height, 1 )) != NULL
-				&& (int)( RP_GEN( fa ) >> 1 ) == rp_page[lpg].gen ) /* the picture's place may have dropped a page */
+				&& ( ring || gen == rp_page[lpg].gen )) /* the picture's place may have dropped a page */
 			{
-				rp_page[lpg].used = tr.framecount;
-				RP_DecalLitStrip( e, lpg, loc & 0xFF, loc >> 8 & 0xFF, n2, (const int32_t( * )[3])cq, (const int( * )[2])cs, (const int32_t( * )[2])cl );
+				if( !ring )
+					rp_page[lpg].used = tr.framecount;
+				RP_DecalLitStrip( e, lpg, rp_lm_cur_x, rp_lm_cur_y, n2, (const int32_t( * )[3])cq, (const int( * )[2])cs, (const int32_t( * )[2])cl );
 				n2 = 0; /* drawn: the unlit fan below has nothing to do */
 			}
 		}

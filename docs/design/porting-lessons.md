@@ -45,7 +45,8 @@ lessons carry only where they say so).
 | Lesson | Proof | Carries |
 |---|---|---|
 | **Our own renderer over the tile accelerator**, not a GL layer and not the CPU drawing pixels: the software renderer was 71% of a frame. | R287, ref-rp.md | Q; D for its 2D and sprites |
-| **Frames in flight: never write video memory a render may still read, and never wait for the chip to avoid it.** Two frames are in flight (`RP_IN_FLIGHT` 2). Writing a page a render reads flashes textures; waiting for the render before writing throws away the CPU and chip working side by side (R352's hold made 995 of 1,000 frames wait in run 334). Write somewhere no in-flight frame reads (a fresh place or a ring), then reuse places only after two frames. | R340, R352, a68545bb, R360 | All |
+| **Frames in flight: never write video memory a render may still read, and never wait for the chip to avoid it.** Two frames are in flight (`RP_IN_FLIGHT` 2). Writing a page a render reads flashes textures; waiting for the render before writing throws away the CPU and chip working side by side (R352's hold made 995 of 1,000 frames wait in run 334). Write somewhere no in-flight frame reads (a fresh place or a ring), then reuse places only after two frames. Half-Life's way: a rewritten lightmap whose home a frame in flight drew goes to a three-slot ring (128 KiB a slot), else is written at home at once; a dynamic light alone never rewrites a home. Run 338a: 1.3 ms a frame back with the flashlight on (27.4 to 28.5 fps), nothing held. | R340, R352, a68545bb, R360 (runs 337a-b, 338a-b) | All |
+| **A dynamic light added as a second pass is not the same look when the light is capped.** Half-Life caps light plus lightmap at full texture brightness; the flashlight's centre reaches the cap by itself, so an additive pass would show the spot up to twice as bright. Keep the light in the lightmap (or draw only the capped difference). | R360, docs/research/sheets/r360-flashlight.md | Q |
 | **Two surfaces at one depth flicker on the chip.** A brush entity whose face shares a world face's plane and side (c2a5f's steel ribs, 666 faces on that map) is settled by the chip's depth rounding, which changes as the view moves. Find the ties once at load from the map's shared planes and push the entity's face 2^-9 of its depth back (the world wins, as the software renderer draws it). Decals go the other way, 2^-9 forward. | aa40d006 (run 334: "no glitching") | Q |
 | **The sky is a surface at its own depth.** Drawing the sky box first and skipping the sky faces let whatever a map keeps behind its sky brushes show through. | bd491b71 | Q |
 | **Draw every surface kind from day one.** Sky, water, conveyors, sprites, beams, particles, see-through `{` textures and render modes were each left for "a later step" and each found by the owner in play. List the engine's surface kinds and render modes before the first picture and draw each, plainly at worst (memory "draw everything"). | R309, R320, R303, R321 | All |
@@ -94,6 +95,8 @@ lessons carry only where they say so).
 | **The stylus look needs the touch chip read at the frame's pace and smoothed**, or it is jerky. | R355 | All |
 | **After a crashed run the sound link may not start**: the controller is reset before use. | R301 | All |
 | **Set the backlight for games**: the runner otherwise inherits whatever Windows Mobile left. | R341 | All |
+| **Every port has the Picture brightness slider** (the owner, 2026-11-22: "universal in every port I make"). The X51v's panel shows a dark game's lower third as near black, and the game's own gamma and brightness did nothing useful on it. One slider replaces them: nine steps, each moving the screen's tone curve (the 2700G's scan-out gamma table, the runner's, free each frame) and the game's light together (Half-Life: its lightmaps lifted, textures' contrast kept), seen at once behind the menu and saved with the options. A port supplies only its light half; the screen-curve half is the runner's. | R343 (runs 290-292: the owner's pick M75), `rp_picture` in r_emit.c and mainui VideoOptions | All |
+| **Every port has a Show FPS setting in its own menu**, saved with the options (the owner, 2026-11-22: "a selectable thing in each port"): the engine's own counter where it has one (Half-Life: `cl_showfps`, Video options), else the runner's frame-rate bar (`-rpfpsbar`, a test word until a port needs it as a setting). | R261, R361 | All |
 
 ## 7. A new port's first day (checklist)
 
@@ -111,3 +114,5 @@ lessons carry only where they say so).
 7. Sample on the X51v before the first optimisation (section 3).
 8. List every copied value (Dell's, the engine's) as an open question
    (docs/quality-audit.md).
+9. Put the Picture brightness slider and the Show FPS setting in the
+   game's own options menu from the first build (section 6).

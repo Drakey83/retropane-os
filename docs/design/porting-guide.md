@@ -21,6 +21,12 @@ improves it.
 A gain in any of these lands in every port: that is the point of one
 layer instead of SDL under each game.
 
+Every port's options menu also carries two settings the owner wants in
+every game (the owner, 2026-11-22; porting-lessons.md section 6): the
+**Picture brightness** slider (the runner's screen curve plus the game's
+light lifted, nine steps, saved) and **Show FPS** (the engine's counter,
+or the runner's frame-rate bar, saved).
+
 ## Where a game's files go (the owner, 2026-11-15)
 
 "lets have all of the port files be housed under the SD/CF root file in a

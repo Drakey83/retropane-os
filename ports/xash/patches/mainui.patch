@@ -497,10 +497,20 @@ index d5216cb..3c6745d 100644
  	}
  
 diff --git a/menus/VideoOptions.cpp b/menus/VideoOptions.cpp
-index 69dd50a..2619f46 100644
+index 69dd50a..ec13014 100644
 --- a/menus/VideoOptions.cpp
 +++ b/menus/VideoOptions.cpp
-@@ -180,6 +180,18 @@ void CMenuVidOptions::_Init( void )
+@@ -63,6 +63,9 @@ public:
+ 	CMenuCheckBox	filtering;
+ 	CMenuCheckBox	detailtex;
+ 	CMenuCheckBox	hudscale;
++#if XASH_RETROPANE
++	CMenuCheckBox	showFps; // R361
++#endif
+ 	CMenuYesNoMessageBox	msgBox;
+ 
+ 	HIMAGE		hTestImage;
+@@ -180,6 +183,25 @@ void CMenuVidOptions::_Init( void )
  	height += 60;
  #endif
  
@@ -515,11 +525,18 @@ index 69dd50a..2619f46 100644
 +	gammaIntensity.Setup( 0.0, 8.0, 1.0 );
 +	gammaIntensity.onChanged = CMenuEditable::WriteCvarCb;
 +	height += 60;
++	// RetroPane R361 (the owner, 2026-11-22: "a fps button into the menu
++	// options ... a selectable thing in each port"): the engine's own frame
++	// counter (cl_showfps, saved with the options), on or off here
++	showFps.szName = "Show FPS";
++	showFps.SetCoord( 72, height );
++	showFps.onChanged = CMenuEditable::WriteCvarCb;
++	height += 60;
 +#else
  	gammaIntensity.szName = L( "GameUI_Gamma" );
  	gammaIntensity.SetCoord( 72, height );
  	gammaIntensity.Setup( 0.0, 1.0, 0.025 );
-@@ -193,6 +205,7 @@ void CMenuVidOptions::_Init( void )
+@@ -193,6 +215,7 @@ void CMenuVidOptions::_Init( void )
  	brightness.onChanged = VoidCb( &CMenuVidOptions::UpdateConfig );
  	brightness.onCvarGet = VoidCb( &CMenuVidOptions::GetConfig );
  	height += 60;
@@ -527,7 +544,7 @@ index 69dd50a..2619f46 100644
  
  	done.szName = L( "GameUI_OK" );
  	done.SetCoord( 72, height );
-@@ -276,21 +289,36 @@ void CMenuVidOptions::_Init( void )
+@@ -276,21 +299,38 @@ void CMenuVidOptions::_Init( void )
  	AddItem( screenSize );
  #endif
  	AddItem( gammaIntensity );
@@ -552,6 +569,8 @@ index 69dd50a..2619f46 100644
 +	AddItem( testImage ); // (the gamma test picture: not in the game's files, and the screen itself shows the step)
 +#else
 +	gammaIntensity.LinkCvar( "rp_picture" );
++	AddItem( showFps );
++	showFps.LinkCvar( "cl_showfps" );
 +#endif
  
  #if LEGACY_VIEWSIZE
