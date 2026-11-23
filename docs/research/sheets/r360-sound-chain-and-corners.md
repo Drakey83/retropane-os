@@ -504,3 +504,17 @@ how long; with a TA that can take 26 ms (runs 355-356), a certain rule
 still needs a TA bound that holds; (c) whether answering the event
 (`-rpev9`, `0x834` = 1) makes a render ending under a TA harmless,
 in a play.
+
+**The TA's long frames read (runs 356a-b, offline):** past a level's first
+frames, a walk's TA stays within its words' fit + 3.1 ms (99.9th
+percentile +2.9 ms); the few long ones come ~10 s apart (the runner's
+reports, which read chip memory) and in a level's first frames, one in
+the fight at +14 ms. So a TA bound can hold, with those frames excluded.
+The render side is what no timing gives: its shortest whole render (9.6
+ms) is about one TA, so even a render's progress (tiles passed) bounds
+its rest too weakly to allow many frames. What the vendor does instead
+(R340's reading of `ddi_2700g` and `libGLES_CL`): Dell does not avoid
+bit 9, it answers it: the scene ended early (`0xF0000000` into the TA,
+`0x85C` bit 7), the TA's done waited for, `0x834` = 1, bits 6 and 7
+waited for, then the render. If no register counts the render, that
+answer under overlap is the certain path to test.
