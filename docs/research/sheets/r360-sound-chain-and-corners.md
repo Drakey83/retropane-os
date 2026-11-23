@@ -241,3 +241,29 @@ The test runs from run 349 play at 5% of full volume (the owner,
 every sample is computed. Runs 348a/b (full) against 349a/b (level 5),
 the same code: 17,290 / 17,283 and 17,304 / 17,299 ms, the mixer's
 cycles the same (135 the chain, 47 adding): the level changes no reading.
+
+## Step 9: the server's edict walk (ADR-0040 7d; built, measured, taken out), and what a kit's layout costs
+
+Run 347a: physics about 16% of the fight with its helpers, spread out
+(`SV_Physics` itself 2.1%, `RP_HullCheckQ` 2.0%, `RP_TraceContents`
+1.2%, the rest under 1% each). `SV_Physics`' own samples sit on its walk
+over every edict: the edict's index made again from its address (a
+divide) to test it, and four lines asked for two edicts on whether that
+edict is free or not.
+
+| | What it does |
+|---|---|
+| Xash (kits 61-71) | every edict tested through `SV_IsValidEdict` (its index from its address), four hints two on for each, used or free |
+| Tried | `!free` (the index is the loop's, in range: the same answer), the `free` line asked four on and the physics lines two on only for an edict in use; the count read each step as before (an entity's physics can make new edicts); `-rpphywalk0` the old walk, `-rpphycheck` both tests (140,868 edicts, 0 differed) |
+
+**Runs 350a-d:** 17,312 and 17,316 ms, `-rpphywalk0` 17,312: **no gain**,
+taken out.
+
+**Runs 351a-b (the committed code, step 7, its own kit):** 17,276 and
+17,278 ms, kit 347's 17,272 and 17,275: the device has not drifted. Kits
+349 and 350 ran their old ways at 17,299-17,312 though the code on that
+path was the same: **a rebuild that moves the code shifts the fight by up
+to ~40 ms (0.25%) on its layout alone** (the modules sit one after
+another, so a change in the engine moves the client's and server's
+addresses too). A lever smaller than that is believed only when its own
+switch in the same kit and the build before it both say so.
