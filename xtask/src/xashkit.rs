@@ -946,6 +946,26 @@ engine c
         );
     }
 
+    /// R352's guard (after run 331): every world sky face is drawn at its
+    /// own depth (it hides what the map keeps behind the sky, as GoldSrc),
+    /// its corners carrying their own depth word apart from the texture's
+    /// perspective word (the box's side distance over the depth).
+    #[test]
+    fn sky_faces_hide_what_is_behind_them() {
+        let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
+        let at = src.find("if( fa->flags & SURF_DRAWSKY )").expect("the sky branch");
+        assert!(
+            src[at..at + 400].contains("RP_SkyFace( fa );"),
+            "sky faces drawn from RP_ChipFace's sky branch"
+        );
+        let f = src.find("static void RP_SkyFace( msurface_t *fa )").expect("RP_SkyFace");
+        let body = &src[f..f + 4000];
+        assert!(
+            body.contains("RP_Put( RP_Bits( zi ));") && body.contains("RP_Put( RP_Bits( dist * zi ));"),
+            "the depth word and the texture's perspective word kept apart"
+        );
+    }
+
     /// R351's guard: the menus show no control that cannot act on the
     /// X51v (multiplayer, previews, Xash's touch editor, the gamepad, the
     /// update page, video modes, the GL renderer's boxes, vibration, raw

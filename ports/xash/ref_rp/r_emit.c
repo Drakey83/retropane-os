@@ -177,7 +177,7 @@ static struct
 	uint32_t staged, stage_flushes, stage_full; /* R352 after run 330: rewrites in place held to the frame's end (squares), the frames that had any, early flushes */
 	uint32_t decals, decal_cut, decals_lit, decals_built, decal_arena_resets; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
-	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
+	uint32_t sky_frames, sky_sides, sky_missed, sky_faces, water_faces, water_cells, water_missed, conveyors; /* R309 */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
@@ -213,6 +213,7 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    clip test reads the map's edges), the old way would send each marked
    wall through a surface rebuild; -rpdecalsoft keeps it for a side by side. */
 static int rp_decal_on = 1;
+static int rp_skyface_off; /* R352 after run 331: -rpskybox, the sky faces not drawn (R309's way) */
 /* R352: decals lit by their wall's lightmap (Half-Life's GL look); -rpdecalunlit the unlit way (ref_soft's) */
 static int rp_decal_lit = 1;
 static cvar_t *rp_decal; /* 1 turns them on while a run plays (-rpcombo's second half) */
@@ -231,6 +232,8 @@ void RP_EmitInit( void )
 	rp_fixed = gEngfuncs.Cvar_Get( "rp_fixed", "1", 0, "ref_rp: 1 vertices in integers, each worked once a frame (steps 4b, 4d); 0 the float path" );
 	if( gEngfuncs.Sys_CheckParm( "-rptex2plain" ))
 		rp_tex2_plain = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rpskybox" ))
+		rp_skyface_off = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352: decals baked into the lit surface, the old way */
 		rp_decal_on = 0;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalunlit" ))
@@ -494,6 +497,9 @@ static void RP_EmitReport( void )
 		fprintf( stderr, "rp-emit: R309: the sky in %u of %u frames (%u sides a frame, %u not drawn: no room), %u water faces a frame in %u cells (%u not drawn), %u conveyor faces a frame\n",
 			rp_count.sky_frames, f, rp_count.sky_sides / f, rp_count.sky_missed, rp_count.water_faces / f, rp_count.water_cells / f,
 			rp_count.water_missed, rp_count.conveyors / f );
+	if( rp_emit_on == 2 && rp_count.sky_frames )
+		fprintf( stderr, "rp-emit: R352: sky faces drawn at their own depth %u a frame (pieces, one a cube side), hiding what the map keeps behind its sky (-rpskybox: not drawn)%c",
+			rp_count.sky_faces / f, 10 );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	rp_nm_lazy = rp_nm_made = 0;
 	since = now;
@@ -3715,6 +3721,150 @@ static void RP_SkyBox( void )
 }
 
 /*
+R352 after run 331 (the owner: "flashing or glitching textures at the top
+of the building in the outside area"). R309 drew the sky box first, behind
+everything, and no sky face at all: whatever a map keeps behind its sky
+brushes (a building's upper part past the sky, the far side of a wall
+topped with sky) was drawn over the sky, and came and went as its leaves
+fell in and out of the view: the flashing at the buildings' tops. GoldSrc
+hides all of it: ref_soft draws each sky face as a surface of its own,
+ref_gl draws the box only where sky faces are and they cover what lies
+behind. Rule 0: each sky face drawn on the 2700G at its own depth (it
+hides what is behind it, as Half-Life's), with the sky box's picture
+mapped onto it exactly: the face cut into the cube's six pyramids, each
+piece's corners given the box's s, t of their direction, and the chip's
+texture perspective word set to the direction's distance along that side's
+axis over the corner's depth, while the depth word stays the corner's own
+(the separate words the box itself already uses), so the chip's
+perspective-correct interpolation lands each pixel on the box's own texel:
+no seam with the box behind, no CPU per pixel, a few corners a face. The
+box stays drawn first, behind all, for any crack between faces.
+*/
+typedef struct { float d[3], v[3]; } rp_skyc_t; /* direction from the eye (world axes), view space */
+
+static int RP_SkyClip( const rp_skyc_t *in, int n, rp_skyc_t *out, int axis, float sign, int on_d, int dist_axis, float dist_sign )
+{
+	int m = 0;
+
+	for( int i = 0; i < n; i++ )
+	{
+		const rp_skyc_t *a = &in[i], *b = &in[i + 1 == n ? 0 : i + 1];
+		/* inside: dist + sign * component >= 0 (on_d), or view depth >= NEAR_CLIP */
+		float fa = on_d ? dist_sign * a->d[dist_axis] + sign * a->d[axis] : a->v[2] - NEAR_CLIP;
+		float fb = on_d ? dist_sign * b->d[dist_axis] + sign * b->d[axis] : b->v[2] - NEAR_CLIP;
+
+		if( fa >= 0.0f )
+			out[m++] = *a;
+		if(( fa >= 0.0f ) != ( fb >= 0.0f ))
+		{
+			float f = fa / ( fa - fb );
+
+			for( int k = 0; k < 3; k++ )
+			{
+				out[m].d[k] = a->d[k] + f * ( b->d[k] - a->d[k] );
+				out[m].v[k] = a->v[k] + f * ( b->v[k] - a->v[k] );
+			}
+			m++;
+		}
+		if( m >= RP_MAX_CORNERS )
+			return 0;
+	}
+	return m;
+}
+
+static void RP_SkyFace( msurface_t *fa )
+{
+	rp_skyc_t poly[RP_MAX_CORNERS], a[RP_MAX_CORNERS], b[RP_MAX_CORNERS];
+	const model_t *mod = RI.currentmodel;
+	int n = 0;
+
+	if( mod != WORLDMODEL || fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS - 8 || rp_skyface_off )
+		return;
+	for( int i = 0; i < 6; i++ )
+		if( !tr.skyboxTextures[i] )
+			return;
+	for( int i = 0; i < fa->numedges; i++ )
+	{
+		int lindex = mod->surfedges[fa->firstedge + i];
+		const medge16_t *e = &mod->edges16[lindex > 0 ? lindex : -lindex];
+		const float *world = r_pcurrentvertbase[lindex > 0 ? e->v[0] : e->v[1]].position;
+
+		VectorSubtract( world, tr.modelorg, poly[n].d );
+		TransformVector( poly[n].d, poly[n].v );
+		n++;
+	}
+	n = RP_SkyClip( poly, n, a, 0, 0.0f, 0, 0, 0.0f ); /* the near plane */
+	if( n < 3 )
+		return;
+	for( int side = 0; side < 6; side++ )
+	{
+		int        js = 0, jt = 0, jd = 0, m;
+		float      ss = 1.0f, st = 1.0f, sd = 1.0f;
+		rp_tex_t  *t;
+
+		for( int j = 0; j < 3; j++ )
+		{
+			int k = rp_st_to_vec[side][j], ak = k < 0 ? -k : k;
+			float sg = k < 0 ? -1.0f : 1.0f;
+
+			if( ak == 1 ) { js = j; ss = sg; }
+			else if( ak == 2 ) { jt = j; st = sg; }
+			else { jd = j; sd = sg; }
+		}
+		/* the side's pyramid: dist >= |s| and dist >= |t| (four cuts) */
+		m = RP_SkyClip( a, n, b, js, -ss, 1, jd, sd );
+		m = m >= 3 ? RP_SkyClip( b, m, poly, js, ss, 1, jd, sd ) : 0;
+		m = m >= 3 ? RP_SkyClip( poly, m, b, jt, -st, 1, jd, sd ) : 0;
+		m = m >= 3 ? RP_SkyClip( b, m, poly, jt, st, 1, jd, sd ) : 0;
+		if( m < 3 )
+			continue;
+		t = RP_TexPlace( R_GetTexture( tr.skyboxTextures[r_skyTexOrder[side]] ), 1 );
+		if( !t )
+		{
+			rp_count.sky_missed++;
+			continue;
+		}
+		rp_state = NULL;
+		rp_count.states++;
+		RP_Put( RP_GFX_STATE );
+		RP_Put( RP_TSP_WORLD );
+		RP_Put( RP_ISP_ALWAYS );
+		RP_Put( t->tex0 | RP_TEX0_CLAMP );
+		RP_Put( t->tex1 );
+		RP_Put( RP_TEX2 );
+		RP_Put( RP_CLIP );
+		RP_Put( 0 );
+		RP_Put( RP_GFX_STRIP( m )); /* with its depth word: the depth is not the texture's 1/w here */
+		{
+			int lo = 1, hi = m - 1;
+
+			for( int k = 0; k < m; k++ )
+			{
+				const rp_skyc_t *c = &poly[k == 0 ? 0 : ( k & 1 ) ? lo++ : hi--];
+				float zi = 1.0f / c->v[2];
+				float dist = sd * c->d[jd];
+				float sx = xcenter + xscale * zi * c->v[0];
+				float sy = ycenter - yscale * zi * c->v[1];
+				float u = 0.5f + 0.5f * ss * c->d[js] / dist;
+				float v = 0.5f - 0.5f * st * c->d[jt] / dist;
+
+				RP_Put( RP_Bits( sy ));
+				RP_Put( RP_Bits( (float)RP_GAME_W - sx ));
+				RP_Put( RP_Bits( zi ));        /* depth: the face's own */
+				RP_Put( RP_Bits( dist * zi )); /* the texture's perspective: the box's side */
+				RP_Put( 0xFFFFFFFFu );
+				RP_Put( RP_Bits( u ));
+				RP_Put( RP_Bits( v ));
+			}
+		}
+		RP_Whole();
+		rp_count.sky_faces++;
+		rp_count.tris += m - 2;
+		rp_count.verts += m;
+	}
+}
+
+/*
 A water face's shape, made at its first draw (floats, once): the point of
 texel (s0, t0) in the model's space and the steps a texel along s and t
 (16.16 units), its corners in texels from (s0, t0) as 24.8, its bounds.
@@ -4246,6 +4396,7 @@ static void RP_ChipFace( msurface_t *fa )
 		if( !rp_sky_seen )
 			rp_count.sky_frames++;
 		rp_sky_seen = 1;
+		RP_SkyFace( fa ); /* R352 after run 331: at its own depth, hiding what is behind */
 		return;
 	}
 	if( fa->numedges < 3 || fa->numedges > RP_MAX_CORNERS )
