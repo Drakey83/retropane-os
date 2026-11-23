@@ -121,6 +121,9 @@ fn put_week(s: &mut rp_shell::Shell) {
     s.pim_loaded();
 }
 
+/// The agenda's first row, where a tap opens it in the editor.
+const EDIT_TAP_Y: u16 = 278;
+
 fn calendar(view: View, line: &[u8]) -> Calendar {
     let mut c = Calendar::new(&CALS, TODAY);
     c.show(view);
@@ -727,6 +730,49 @@ fn base() -> Vec<Mock> {
             prepare: Box::new(|s| {
                 sample_week(s);
                 open(s, calendar(View::New, b"Dentist tue 3pm 1h"));
+            }),
+        },
+        Mock {
+            name: "v2-calendar-edit-rule",
+            what: "Calendar: the editor with a repeat its chip says only in part, the whole rule in words beside REPEAT (R370)",
+            prepare: Box::new(|s| {
+                use rp_pim::repeat::{Every, Rule};
+                use rp_pim::store::{Kind, tag};
+                sample_week(s);
+                if let Some(store) = s.pim() {
+                    let at = rp_pim::date::start_of(TODAY) + 8 * 60 + 30;
+                    let rule = Rule {
+                        every: Every::Week,
+                        n: 2,
+                        days: 1 | 1 << 2 | 1 << 4,
+                        until: Some(TODAY + 61),
+                        after: false,
+                    };
+                    store
+                        .put(
+                            Kind::Appointment,
+                            None,
+                            &[
+                                (tag::TITLE, b"Team standup"),
+                                (tag::START, &at.to_le_bytes()),
+                                (tag::MINUTES, &15u32.to_le_bytes()),
+                                (tag::REPEAT, &rule.pack(TODAY).to_le_bytes()),
+                            ],
+                        )
+                        .expect("the standup fits");
+                }
+                open(s, calendar(View::Agenda, b""));
+                // The agenda drawn once (its rows are where it drew them),
+                // then its row, the day's first, as a tap.
+                s.frame(&mut Box::new(rp_draw::Frame::new()));
+                s.input(rp_shell::Input::PenDown {
+                    x: 240,
+                    y: EDIT_TAP_Y,
+                });
+                s.input(rp_shell::Input::PenUp {
+                    x: 240,
+                    y: EDIT_TAP_Y,
+                });
             }),
         },
         Mock {

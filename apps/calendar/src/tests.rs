@@ -917,3 +917,115 @@ fn contacts_birthdays_make_the_birthdays_calendar() {
         0
     );
 }
+
+/// R370: the editor's chips say only "WEEKLY" or "MONTHLY"; a rule they
+/// say in part (an iCal import, every 2 weeks on Mon and Wed to an end
+/// day) is kept whole through an edit, and through a chip tapped away and
+/// back; another chip chosen and kept is the plain rule it names.
+#[test]
+fn an_edit_keeps_a_repeat_the_chips_show_only_in_part() {
+    use rp_pim::repeat::{Every, Rule};
+    let pim = store();
+    // Monday 1 January 2024.
+    let day = 19_723;
+    let rule = Rule {
+        every: Every::Week,
+        n: 2,
+        days: 1 | 1 << 2,
+        until: Some(day + 60),
+        after: false,
+    };
+    let id = {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = (date::start_of(day) + 15 * 60).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Standup"),
+                (tag::START, &at),
+                (tag::REPEAT, &rule.pack(day).to_le_bytes()),
+            ],
+        )
+        .unwrap()
+    };
+    let cx = ctx(pim);
+    let kept = |want: Rule| {
+        let g = pim.borrow();
+        let r = g.as_ref().unwrap().get(id).unwrap();
+        let got = Rule::unpack(r.num(tag::REPEAT).unwrap(), day).unwrap();
+        assert_eq!(got, want);
+    };
+    let tap = |c: &mut Calendar, chip: u16, y: u16| {
+        c.event(
+            Event::PenUp {
+                x: MARGIN + WIDE * chip / 5 + 10,
+                y: y + 24,
+            },
+            &cx,
+        );
+    };
+    let mut c = opened(day);
+    // A change elsewhere (a quarter later), saved: the rule is the same.
+    c.open_edit(&cx, Some(id));
+    assert_eq!(c.edit.unwrap().repeat, 2);
+    draw(&mut c, &cx);
+    c.event(
+        Event::PenUp {
+            x: W - 40,
+            y: E_START + 20,
+        },
+        &cx,
+    );
+    c.event(Event::Key(Key::SoftRight), &cx);
+    kept(rule);
+    // DAILY and back to WEEKLY: still its own.
+    c.open_edit(&cx, Some(id));
+    tap(&mut c, 1, E_REPEAT);
+    tap(&mut c, 2, E_REPEAT);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    kept(rule);
+    // DAILY kept: plain daily.
+    c.open_edit(&cx, Some(id));
+    tap(&mut c, 1, E_REPEAT);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    kept(Rule {
+        every: Every::Day,
+        n: 1,
+        days: 0,
+        until: None,
+        after: false,
+    });
+    // The 2nd Tuesday of the month shows as MONTHLY and stays the 2nd
+    // Tuesday (it became the 9th of each month before).
+    let tue = day + 8;
+    let nth = Rule {
+        every: Every::MonthWeekday,
+        n: 1,
+        days: 0,
+        until: None,
+        after: false,
+    };
+    let id = {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = date::start_of(tue).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Club"),
+                (tag::START, &at),
+                (tag::REPEAT, &nth.pack(tue).to_le_bytes()),
+            ],
+        )
+        .unwrap()
+    };
+    c.open_edit(&cx, Some(id));
+    assert_eq!(c.edit.unwrap().repeat, 3);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    let g = pim.borrow();
+    let r = g.as_ref().unwrap().get(id).unwrap();
+    assert_eq!(Rule::unpack(r.num(tag::REPEAT).unwrap(), tue), Some(nth));
+}

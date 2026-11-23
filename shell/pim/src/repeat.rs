@@ -205,6 +205,142 @@ impl Rule {
             Every::Year => (d.year - s.year) % n == 0 && d.month == s.month && d.day == s.day,
         }
     }
+
+    /// Whether the plain "every day / week / month / year" says all of it
+    /// (every one, on the start's own day, never ending): an editor's one
+    /// chip then shows the whole rule, and [`Rule::words`] is not needed.
+    #[must_use]
+    pub fn plain(&self, start: i32) -> bool {
+        self.n == 1
+            && self.until.is_none()
+            && !self.after
+            && match self.every {
+                Every::Week => self.days == 0 || self.days == 1 << date::weekday(start),
+                Every::MonthWeekday => false,
+                _ => true,
+            }
+    }
+
+    /// The rule in words for something starting on `start`: "Every 2
+    /// weeks on Mon, Wed until Mar 3", "Every month on the last Fri",
+    /// "3 days after done" (`us`: "Mar 3", else "3 Mar"). Its length in
+    /// `out` (cut at its end).
+    pub fn words(&self, start: i32, us: bool, out: &mut [u8]) -> usize {
+        let mut n = 0;
+        let mut put = |s: &[u8], n: &mut usize| {
+            for &c in s {
+                if *n < out.len() {
+                    out[*n] = c;
+                    *n += 1;
+                }
+            }
+        };
+        let num = |v: u32, buf: &mut [u8; 10]| {
+            let mut k = buf.len();
+            let mut v = v;
+            loop {
+                k -= 1;
+                buf[k] = b'0' + (v % 10) as u8;
+                v /= 10;
+                if v == 0 {
+                    break k;
+                }
+            }
+        };
+        let mut b = [0u8; 10];
+        let unit: &[u8] = match self.every {
+            Every::Day => b"day",
+            Every::Week => b"week",
+            Every::MonthDate | Every::MonthWeekday => b"month",
+            Every::Year => b"year",
+        };
+        if self.after {
+            let k = num(u32::from(self.n.max(1)), &mut b);
+            put(&b[k..], &mut n);
+            put(b" ", &mut n);
+            put(unit, &mut n);
+            if self.n > 1 {
+                put(b"s", &mut n);
+            }
+            put(b" after done", &mut n);
+        } else {
+            put(b"Every ", &mut n);
+            if self.n > 1 {
+                let k = num(u32::from(self.n), &mut b);
+                put(&b[k..], &mut n);
+                put(b" ", &mut n);
+                put(unit, &mut n);
+                put(b"s", &mut n);
+            } else {
+                put(unit, &mut n);
+            }
+            match self.every {
+                Every::Week if self.days != 0 && self.days != 1 << date::weekday(start) => {
+                    put(b" on ", &mut n);
+                    // Runs of three or more as a range ("Mon-Fri"): the
+                    // longest rule still fits the editor's one line.
+                    let on = |i: usize| i < 7 && self.days & 1 << i != 0;
+                    let (mut i, mut first) = (0, true);
+                    while i < 7 {
+                        if !on(i) {
+                            i += 1;
+                            continue;
+                        }
+                        let mut j = i;
+                        while on(j + 1) {
+                            j += 1;
+                        }
+                        if !first {
+                            put(b", ", &mut n);
+                        }
+                        first = false;
+                        put(date::WEEKDAYS[i].as_bytes(), &mut n);
+                        if j >= i + 2 {
+                            put(b"-", &mut n);
+                            put(date::WEEKDAYS[j].as_bytes(), &mut n);
+                            i = j;
+                        }
+                        i += 1;
+                    }
+                }
+                Every::MonthWeekday => {
+                    let s = date::date_of(start);
+                    put(b" on the ", &mut n);
+                    put(
+                        match (s.day - 1) / 7 {
+                            0 => b"1st ",
+                            1 => b"2nd ",
+                            2 => b"3rd ",
+                            3 => b"4th ",
+                            _ => b"last ",
+                        },
+                        &mut n,
+                    );
+                    put(
+                        date::WEEKDAYS[usize::from(date::weekday(start))].as_bytes(),
+                        &mut n,
+                    );
+                }
+                _ => {}
+            }
+        }
+        if let Some(u) = self.until {
+            let d = date::date_of(u);
+            let k = num(u32::from(d.day), &mut b);
+            let month = date::MONTHS[usize::from(d.month - 1)].as_bytes();
+            put(b" until ", &mut n);
+            if us {
+                put(month, &mut n);
+                put(b" ", &mut n);
+                put(&b[k..], &mut n);
+            } else {
+                put(&b[k..], &mut n);
+                put(b" ", &mut n);
+                put(month, &mut n);
+            }
+        }
+        n
+    }
 }
 
 /// The day `months` after `day`, on the same date, or the month's last
@@ -541,5 +677,59 @@ mod tests {
         assert_eq!(read("day after lunch"), Some((Every::Day, 1, 0, false, 1)));
         // A plural needs a number: "every days" is no repeat.
         assert_eq!(read("days"), None);
+    }
+
+    #[test]
+    fn a_rule_in_words_and_whether_one_chip_says_it() {
+        // Wednesday 1 November 2023.
+        let wed = day(2023, 11, 1);
+        let say = |r: Rule, us: bool| {
+            let mut b = [0u8; 64];
+            let n = r.words(wed, us, &mut b);
+            String::from_utf8(b[..n].to_vec()).unwrap()
+        };
+        let r = |every, n, days, until, after| Rule {
+            every,
+            n,
+            days,
+            until,
+            after,
+        };
+        let weekly = r(Every::Week, 1, 0, None, false);
+        assert!(weekly.plain(wed));
+        // Its own weekday named is still plain.
+        assert!(r(Every::Week, 1, 1 << 2, None, false).plain(wed));
+        assert_eq!(say(weekly, true), "Every week");
+        let two = r(Every::Week, 2, 1 | 1 << 2, Some(day(2024, 3, 3)), false);
+        assert!(!two.plain(wed));
+        assert_eq!(say(two, true), "Every 2 weeks on Mon, Wed until Mar 3");
+        assert_eq!(say(two, false), "Every 2 weeks on Mon, Wed until 3 Mar");
+        let nth = r(Every::MonthWeekday, 1, 0, None, false);
+        assert!(!nth.plain(wed));
+        assert_eq!(say(nth, true), "Every month on the 1st Wed");
+        assert_eq!(
+            Rule { ..nth }.words(day(2023, 11, 29), true, &mut [0u8; 64]),
+            "Every month on the last Wed".len()
+        );
+        assert_eq!(say(r(Every::Day, 3, 0, None, false), true), "Every 3 days");
+        // Runs of three as ranges, two as a pair; Sunday ends the week.
+        assert_eq!(
+            say(r(Every::Week, 1, 0b0101_1111, None, false), true),
+            "Every week on Mon-Fri, Sun"
+        );
+        assert_eq!(
+            say(r(Every::Week, 1, 0b0110_0011, None, false), true),
+            "Every week on Mon, Tue, Sat, Sun"
+        );
+        assert_eq!(
+            say(r(Every::Year, 1, 0, None, true), true),
+            "1 year after done"
+        );
+        assert!(!r(Every::Day, 1, 0, None, true).plain(wed));
+        assert!(!r(Every::Day, 1, 0, Some(wed + 9), false).plain(wed));
+        // Cut at the end of a short buffer, never past it.
+        let mut b = [0u8; 8];
+        assert_eq!(two.words(wed, true, &mut b), 8);
+        assert_eq!(&b, b"Every 2 ");
     }
 }

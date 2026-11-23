@@ -144,6 +144,11 @@ struct Edit {
     all_day: bool,
     /// 0 none, then Every's order: day, week, month, year.
     repeat: u8,
+    /// The record's own rule and the chip it showed as: kept whole on
+    /// save while that chip is chosen (every 2 weeks on Mon and Wed, the
+    /// 2nd Tuesday, an end day: the chips say only "WEEKLY", "MONTHLY"),
+    /// so an edit of the title never rewrites the repeat (R370).
+    kept: Option<(rp_pim::repeat::Rule, u8)>,
     /// 0 none, 1 at the start, 2 15 min, 3 1 h, 4 1 day before.
     alert: u8,
     /// The alert's lead in minutes when it is none of the quick ones
@@ -712,6 +717,7 @@ impl Calendar {
             len: 60,
             all_day: false,
             repeat: 0,
+            kept: None,
             // At its time (it was a quarter of an hour before: the owner on
             // the X51v, 2026-11-15, set one a few minutes off, the alert's
             // time was past as it was made, and "it never went off when it
@@ -746,15 +752,16 @@ impl Calendar {
                 e.start = (at % date::DAY_MIN) as u16;
                 e.all_day = r.num(tag::ALL_DAY) == Some(1);
                 e.len = r.num(tag::MINUTES).unwrap_or(60).min(24 * 60) as u16;
-                e.repeat = r
+                let rule = r
                     .num(tag::REPEAT)
-                    .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day))
-                    .map_or(0, |r| match r.every {
-                        rp_pim::repeat::Every::Day => 1,
-                        rp_pim::repeat::Every::Week => 2,
-                        rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
-                        rp_pim::repeat::Every::Year => 4,
-                    });
+                    .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day));
+                e.repeat = rule.map_or(0, |r| match r.every {
+                    rp_pim::repeat::Every::Day => 1,
+                    rp_pim::repeat::Every::Week => 2,
+                    rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
+                    rp_pim::repeat::Every::Year => 4,
+                });
+                e.kept = rule.map(|r| (r, e.repeat));
                 e.set_alert(r.num(tag::REMIND));
                 let cal = r.num(tag::CAL);
                 e.cal = cal
@@ -796,6 +803,11 @@ impl Calendar {
         let cal = le(self.cals[e.cal.min(self.n_cals - 1)].id);
         let rule = (e.repeat > 0).then(|| {
             use rp_pim::repeat::{Every, Rule};
+            // Its own rule while its chip is chosen; a chip changed is the
+            // plain rule it names.
+            if let Some((r, _)) = e.kept.filter(|&(_, c)| c == e.repeat) {
+                return le(r.pack(e.day));
+            }
             let every =
                 [Every::Day, Every::Week, Every::MonthDate, Every::Year][usize::from(e.repeat - 1)];
             le(Rule {
@@ -1013,6 +1025,14 @@ impl Calendar {
             &REPEAT_NAMES,
             usize::from(e.repeat),
         );
+        // A rule the chip says only part of, in words beside the label
+        // ("Every 2 weeks on Mon, Wed until Mar 3"): what is kept on save.
+        if let Some((r, _)) = e.kept.filter(|&(r, c)| c == e.repeat && !r.plain(e.day)) {
+            let mut w = [0u8; 64];
+            let n = r.words(e.day, cx.us, &mut w);
+            let x = MARGIN + 4 + cx.fonts.label.width(b"REPEAT") + 10;
+            kit::text(f, x, E_REPEAT + 10, cx.fonts.label, tint::CALENDAR, &w[..n]);
+        }
         // The quick leads, and any other to the minute (the sixth chip
         // brings the pad: a number and its unit, as Google Calendar's
         // custom alert; the owner, 2026-11-15, "by the min").
