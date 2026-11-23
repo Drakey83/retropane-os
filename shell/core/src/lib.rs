@@ -264,7 +264,7 @@ pub enum WindowBody {
 
 /// Where Today's tasks line goes (tasks-rule0.md: "Today screen's tasks
 /// line fed from the store"); three drawn for the owner's pick
-/// (R-today-tasks in docs/reminders.md), A the default until then.
+/// (R369 in docs/reminders.md), A the default until then.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TodayTasks {
     /// A: on the calendar panel's top line, right of "TODAY": "3 TASKS

@@ -69,7 +69,7 @@ tick it off with a satisfying tap.
 - **Today's tasks line:** "3 TASKS DUE · 1 LATE" on the calendar panel's top
   line opens Tasks (A). Two other places are drawn for the owner's pick
   (B the panel's second row, C a third row): `docs/img/today-tasks/`,
-  reminder R380.
+  reminder R369.
 
 ## Build list
 
