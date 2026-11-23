@@ -184,6 +184,12 @@ pub mod tag {
     /// (an IANA name: `rp_pim::zone`); absent: the device's own (it
     /// moves with it).
     pub const ZONE: u8 = 54;
+
+    /// A page of a note's text (a [`super::Kind::Ink`] record holding
+    /// [`TEXT`] and this): where it goes among the note's pages, lowest
+    /// first after the note's own text (`rp_app_notes::doc`). Tags 60-64
+    /// are Notes' (group D, 2026-11-23).
+    pub const ORDER: u8 = 60;
 }
 
 /// A record as stored: read-only.

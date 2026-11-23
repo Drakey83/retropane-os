@@ -3071,6 +3071,10 @@ mod image {
                 && net.as_ref().is_none_or(|n| !n.waiting)
                 && let Some((what, arg, len)) = shell.card_ask()
             {
+                if !card_tried {
+                    card_tried = true;
+                    *card = take_card();
+                }
                 let words = arg.get();
                 let first = words.split(|&c| c == b' ').next().unwrap_or(&[]);
                 let rest = words.get(first.len() + 1..).unwrap_or(&[]);
@@ -3094,33 +3098,23 @@ mod image {
                         rp_hal_x51v::cardsink::settle();
                         rp_today::cardfiles::read(&mut *c, *start, kind, k, offset, net_buf)
                     }
-                    (Some((c, start)), b"CARDPUT", _) if len + 4096 <= net_buf.len() => {
-                        // The body a piece at a time from the app, then
-                        // written whole.
-                        let (body, scratch) = net_buf.split_at_mut(len);
-                        let mut at = 0;
-                        while at < len {
-                            let k = shell.program_body(at, &mut body[at..]);
-                            if k == 0 {
-                                break;
-                            }
-                            at += k;
-                        }
-                        if at == len {
-                            rp_hal_x51v::cardsink::settle();
-                            rp_today::cardfiles::put(
-                                &mut *c,
-                                *start,
-                                rest,
-                                body,
-                                &mut scratch[..4096],
-                            )
-                            .map(|()| 0)
-                        } else {
-                            Err("the app's file was short")
-                        }
+                    (Some((c, start)), b"CARDPUT", _) => {
+                        // The body a piece at a time from the app, each
+                        // staged on the card and linked whole at the end
+                        // (cardfiles::put_from): no file need fit the pool.
+                        let (scratch, piece) = net_buf.split_at_mut(rp_today::cardfiles::SCRATCH);
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::cardfiles::put_from(
+                            &mut *c,
+                            *start,
+                            rest,
+                            len,
+                            scratch,
+                            piece,
+                            &mut |at, out| shell.program_body(at, out),
+                        )
+                        .map(|()| 0)
                     }
-                    (Some(_), b"CARDPUT", _) => Err("too big for the card's pool"),
                     _ => Err("not a card question"),
                 };
                 let _ = writeln!(
@@ -3133,9 +3127,10 @@ mod image {
                         Err(e) => e,
                     }
                 );
+                // A refusal's reason as its body (an app may say it).
                 match answer {
                     Ok(n) => shell.card_answer(true, &net_buf[..n]),
-                    Err(_) => shell.card_answer(false, &[]),
+                    Err(e) => shell.card_answer(false, e.as_bytes()),
                 }
             }
             if still && def_index.is_none() && !def_failed {

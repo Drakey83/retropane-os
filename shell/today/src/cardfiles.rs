@@ -1,7 +1,8 @@
 //! The files on the card an app reads and writes (contacts-rule0.md "vCard
 //! 3 and 4 import and export" and "Photos from a picture file on the
-//! card"; calendar-rule0.md ".ics import and export"): an app's
-//! `CARDFILES`, `CARDFILE` and `CARDPUT` questions
+//! card"; calendar-rule0.md ".ics import and export"; notes-rule0.md
+//! "Export as text or Markdown, ink as SVG or PNG; import text files"): an
+//! app's `CARDFILES`, `CARDFILE` and `CARDPUT` questions
 //! ([`rp_app::Program::card_ask`]) answered by the device itself, no dock.
 //!
 //! Iterate, don't imitate (rule 0): Windows Mobile's Contacts and Calendar
@@ -10,8 +11,13 @@
 //! asked for from the card's root and its `RetroPane` folder (where a PC
 //! or a camera puts them, and where an export goes), and hands the app
 //! their names only by number: an app never names a path, so no app can
-//! read or write outside the two folders (security.md). Generic over the
-//! card so the host tests run them on FAT and exFAT card images.
+//! read or write outside the two folders (security.md). A write streams
+//! from the app a piece at a time into a staged run of the card, linked
+//! whole at the end (rp-fat's copy-then-swap: the old file stays until the
+//! new one is complete, so a pulled card never leaves half a file, and no
+//! buffer a file's size is needed); a text file or a picture is read a
+//! piece at a time. Generic over the card so the host tests run them on
+//! FAT and exFAT card images.
 
 use rp_fat::{AnyVolume, Error};
 use rp_hal_api::BlockDevice;
@@ -22,15 +28,32 @@ pub const DIR: &str = "RetroPane";
 pub const LIST_MAX: usize = 40;
 /// The longest name listed or written.
 const NAME_MAX: usize = 64;
+/// The largest file an app writes (Notes' longest export is the
+/// organiser's whole 256 KB store as Markdown).
+pub const WRITE_MAX: usize = 4 * 1024 * 1024;
+/// rp-fat's scratch for a write (its free-run search reads the FAT a run
+/// at a time).
+pub const SCRATCH: usize = 4096;
 
-/// The extensions of a kind of file (`vcf`, `ics`, `pic`).
+/// The extensions of a kind of file (`vcf`, `ics`, `pic`, `txt`).
 fn extensions(kind: &[u8]) -> &'static [&'static [u8]] {
     match kind {
         b"vcf" => &[b".vcf"],
         b"ics" => &[b".ics"],
         b"pic" => &[b".jpg", b".jpeg"],
+        b"txt" => &[b".txt", b".md"],
         _ => &[],
     }
+}
+
+/// The extensions an app may write: its exports (a picture only as the
+/// PNG a note's ink makes, never over a camera's JPEG).
+const WRITABLE: [&[u8]; 6] = [b".vcf", b".ics", b".txt", b".md", b".svg", b".png"];
+
+/// Whether a kind is read a piece at a time (its reader streams), not
+/// whole.
+fn in_pieces(kind: &[u8]) -> bool {
+    matches!(kind, b"pic" | b"txt")
 }
 
 fn is_kind(name: &[u8], kind: &[u8]) -> bool {
@@ -110,10 +133,10 @@ pub fn list<D: BlockDevice>(
 }
 
 /// File `n` of `kind`'s list into `out`: its length. A vCard or a
-/// calendar is read whole (a part of one would lose people); a picture a
-/// piece at a time from `offset`, after four bytes of the file's size
-/// (little-endian), so a camera's 4 MB file is read in the pieces its
-/// reader asks for.
+/// calendar is read whole (a part of one would lose people); a picture or
+/// a text file a piece at a time from `offset`, after four bytes of the
+/// file's size (little-endian), so a camera's 4 MB file is read in the
+/// pieces its reader asks for.
 ///
 /// # Errors
 /// The card not readable, no such file, or a whole file bigger than `out`.
@@ -141,7 +164,7 @@ pub fn read<D: BlockDevice>(
         }
     });
     let (len, size) = found.ok_or("no such file")?;
-    let piece = kind == b"pic";
+    let piece = in_pieces(kind);
     let (head, offset) = if piece {
         let s = u32::try_from(size).unwrap_or(u32::MAX).to_le_bytes();
         out.get_mut(..4).ok_or("no room")?.copy_from_slice(&s);
@@ -168,23 +191,26 @@ pub fn read<D: BlockDevice>(
 }
 
 /// Whether `name` is one an app may write: letters, digits, spaces and
-/// `_ . -`, a `.vcf` or `.ics` file, no folder.
+/// `_ . -`, one of [`WRITABLE`]'s kinds, no folder, no `..`.
 #[must_use]
 pub fn name_ok(name: &[u8]) -> bool {
-    (5..=40).contains(&name.len())
+    (4..=40).contains(&name.len())
         && name
             .iter()
             .all(|c| c.is_ascii_alphanumeric() || b" _.-".contains(c))
         && !name.starts_with(b".")
         && !name.ends_with(b" ")
-        && (is_kind(name, b"vcf") || is_kind(name, b"ics"))
+        && !name.windows(2).any(|w| w == b"..")
+        && WRITABLE
+            .iter()
+            .any(|e| name.len() > e.len() && name[name.len() - e.len()..].eq_ignore_ascii_case(e))
 }
 
 /// `data` kept as the card's `RetroPane/name` (in place of one of that
-/// name).
+/// name); `scratch` holds [`SCRATCH`] bytes and a piece of 512 or more.
 ///
 /// # Errors
-/// A name [`name_ok`] refuses, the card not readable, or full.
+/// As [`put_from`].
 pub fn put<D: BlockDevice>(
     card: D,
     start: u32,
@@ -192,9 +218,55 @@ pub fn put<D: BlockDevice>(
     data: &[u8],
     scratch: &mut [u8],
 ) -> Result<(), &'static str> {
+    if scratch.len() < SCRATCH + 512 {
+        return Err("no room");
+    }
+    let (scratch, piece) = scratch.split_at_mut(SCRATCH);
+    put_from(
+        card,
+        start,
+        name,
+        data.len(),
+        scratch,
+        piece,
+        &mut |at, out| {
+            let n = out.len().min(data.len().saturating_sub(at));
+            out[..n].copy_from_slice(&data[at..at + n]);
+            n
+        },
+    )
+}
+
+/// A file of `len` bytes kept as the card's `RetroPane/name` (in place of
+/// one of that name), its bytes taken from `fill` (from `at` into `out`:
+/// how many) a `piece` at a time and staged on the card, linked only once
+/// whole: an app that runs short or a pulled card leaves the old file as
+/// it was. `scratch` holds [`SCRATCH`] bytes, `piece` 512 or more.
+///
+/// # Errors
+/// A name [`name_ok`] refuses, over [`WRITE_MAX`], the card not readable
+/// or full, or the app's bytes ending short.
+pub fn put_from<D: BlockDevice>(
+    card: D,
+    start: u32,
+    name: &[u8],
+    len: usize,
+    scratch: &mut [u8],
+    piece: &mut [u8],
+    fill: &mut dyn FnMut(usize, &mut [u8]) -> usize,
+) -> Result<(), &'static str> {
     if !name_ok(name) {
         return Err("not a name an export may have");
     }
+    if len > WRITE_MAX {
+        return Err("too big to write");
+    }
+    // Whole sectors a piece (the last one's tail zero).
+    let whole_len = piece.len() / 512 * 512;
+    if whole_len == 0 {
+        return Err("no room");
+    }
+    let piece = &mut piece[..whole_len];
     let mut vol = AnyVolume::mount(card, start).map_err(|_| "the card not readable")?;
     match &mut vol {
         AnyVolume::Fat(v) => match v.mkdir(DIR, scratch) {
@@ -211,12 +283,38 @@ pub fn put<D: BlockDevice>(
     path[DIR.len()] = b'/';
     path[DIR.len() + 1..DIR.len() + 1 + name.len()].copy_from_slice(name);
     let path = core::str::from_utf8(&path[..DIR.len() + 1 + name.len()]).map_err(|_| "no name")?;
-    vol.put(path, data, scratch)
-        .map(|_| ())
-        .map_err(|e| match e {
-            Error::NoRoom => "the card is full",
-            _ => "not written",
-        })
+    let says = |e| match e {
+        Error::NoRoom | Error::Fragmented => "the card is full",
+        _ => "not written",
+    };
+    if len == 0 {
+        // No run to stage: an empty file made whole.
+        return vol.put(path, &[], scratch).map(|_| ()).map_err(says);
+    }
+    let staged = vol.stage(path, len, scratch).map_err(says)?;
+    let mut at = 0;
+    while at < len {
+        let want = (len - at).min(piece.len());
+        let mut got = 0;
+        while got < want {
+            let k = fill(at + got, &mut piece[got..want]);
+            if k == 0 {
+                break;
+            }
+            got += k;
+        }
+        if got != want {
+            // Never linked: the old file (if any) stays.
+            return Err("the app's file was short");
+        }
+        let whole = want.div_ceil(512) * 512;
+        piece[want..whole].fill(0);
+        let sector = u32::try_from(at / 512).map_err(|_| "too big to write")?;
+        vol.stage_write(&staged, sector, &piece[..whole])
+            .map_err(says)?;
+        at += want;
+    }
+    vol.commit(path, staged, scratch).map(|_| ()).map_err(says)
 }
 
 #[cfg(test)]
@@ -299,7 +397,7 @@ mod tests {
             let mut out = [0u8; 512];
             // An export first: the folder is made, the file listed after
             // the root's.
-            let mut scratch = [0u8; 4096];
+            let mut scratch = [0u8; SCRATCH + 4096];
             put(
                 &mut card,
                 start,
@@ -366,16 +464,124 @@ mod tests {
             b"name:.ics",
             b"",
             b"a_very_long_name_that_goes_on_past_forty_bytes.vcf",
+            b"a..b.md",
+            b"photo.jpg",
+            b"plan.txt.exe",
+            b".md",
         ] {
             assert!(!name_ok(bad), "{}", text(bad));
         }
         assert!(name_ok(b"Contacts 2026-11-23.vcf"));
         assert!(name_ok(b"calendar.ics"));
+        for good in [
+            &b"Note.md"[..],
+            b"a.MD",
+            b"Plan 2.txt",
+            b"Note-1.svg",
+            b"Note-2.png",
+        ] {
+            assert!(name_ok(good), "{}", text(good));
+        }
         let (mut card, start) = fat_card();
-        let mut scratch = [0u8; 4096];
+        let mut scratch = [0u8; SCRATCH + 4096];
         assert_eq!(
             put(&mut card, start, b"RPIC0A.PAK", b"x", &mut scratch),
             Err("not a name an export may have")
         );
+    }
+
+    #[test]
+    fn a_long_file_streams_in_and_out_in_pieces_on_fat_and_exfat() {
+        for (mut card, start) in [fat_card(), exfat_card()] {
+            // 300 KB, past the image's 256 KB pool: given in odd pieces.
+            let data: Vec<u8> = (0..300_000u32).map(|i| b'a' + (i % 26) as u8).collect();
+            let mut scratch = [0u8; SCRATCH];
+            let mut piece = [0u8; 4096 + 100];
+            put_from(
+                &mut card,
+                start,
+                b"Long note.md",
+                data.len(),
+                &mut scratch,
+                &mut piece,
+                &mut |at, out| {
+                    let n = out.len().min(777).min(data.len() - at);
+                    out[..n].copy_from_slice(&data[at..at + n]);
+                    n
+                },
+            )
+            .unwrap();
+            // Listed as text, read back a piece at a time after its size.
+            let mut out = vec![0u8; 512];
+            let n = list(&mut card, start, b"txt", &mut out).unwrap();
+            let l = text(&out[..n]);
+            let k: usize = l
+                .lines()
+                .last()
+                .unwrap()
+                .split('|')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                l.ends_with(
+                    "|Long note.md
+"
+                ),
+                "{l}"
+            );
+            let mut back = Vec::new();
+            let mut buf = vec![0u8; 65_536];
+            loop {
+                let n = read(&mut card, start, b"txt", k, back.len() as u64, &mut buf).unwrap();
+                assert_eq!(u32::from_le_bytes(buf[..4].try_into().unwrap()), 300_000);
+                if n == 4 {
+                    break;
+                }
+                back.extend_from_slice(&buf[4..n]);
+            }
+            assert_eq!(back, data);
+            // An app that runs short: refused, the file as it was.
+            assert_eq!(
+                put_from(
+                    &mut card,
+                    start,
+                    b"Long note.md",
+                    10_000,
+                    &mut scratch,
+                    &mut piece,
+                    &mut |at, out| {
+                        let n = out.len().min(5_000usize.saturating_sub(at));
+                        out[..n].fill(b'x');
+                        n
+                    },
+                ),
+                Err("the app's file was short")
+            );
+            let n = read(&mut card, start, b"txt", k, 0, &mut buf).unwrap();
+            assert_eq!(&buf[4..n], &data[..n - 4]);
+            // An empty file, and one past the cap.
+            put(
+                &mut card,
+                start,
+                b"empty.txt",
+                b"",
+                &mut [0u8; SCRATCH + 512],
+            )
+            .unwrap();
+            assert_eq!(
+                put_from(
+                    &mut card,
+                    start,
+                    b"huge.md",
+                    WRITE_MAX + 1,
+                    &mut scratch,
+                    &mut piece,
+                    &mut |_, _| 0,
+                ),
+                Err("too big to write")
+            );
+        }
     }
 }

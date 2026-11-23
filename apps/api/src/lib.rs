@@ -413,6 +413,12 @@ pub trait Program {
     fn suggestions(&self) -> [&[u8]; 3] {
         [&[], &[], &[]]
     }
+    /// Whether the next letter typed is a capital (the app knows where its
+    /// caret is: a sentence's start), when the app says; `None` leaves it
+    /// to the keyboard's own rule.
+    fn caps(&self) -> Option<bool> {
+        None
+    }
     /// A question for the network, if the app has one (taken: asked once).
     fn net_ask(&mut self) -> Option<NetAsk> {
         None

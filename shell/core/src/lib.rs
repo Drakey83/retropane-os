@@ -26,6 +26,7 @@
 
 pub mod align;
 pub mod apps;
+mod caps;
 pub mod chart;
 mod keyboard;
 pub mod motion;
@@ -2981,6 +2982,7 @@ impl Shell {
         };
         self.program_keyboard();
         self.reminders_follow();
+        self.program_caps();
         match reply {
             rp_app::Reply::Nothing => Action::Nothing,
             rp_app::Reply::Redraw => {
