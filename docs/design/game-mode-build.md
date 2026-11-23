@@ -91,7 +91,7 @@ What the numbers mean:
 ## The build order
 
 Each step: its rule 0 sheet, then an emulator test, then the device (when
-K1 lets it). G1 and G2 are built; the rest in this order.
+K1 lets it). G1, G2 and G3 are built; the rest in this order.
 
 ### G1. Freeze a process's memory (built 2026-11-22)
 
@@ -173,7 +173,7 @@ caught); `emu-kernel` freezes the IPC clients' process mid-run: 47 calls
 before, none in 30 ms frozen, 151 in the first moments after the thaw,
 both threads ready again, and every IPC result after it whole.
 
-### G3. The return record
+### G3. The return record (built 2026-11-23)
 
 A region reserved at boot (256 KiB, the owner's ceiling, design B), in the
 kernel's own area outside every slot: the frozen processes, their threads'
@@ -183,6 +183,29 @@ corrupt it and a damaged record is refused, not followed. Rule 0: consoles
 keep the system's state in a reserved partition of megabytes; Android
 saves an app's state into a Bundle per app (often lost); ours, a quarter
 megabyte, and only the record (the processes stay where they are).
+
+**As built:** `kernel/gamemode` (`rp-kernel-gamemode`, pure logic, host
+tested). A 32-byte header (magic, version, section count, body length,
+sequence number, the body's hash, reserved bytes that must be zero, the
+header's own hash) and typed sections (process, thread, service, tier
+map), each length checked against the half before it is used and the
+padding and flags checked zero; an unknown version or kind is refused.
+The hashes are XXH32 (checked against xxHash's published vectors): no
+1 KiB table as CRC-32's, a word at a time with the multiplier; the body's
+is seeded with the sequence number, so an old body under a newer header
+fails. The 256 KiB reserve is two halves: `commit` writes into the half
+not holding the newest good record, clears its magic first and writes it
+last, so a reset at any byte (the tests replay every prefix of a commit)
+leaves the previous record the newest good one; a build that runs out of
+room leaves its half empty. Host tests 9, seven mutants caught.
+`emu-kernel` commits, fails a build, refuses a flipped bit and reads the
+sections back on the ARM target. Kept non-generic (`commit` takes a
+trait object): ~2.6 KB of code in the kernel; the kernel's load budget
+went 112 -> 124 KiB for G1-G3 under the standing rule (115,584 B).
+**For G5:** the kernel cleans the record's cache lines to RAM before it
+writes the magic and again after, or a watchdog reset with RAM kept could
+leave the magic in RAM ahead of the body (the D-cache is write-back); the
+reserve's place (outside every slot) comes with G4's layout.
 
 ### G4. The large-allocation region (R363) and 1 MiB sections
 

@@ -1,0 +1,11 @@
+[package]
+name = "rp-kernel-gamemode"
+description = "Game Mode's return record (design B, G3): a versioned, checksummed, bounds-checked record in a 256 KiB reserve, kept A/B so a reset part way through a write leaves the last good one"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

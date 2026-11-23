@@ -1145,6 +1145,7 @@ mod image {
         ok &= report(&mut uart, "freeze", pass, n);
         let _ = writeln!(uart, "BENCH vm_freeze_process {freeze_ticks} {n}");
         let _ = writeln!(uart, "BENCH vm_thaw_page {thaw_ticks} {RECLAIM_PAGES}");
+        ok &= return_record(&mut uart);
 
         // Many regions (ADR-0019): far more than the old fixed table's 64,
         // in kernel pages that follow use. 300 one-page reservations with
@@ -2477,6 +2478,55 @@ mod image {
             FaultError::Io => 4,
             FaultError::Map(_) => 5,
         }
+    }
+
+    /// Game Mode G3 on the target: the return record's A/B commit in a
+    /// small reserve on the stack (the real one is 256 KiB, placed with
+    /// G4's layout work): two records, a build that fails (the older stays
+    /// newest), a flipped bit refused, sections read back; and XXH32 timed
+    /// over 64 KiB.
+    fn return_record(uart: &mut PxaUart<Mmio>) -> bool {
+        use rp_kernel_gamemode::{Kind, Record, commit, newest, xxh32};
+        let mut reserve = [0u8; 2048];
+        let one = commit(&mut reserve, &mut |w| w.section(Kind::Process, &[5; 12]));
+        let two = commit(&mut reserve, &mut |w| {
+            w.section_with(Kind::Thread, 68, |p| p.fill(7))?;
+            w.section_with(Kind::TierMap, 30, |p| p.fill(9))
+        });
+        let failed = commit(&mut reserve, &mut |w| {
+            w.section_with(Kind::Service, 2048, |_| {})
+        });
+        let read = newest(&reserve).map(|(h, r)| {
+            let mut sum = 0u32;
+            for (k, p) in r.sections() {
+                sum += k as u32 * 1000 + p.iter().map(|&b| u32::from(b)).sum::<u32>();
+            }
+            (h, r.seq(), r.len(), sum)
+        });
+        reserve[1024 + 40] ^= 4;
+        let damaged = Record::parse(&reserve[1024..]).is_err();
+        let t0 = rt::ticks();
+        let mut h = 0;
+        for k in 0..32u32 {
+            h ^= xxh32(&reserve, k);
+        }
+        let t = rt::ticks().wrapping_sub(t0);
+        // Thread 2000 + 7 * 68, tier map 4000 + 9 * 30.
+        let want = Some((1, 2, 2, 2000 + 476 + 4000 + 270));
+        let pass = one.map(|r| r.0) == Ok(1)
+            && two.map(|r| r.0) == Ok(2)
+            && failed.is_err()
+            && read == want
+            && damaged
+            && h != 0;
+        let _ = writeln!(
+            uart,
+            "GAMEMODE return record {}: seq 1, 2 committed, a failed build left record 2 newest, a flipped bit refused; XXH32 64 KiB in {} us",
+            if pass { "OK" } else { "FAIL" },
+            t * 4 / 13
+        );
+        let _ = writeln!(uart, "BENCH gm_xxh32_64k {t} 65536");
+        pass
     }
 
     fn report(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {

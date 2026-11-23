@@ -40,6 +40,7 @@ members = [
     "kernel/lz4",
     "kernel/inflate",
     "kernel/sched",
+    "kernel/gamemode",
     "kernel/fat",
     "kernel/crypto",
     "kernel/ipc",

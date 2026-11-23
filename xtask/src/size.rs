@@ -163,7 +163,15 @@ pub const BUDGETS: &[Budget] = &[
         // log's writer, ~4 KB), the crash path and the fault's word and SPSR;
         // the kernel never takes the display, so no crash box. Measured
         // 100.9 KiB + ~10%.
-        max_load: 112 * 1024,
+        // Raised 112 -> 124 KiB on 2026-11-23 under the standing rule (a
+        // planned kernel subsystem: Game Mode, design B, steps G1-G3, each
+        // under 8 KB): `Vm::freeze` and its check, the scheduler's
+        // freeze/thaw and its live check, and the return record (A/B commit,
+        // checks, XXH32: ~2.6 KB of code, kept non-generic so each caller
+        // costs a call, not a copy) with its check. 115,584 B measured
+        // (104,236 before G1; the stack guard of item 5 is in between).
+        // Measured 112.9 KiB + ~10%.
+        max_load: 124 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame

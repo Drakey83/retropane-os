@@ -11,3 +11,6 @@ Scheduler, CE5-style slot memory model with FCSE (ADR-0003), IPC, syscalls, PE l
   index in turn). The seed of the OS's file system support.
 - `pe/`: PE/COFF images for the loader: the image view and per-page
   relocation (ADR-0009).
+- `gamemode/`: Game Mode's return record (docs/design/game-mode-build.md
+  G3): a versioned, checksummed, bounds-checked record kept A/B in a
+  256 KiB reserve, so a reset mid-write leaves the last good one.

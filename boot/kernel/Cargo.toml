@@ -15,6 +15,7 @@ rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-kernel-mm = { path = "../../kernel/mm" }
 rp-kernel-ipc = { path = "../../kernel/ipc" }
 rp-kernel-sched = { path = "../../kernel/sched" }
+rp-kernel-gamemode = { path = "../../kernel/gamemode" }
 rp-kernel-pe = { path = "../../kernel/pe" }
 rp-kernel-trace = { path = "../../kernel/trace" }
 rp-hal-mem = { path = "../../hal/mem" }

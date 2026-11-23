@@ -675,12 +675,17 @@ dependencies = [
  "rp-hal-user",
  "rp-hal-x51v",
  "rp-image",
+ "rp-kernel-gamemode",
  "rp-kernel-ipc",
  "rp-kernel-mm",
  "rp-kernel-pe",
  "rp-kernel-sched",
  "rp-kernel-trace",
 ]
+
+[[package]]
+name = "rp-kernel-gamemode"
+version = "0.0.0"
 
 [[package]]
 name = "rp-kernel-ipc"
