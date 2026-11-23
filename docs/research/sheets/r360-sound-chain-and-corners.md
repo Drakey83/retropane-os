@@ -218,3 +218,26 @@ mono resampled (Half-Life's 11,025 Hz sounds into the 22,050 Hz mix).
 
 **R360 since run 342a (17,404 ms):** steps 5 to 7 together 17,272 ms,
 132 ms (0.26 ms a frame) faster, every picture and sample the same.
+
+## Step 8: the weapon data copied into its prediction slot only when it changed (built, measured, taken out)
+
+| | What it does |
+|---|---|
+| Xash / GoldSrc | `CL_PredictMovement` copies the last frame's 5.6 KB of weapon data into its prediction slot every rendered frame, though packets come at the server's 20 Hz tick |
+| Tried | each slot tagged with the generation and parse it was copied from (the generation moved by `CL_ParseClientData` and `CL_ClearState`, a slot forgotten when prediction writes it): the copy skipped when the slot still holds it; `-rpwdcopy` the old way, `-rpwdcheck` |
+| Proof | the X51v (run 349c): 461 of 769 copies skipped, 0 differed |
+
+**Runs 348a-c and 349a-d (2026-11-23):** new 17,290 / 17,283 / 17,279 ms,
+`-rpwdcopy` 17,304 / 17,299: ~16 ms faster than its own switch in both
+kits, but **not faster than the build before it** (step 7, runs 347a/e:
+17,272 / 17,275): the whole kit moved ~25 ms, old way included, more than
+one branch a frame can cost (the code's layout). By the rule step 3 left
+(a lever is judged against the build before it), **taken out**; worth
+retrying only inside a batch with another lever, where a layout shift
+shows as both moving.
+
+The test runs from run 349 play at 5% of full volume (the owner,
+2026-11-23): `-rpvol` sets the codec's hardware level, applied after
+every sample is computed. Runs 348a/b (full) against 349a/b (level 5),
+the same code: 17,290 / 17,283 and 17,304 / 17,299 ms, the mixer's
+cycles the same (135 the chain, 47 adding): the level changes no reading.
