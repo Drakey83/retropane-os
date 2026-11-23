@@ -91,7 +91,7 @@ What the numbers mean:
 ## The build order
 
 Each step: its rule 0 sheet, then an emulator test, then the device (when
-K1 lets it). G1 to G4 are built; the rest in this order.
+K1 lets it). G1 to G4 are built, G6's protocol and G8's tier logic too (2026-11-23); the rest in this order.
 
 ### G1. Freeze a process's memory (built 2026-11-22)
 
@@ -255,6 +255,28 @@ X51v (R366, a WM step for the owner's go). Waits on K2 for the real hosts;
 the protocol and the watchdog are built and tested against stand-in hosts
 in the emulator first.
 
+**As built (protocol, 2026-11-23):** `services/mode` (`rp-mode`, pure
+logic, host tests against stand-ins). Rule 0: Windows Mobile's GAPI
+(`GXOpenDisplay`, `GXOpenInput`) gives a game the frame buffer and the
+hardware keys with no revoke, so a crashed game leaves them as it left
+them; Android's ANR fires only when input waits 5 s unanswered, so a game
+spinning with nothing pressed is never caught; consoles reserve a system
+button. Ours: a grant is a token of the game's slot and a generation
+that only grows (never 0), so a call made under an old grant is refused
+by a host that knows nothing of modes, and each host resets its device on
+revoke; the game's first thread is held until the grants are out; the
+watchdog runs on frames presented and system calls (a hang is caught
+whether or not anyone presses a key), asks "Game not responding" once,
+and a frame while it is up takes the question away; a game may set its
+own deadline for a long load, clamped to 1-60 s; the millisecond clock
+may wrap. Quit, crash, hang (close chosen) and the way back take one exit:
+grants revoked in reverse (devices reset), the slot ended, the last frame
+shown, the session thawed, the services resumed. A thaw that fails is
+tried twice, then again each tick with the record kept, so the session is
+never dropped; a way in that fails part way undoes its steps in reverse.
+Host tests 8, 17 mutants caught (the 18th tested a check that can't fail in a game; the check went). **Still open:** the stand-ins become the real hosts with K2; the
+service as a process in the emulator then; hold Power 3 s after R366.
+
 ### G7. Half-Life's runner as Game Mode's one program
 
 The runner (ADR-0039) started by the kernel into the large region, its
@@ -272,6 +294,36 @@ page-sized writes slower still), read back by DMA on the way out. The file
 is made and written once at install, so every switch is the warm case. Rule 0: Linux's swap writes clusters of pages as reclaim finds them;
 CE has no swap; ours writes only compressed bytes, in the card's fastest
 size, once, at a moment when nothing else uses the card.
+
+**As built (tier logic, 2026-11-23):** `rp-kernel-gamemode::tier`
+(`TierMap::swap_out` / `swap_in`, a `Card` trait for the swap file) on
+`rp-kernel-mm`'s new pieces: the compressed store keeps its frames in a
+`FrameSet` (one bit a frame, 2 KiB for 64 MiB), `ZPool::detach` and
+`attach` park it and take it back, `Frames::take` claims one chosen free
+frame, `PageTables::rewrite_stored` and `Vm::rehome` point handles at a
+frame that moved. What goes out is the store's own frames as they are
+(already packed by size class, under 64 bytes wasted a page): no second
+packing pass and no staging buffer, each run of 256 frames one 1 MiB
+gather by DMA straight from them. The map is the set itself: a frame's
+place in the file is its rank, so the record holds no entry a page (the
+design's 8 B a page and the plan's ~2 B are both beaten: 2 KiB at most,
+plus the list heads and a hash a run, ~2.4 KiB in all, one record
+section). Coming back, each frame returns to the frame it left, so no
+handle in any page table changes; a frame a kernel allocation kept
+meanwhile comes back elsewhere (at most 64; more is refused before
+anything changes) and is rehomed. Each run carries an XXH32 chained over
+its frames, seeded with its number (a run read from the wrong place
+fails); a run that fails is read once more, then the return is refused
+with every frame given back and the map still out, so it can be tried
+again (G6's tick does). A card that fails going out frees nothing.
+Host tests 9 in the tier and 4 in `rp-kernel-mm`, 20 mutants caught (two that tested code that can't change the outcome went with that code). `emu-kernel`'s `GAMEMODE
+full tier` runs it on the ARM target between the freeze and the thaw: the
+store's frames out to RAM frames standing in for the card, every free
+frame written over (the game), one store frame kept, the store back with
+that frame moved and its handles rehomed, then the freeze's thaw reads
+every page back. **Still open:** the swap file itself (made at install,
+its blocks found at boot) and the SD card's gather/scatter DMA behind
+`Card`, then the device run.
 
 ### G9. Full Mode's profile: suspend and resume
 

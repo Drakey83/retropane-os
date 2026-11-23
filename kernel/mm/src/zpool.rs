@@ -105,6 +105,204 @@ impl Handle {
     }
 }
 
+/// A set of frame numbers: one bit a frame, 2 KiB for all 64 MiB. The
+/// compressed store keeps the frames it holds in one, and Game Mode's full
+/// tier writes them to the card in this order and keeps the set as its page
+/// map: a frame's place in the swap file is its rank in the set, so no
+/// per-page table is stored at all (Linux's swap keeps a map entry a page).
+#[derive(Clone, PartialEq, Eq)]
+pub struct FrameSet {
+    words: [u32; MAX_FRAMES / 32],
+}
+
+impl Default for FrameSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameSet {
+    /// Words in the set.
+    pub const WORDS: usize = MAX_FRAMES / 32;
+
+    /// An empty set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            words: [0; MAX_FRAMES / 32],
+        }
+    }
+
+    /// Adds frame `f`.
+    pub fn insert(&mut self, f: usize) {
+        self.words[f / 32] |= 1 << (f % 32);
+    }
+
+    /// Removes frame `f`.
+    pub fn remove(&mut self, f: usize) {
+        self.words[f / 32] &= !(1 << (f % 32));
+    }
+
+    /// Whether frame `f` is in the set.
+    #[must_use]
+    pub fn contains(&self, f: usize) -> bool {
+        f < MAX_FRAMES && self.words[f / 32] & 1 << (f % 32) != 0
+    }
+
+    /// Frames in the set.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.words.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// Whether the set is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.words.iter().all(|&w| w == 0)
+    }
+
+    /// The frames, lowest first.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.words.iter().enumerate().flat_map(|(i, &w)| {
+            let mut w = w;
+            core::iter::from_fn(move || {
+                (w != 0).then(|| {
+                    let b = w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    i * 32 + b
+                })
+            })
+        })
+    }
+
+    /// The raw words (for a record).
+    #[must_use]
+    pub fn words(&self) -> &[u32; MAX_FRAMES / 32] {
+        &self.words
+    }
+
+    /// The raw words, to fill from a record.
+    pub fn words_mut(&mut self) -> &mut [u32; MAX_FRAMES / 32] {
+        &mut self.words
+    }
+
+    /// Empties the set.
+    pub fn clear(&mut self) {
+        self.words.fill(0);
+    }
+}
+
+/// The compressed store's state while Game Mode's full tier holds its frames
+/// on the card ([`ZPool::detach`]): its list heads, counts and frames.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Parked {
+    /// Per class: first frame (+1) with a free slot.
+    pub partial: [u16; CLASSES + 1],
+    /// Frames, objects and bytes held.
+    pub counts: [u32; 3],
+    /// The frames themselves.
+    pub set: FrameSet,
+}
+
+impl Default for Parked {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Parked {
+    /// Nothing parked.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            partial: [0; CLASSES + 1],
+            counts: [0; 3],
+            set: FrameSet::new(),
+        }
+    }
+}
+
+/// Most frames that may come back somewhere other than where they left
+/// ([`ZPool::attach`]): the kernel gives back every frame the game held
+/// before the store comes back, so normally none move; a handful that a
+/// long-lived kernel allocation took during the game are moved, more is
+/// refused before anything changes.
+pub const MAX_MOVES: usize = 64;
+
+/// Frames that came back somewhere else: old frame to new.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub struct Moves {
+    n: usize,
+    pairs: [(u16, u16); MAX_MOVES],
+}
+
+impl Default for Moves {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Moves {
+    /// No moves.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            n: 0,
+            pairs: [(0, 0); MAX_MOVES],
+        }
+    }
+
+    /// Records that frame `old` now lives at `new`; false if full.
+    pub fn push(&mut self, old: usize, new: usize) -> bool {
+        if self.n == MAX_MOVES {
+            return false;
+        }
+        self.pairs[self.n] = (old as u16, new as u16);
+        self.n += 1;
+        true
+    }
+
+    /// Where frame `old` went, if it moved.
+    #[must_use]
+    pub fn get(&self, old: usize) -> Option<usize> {
+        self.pairs[..self.n]
+            .iter()
+            .find(|p| usize::from(p.0) == old)
+            .map(|p| usize::from(p.1))
+    }
+
+    /// Where frame `f` is now: moved or not.
+    #[must_use]
+    pub fn map(&self, f: usize) -> usize {
+        self.get(f).unwrap_or(f)
+    }
+
+    /// How many moved.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// Whether none moved.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Maps a compressed handle's raw value through the moves (`None` if
+    /// its frame didn't move, or it isn't a compressed copy's handle).
+    #[must_use]
+    pub fn rehome(&self, raw: u32) -> Option<u32> {
+        let h = Handle::from_raw(raw);
+        if h.class() == 0 || h.class() > CLASSES {
+            return None;
+        }
+        let new = self.get(h.frame())?;
+        Some(Handle::new(new, h.class(), h.slot()).raw())
+    }
+}
+
 /// Why an object wasn't stored.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(Debug))]
@@ -113,6 +311,18 @@ pub enum ZError {
     TooBig,
     /// No frame available.
     NoMemory,
+}
+
+/// Why [`ZPool::attach`] refused (nothing changed).
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub enum AttachError {
+    /// The store holds objects: the game's pages must go first.
+    Busy,
+    /// A list in the parked frames doesn't hold together: a link to a
+    /// frame not parked, a frame of another class, or more links than
+    /// frames (a loop).
+    Broken,
 }
 
 /// Slot size for `class` (1-based).
@@ -164,6 +374,8 @@ pub struct ZPool {
     frames: usize,
     objects: usize,
     bytes: usize,
+    /// The frames held.
+    owned: FrameSet,
 }
 
 impl Default for ZPool {
@@ -181,7 +393,90 @@ impl ZPool {
             frames: 0,
             objects: 0,
             bytes: 0,
+            owned: FrameSet::new(),
         }
+    }
+
+    /// The frames the store holds.
+    #[must_use]
+    pub fn frame_set(&self) -> &FrameSet {
+        &self.owned
+    }
+
+    /// Moves everything stored into `into` and leaves the store empty, its
+    /// frames still allocated and untouched: Game Mode's full tier has
+    /// written them to the card and frees them next, and a game's own
+    /// compressed pages start a fresh store meanwhile.
+    pub fn detach(&mut self, into: &mut Parked) {
+        into.partial = self.partial;
+        into.counts = [self.frames as u32, self.objects as u32, self.bytes as u32];
+        into.set.clone_from(&self.owned);
+        self.partial = [0; CLASSES + 1];
+        self.frames = 0;
+        self.objects = 0;
+        self.bytes = 0;
+        self.owned.clear();
+    }
+
+    /// Takes a parked store back once its frames hold their bytes again
+    /// (read back from the card), at the frames they left except those in
+    /// `moves`: list heads and links are pointed at the new frames (the
+    /// page tables' handles are the VM's to rehome). Refused while the store
+    /// holds anything (the game's pages go first), and if a list in the
+    /// frames doesn't hold together: every link is checked before any is
+    /// changed, so frames read back wrong can't send the kernel round a
+    /// loop or into a frame that isn't the store's.
+    pub fn attach(
+        &mut self,
+        mem: &mut impl Pages,
+        from: &Parked,
+        moves: &Moves,
+    ) -> Result<(), AttachError> {
+        if self.objects != 0 || self.frames != 0 {
+            return Err(AttachError::Busy);
+        }
+        let mut steps = 0u32;
+        for class in 1..=CLASSES {
+            let mut old = from.partial[class];
+            while old != 0 {
+                let f = usize::from(old) - 1;
+                steps += 1;
+                if !from.set.contains(f) || steps > from.counts[0] {
+                    return Err(AttachError::Broken);
+                }
+                let h = Header(mem.page(moves.map(f)));
+                if h.class() != class {
+                    return Err(AttachError::Broken);
+                }
+                old = h.next();
+            }
+        }
+        let link = |v: u16| -> u16 {
+            if v == 0 {
+                0
+            } else {
+                moves.map(usize::from(v) - 1) as u16 + 1
+            }
+        };
+        for class in 1..=CLASSES {
+            let head = link(from.partial[class]);
+            self.partial[class] = head;
+            let mut f = head;
+            while f != 0 {
+                let mut h = Header(mem.page(usize::from(f) - 1));
+                let (next, prev) = (link(h.next()), link(h.prev()));
+                h.set_link(2, next);
+                h.set_link(4, prev);
+                f = next;
+            }
+        }
+        self.frames = from.counts[0] as usize;
+        self.objects = from.counts[1] as usize;
+        self.bytes = from.counts[2] as usize;
+        for f in from.set.iter() {
+            self.owned.insert(moves.map(f));
+        }
+        Ok(())
     }
 
     /// Frames in use, objects stored, and their total bytes.
@@ -210,6 +505,7 @@ impl ZPool {
                 h.0[0] = class as u8;
                 self.link_partial(mem, f, class);
                 self.frames += 1;
+                self.owned.insert(f);
                 f
             }
             head => usize::from(head) - 1,
@@ -261,6 +557,7 @@ impl ZPool {
             self.unlink_partial(mem, f, class);
             frames.free(f);
             self.frames -= 1;
+            self.owned.remove(f);
         }
     }
 
@@ -312,6 +609,109 @@ mod tests {
         let mut fr = Frames::<256>::new();
         fr.add_range(0, 256).unwrap();
         (ZPool::new(), fr, Mem::default())
+    }
+
+    #[test]
+    fn the_store_keeps_its_frames_in_a_set_lowest_first() {
+        let (mut z, mut fr, mut mem) = setup();
+        assert!(z.frame_set().is_empty());
+        let a = z.store(&mut fr, &mut mem, &[7; 100]).unwrap();
+        let b = z.store(&mut fr, &mut mem, &[8; 3000]).unwrap();
+        let c = z.store(&mut fr, &mut mem, &[9; 3000]).unwrap();
+        let mut want = vec![a.frame(), b.frame(), c.frame()];
+        want.sort_unstable();
+        assert_eq!(z.frame_set().iter().collect::<Vec<_>>(), want);
+        assert_eq!(z.frame_set().len(), 3);
+        z.free(&mut fr, &mut mem, b);
+        assert!(!z.frame_set().contains(b.frame()));
+        assert_eq!(z.frame_set().len(), 2);
+        // Set edges: bit 31 and 32 of neighbouring words, the last frame.
+        let mut s = FrameSet::new();
+        for f in [0, 31, 32, MAX_FRAMES - 1] {
+            s.insert(f);
+        }
+        assert_eq!(s.iter().collect::<Vec<_>>(), [0, 31, 32, MAX_FRAMES - 1]);
+        assert!(!s.contains(MAX_FRAMES) && !s.contains(1));
+        s.remove(31);
+        assert_eq!(s.len(), 3);
+        s.clear();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn detach_empties_the_store_and_moves_map_handles() {
+        let (mut z, mut fr, mut mem) = setup();
+        let h = z.store(&mut fr, &mut mem, &[5; 200]).unwrap();
+        let mut p = Parked::new();
+        z.detach(&mut p);
+        assert_eq!(z.stats(), (0, 0, 0));
+        assert_eq!(p.counts, [1, 1, 200]);
+        assert!(p.set.contains(h.frame()));
+        assert_eq!(p.partial[h.class()], h.frame() as u16 + 1);
+        // A fresh store meanwhile starts from nothing.
+        let g = z.store(&mut fr, &mut mem, &[6; 200]).unwrap();
+        assert_ne!(g.frame(), h.frame());
+        let mut m = Moves::new();
+        assert_eq!(m.rehome(h.raw()), None);
+        assert!(m.push(h.frame(), 99));
+        let r = Handle::from_raw(m.rehome(h.raw()).unwrap());
+        assert_eq!((r.frame(), r.class(), r.slot()), (99, h.class(), h.slot()));
+        assert_eq!((m.map(h.frame()), m.map(3), m.len()), (99, 3, 1));
+        // Class 0 and the aged class aren't handles.
+        assert_eq!(m.rehome(Handle::new(h.frame(), 0, 1).raw()), None);
+        assert_eq!(m.rehome(Handle::new(h.frame(), 0xFF, 0).raw()), None);
+        for i in 1..MAX_MOVES {
+            assert!(m.push(i + 1000, i));
+        }
+        assert!(!m.push(5000, 1), "full");
+    }
+
+    #[test]
+    fn a_parked_list_that_does_not_hold_together_is_refused() {
+        let (mut z, mut fr, mut mem) = setup();
+        // Two partial frames of one class (two slots a frame): a list of
+        // two.
+        let x = z.store(&mut fr, &mut mem, &[1; 1400]).unwrap();
+        let a = z.store(&mut fr, &mut mem, &[2; 1400]).unwrap();
+        let b = z.store(&mut fr, &mut mem, &[3; 1400]).unwrap();
+        assert_eq!(slots(a.class()), 2);
+        assert_ne!(a.frame(), b.frame());
+        z.free(&mut fr, &mut mem, x);
+        let mut p = Parked::new();
+        z.detach(&mut p);
+        let none = Moves::new();
+        let (fa, fb) = (a.frame(), b.frame());
+        let class = a.class();
+        let head = usize::from(p.partial[class]) - 1;
+        let saved: [u8; 16] = mem.page(head)[..16].try_into().unwrap();
+        // A loop (the head's next pointing at itself), a link off the
+        // parked frames, a frame of another class: each refused, nothing
+        // taken.
+        for bad in 0..3 {
+            mem.page(head)[..16].copy_from_slice(&saved);
+            let mut h = Header(mem.page(head));
+            match bad {
+                0 => h.set_link(2, head as u16 + 1),
+                // Frame 200 looks like one of the list (the head's header)
+                // but was never parked.
+                1 => {
+                    h.set_link(2, 201);
+                    mem.page(200)[..16].copy_from_slice(&saved);
+                    Header(mem.page(200)).set_link(2, 0);
+                }
+                _ => h.0[0] = class as u8 + 1,
+            }
+            assert_eq!(
+                z.attach(&mut mem, &p, &none),
+                Err(AttachError::Broken),
+                "case {bad}"
+            );
+            assert_eq!(z.stats(), (0, 0, 0));
+            assert!(z.frame_set().is_empty());
+        }
+        mem.page(head)[..16].copy_from_slice(&saved);
+        z.attach(&mut mem, &p, &none).unwrap();
+        assert!(z.frame_set().contains(fa) && z.frame_set().contains(fb));
     }
 
     #[test]

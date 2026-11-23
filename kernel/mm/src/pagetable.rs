@@ -639,6 +639,29 @@ impl PageTables {
         }
     }
 
+    /// Rewrites the payload of every stored entry in `mva..mva + len` that
+    /// `f` maps to a new one (Game Mode's full tier: a compressed copy's
+    /// frame came back elsewhere), returning how many changed. No TLB
+    /// maintenance: a fault entry is never cached.
+    pub fn rewrite_stored(
+        &mut self,
+        mem: &mut impl PhysMem,
+        mva: u32,
+        len: u32,
+        mut f: impl FnMut(u32) -> Option<u32>,
+    ) -> u32 {
+        let mut n = 0;
+        self.for_each_entry(mem, mva, len, |t, i, _| {
+            if let L2::Stored(p) = arm::l2_decode(t[i])
+                && let Some(q) = f(p)
+            {
+                t[i] = arm::l2_stored(q);
+                n += 1;
+            }
+        });
+        n
+    }
+
     /// Maps `phys` at `mva` in place of its stored entry (the page came
     /// back). No TLB maintenance: a fault entry is never cached.
     pub fn restore(

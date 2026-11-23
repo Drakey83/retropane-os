@@ -35,7 +35,7 @@ use crate::arm::{Ap, Attrs, Cache};
 use crate::layout;
 use crate::pagetable::{FrameAlloc, MapError, Mmu, PageTables, PhysMem};
 use crate::regions::{RegionList, RegionPages};
-use crate::zpool::{Handle, Pages, ZBuffers, ZPool};
+use crate::zpool::{Handle, Moves, Pages, ZBuffers, ZPool};
 
 const PAGE: u32 = 4096;
 
@@ -1097,6 +1097,28 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
             }
         }
         Ok(done)
+    }
+
+    /// After Game Mode's full tier brought the compressed store back with
+    /// some frames somewhere else (`moves`, [`ZPool::attach`]), points every
+    /// compressed handle in `space` that named a moved frame at its new one;
+    /// how many changed. Aged pages' entries name resident frames, never the
+    /// store's, and are left alone. Walks only the megabytes that have
+    /// tables.
+    pub fn rehome(&mut self, space: &AddressSpace, moves: &Moves) -> u32 {
+        if moves.is_empty() {
+            return 0;
+        }
+        let mut n = 0;
+        for i in 0..space.region_count() {
+            let r = space.list.get(&mut self.region_pages(), i);
+            // An aged page's payload (class 0xFF) is no handle: `rehome`
+            // leaves it.
+            n += self
+                .tables
+                .rewrite_stored(self.mem, r.start, r.len, |raw| moves.rehome(raw));
+        }
+        n
     }
 
     /// Game Mode's freeze, fast tier (design B step 5, docs/design/game-mode-b.md;
@@ -2799,6 +2821,69 @@ mod tests {
         w.vm().unmap(&mut s, a, 0x6000).unwrap();
         assert_eq!(w.zpool.stats(), (0, 0, 0));
         assert_eq!(w.frames.free_frames(), 512);
+    }
+
+    /// Game Mode G8: the store goes to the card and comes back with its frame
+    /// somewhere else (a kernel allocation took it meanwhile); the store's
+    /// links and every handle in the page tables follow it.
+    #[test]
+    fn a_store_frame_that_comes_back_elsewhere_is_rehomed() {
+        use crate::zpool::{Moves, Parked};
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(&mut w.rp(), zero(a, 0x3000, Prot::RW)).unwrap();
+        resident(&mut w, &s, a, 3);
+        w.vm().freeze(&s, true).unwrap();
+        let set = w.zpool.frame_set().clone();
+        assert_eq!(set.len(), 1, "three small copies share a frame");
+        let old = set.iter().next().unwrap();
+        let mut parked = Parked::new();
+        w.zpool.detach(&mut parked);
+        assert_eq!(w.zpool.stats(), (0, 0, 0));
+        assert!(w.zpool.frame_set().is_empty());
+        // Out to the card: copied aside, the frame freed, then taken by
+        // someone else; it comes back to another frame.
+        let bytes = *ZPages(&mut w.ram).page(old);
+        w.frames.free(old).unwrap();
+        assert!(w.frames.take(old));
+        let new = w.frames.alloc(0).unwrap();
+        ZPages(&mut w.ram).page(new).copy_from_slice(&bytes);
+        let mut moves = Moves::new();
+        assert!(moves.push(old, new));
+        // Nothing to rehome without moves; with them, all three handles.
+        assert_eq!(w.vm().rehome(&s, &Moves::new()), 0);
+        w.zpool
+            .attach(&mut ZPages(&mut w.ram), &parked, &moves)
+            .unwrap();
+        assert!(w.zpool.frame_set().contains(new) && !w.zpool.frame_set().contains(old));
+        assert_eq!(w.vm().rehome(&s, &moves), 3);
+        // An aged page's payload names a resident frame, never the store's.
+        assert_eq!(moves.rehome(aged(old)), None);
+        assert_eq!(w.vm().rehome(&s, &moves), 0, "already pointing there");
+        for k in 0..3 {
+            assert_eq!(
+                w.vm().handle_fault(&s, a + k * 0x1000, Access::Read),
+                Ok(Outcome::Restored)
+            );
+            let (phys, _) = w.tables.translate(&mut w.ram, a + k * 0x1000).unwrap();
+            assert_eq!(w.ram.page(phys)[3], 0xA6E0_0000 + k);
+        }
+        // The store's own lists hold: the frame was freed when its last copy
+        // went, and the store is empty.
+        assert_eq!(w.zpool.stats(), (0, 0, 0));
+        assert!(w.frames.is_free(new));
+        w.vm().unmap(&mut s, a, 0x3000).unwrap();
+        w.frames.free(old).unwrap();
+        assert_eq!(w.frames.free_frames(), 512);
+        // A store holding anything refuses a parked one.
+        let mut busy = ZPool::new();
+        busy.store(&mut w.frames, &mut ZPages(&mut w.ram), &[1, 2, 3])
+            .unwrap();
+        assert_eq!(
+            busy.attach(&mut ZPages(&mut w.ram), &parked, &moves),
+            Err(crate::zpool::AttachError::Busy)
+        );
     }
 
     #[test]

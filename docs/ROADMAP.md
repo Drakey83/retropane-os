@@ -378,9 +378,9 @@ is measured yet; no frame rate is promised before the evaluation.
   - [x] G3. The return record (`kernel/gamemode`: a versioned record of typed sections, every length checked before use, XXH32 over the header and over the body seeded with its number, A/B halves of the 256 KiB reserve so a reset at any byte of a write leaves the last good one), host tests and `emu-kernel`'s `GAMEMODE return record` *(2026-11-23; its place in memory comes with G4)*
   - [x] G4. The large-allocation region in the kernel's address map, `0x78000000..0x80000000` (128 MiB, R363; `layout::LARGE_BASE`, `AddressSpace::large`), a port's big blocks mapped by `Vm::map_sections` as zeroed 1 MiB sections where RAM has a free megabyte, demand pages where not; host tests and `emu-kernel`'s `GAMEMODE large region` *(2026-11-23: 4 MiB as 4 sections, no fault; the frame-time gain is measured on the X51v with K1, R270)*
   - [ ] G5. The kernel on the X51v (K1): `rp-kernel` as a test image under the loader, its steps and `BENCH` lines (the freeze and thaw's) from the run log *(device run: the owner's go)*
-  - [ ] G6. Exclusivity grants (display, input, audio) and the mode manager (switch, 5 s watchdog, one way out); hold Power 3 s after the WM check (R366)
+  - [ ] G6. Exclusivity grants (display, input, audio) and the mode manager (switch, 5 s watchdog, one way out); hold Power 3 s after the WM check (R366) *(2026-11-23: the protocol built, `services/mode`, host-tested against stand-in hosts; the real hosts wait on K2)*
   - [ ] G7. Half-Life's runner as Game Mode's one program under the kernel, measured against the bare test image (R270)
-  - [ ] G8. The full tier: a preallocated swap file, compressed pages written in 1 MiB DMA runs (R364's write measurement first)
+  - [ ] G8. The full tier: a preallocated swap file, compressed pages written in 1 MiB DMA runs (R364's write measurement first) *(2026-11-23: the tier logic built: the store's own frames out in 1 MiB runs, a 2 KiB map, frames back where they were; host tests and `emu-kernel`'s `GAMEMODE full tier`; the swap file and the card's DMA behind `Card` to come)*
   - [ ] G9. Full Mode's services' `suspend`/`resume`, the snapshot return (R153) (waits on K2)
   - [ ] G10. Design B's test table on the X51v
 

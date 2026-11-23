@@ -13,4 +13,6 @@ Scheduler, CE5-style slot memory model with FCSE (ADR-0003), IPC, syscalls, PE l
   relocation (ADR-0009).
 - `gamemode/`: Game Mode's return record (docs/design/game-mode-build.md
   G3): a versioned, checksummed, bounds-checked record kept A/B in a
-  256 KiB reserve, so a reset mid-write leaves the last good one.
+  256 KiB reserve, so a reset mid-write leaves the last good one; and
+  the full tier (G8, `tier`): the compressed store's frames written to
+  the card in 1 MiB runs and read back to the frames they left.

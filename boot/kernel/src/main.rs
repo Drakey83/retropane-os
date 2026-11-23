@@ -80,6 +80,7 @@ mod image {
     use rp_hal_user::{SYS_IRQ_WAIT, SYS_REPORT};
     use rp_hal_x51v::devices::take_trace_area;
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
+    use rp_kernel_gamemode::tier::{Card, CardError, RUN_FRAMES, TierMap};
     use rp_kernel_ipc::{Error as IpcError, Handle, HandlePages, Ipc, PortId, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
     use rp_kernel_mm::domains::{self, Domains};
@@ -90,7 +91,7 @@ mod image {
     use rp_kernel_mm::space::{
         AddressSpace, Backing, IoError, Outcome, PageCache, Prot, Region, Vm, access_for,
     };
-    use rp_kernel_mm::zpool::{ZBuffers, ZPool};
+    use rp_kernel_mm::zpool::{Moves, Pages, ZBuffers, ZPool};
     use rp_kernel_pe::build::{self, Header, SectionSpec};
     use rp_kernel_pe::{Dir, Image, Protection, Relocations, dir, scn};
     use rp_kernel_sched::{Eid, LOWEST, Scheduler, State as TState, Tid};
@@ -283,6 +284,8 @@ mod image {
     /// first version put a page buffer on the 4 KiB abort stack and
     /// overflowed it into the frame allocator).
     static ZBUF: Global<ZBuffers> = Global::new(ZBuffers::new());
+    /// Game Mode's full-tier map (G8): 2.4 KiB, `.bss`.
+    static TIER: Global<TierMap> = Global::new(TierMap::new());
 
     /// The IPC test's server process and what it needs.
     const SERVER_SLOT: u32 = 6;
@@ -1104,6 +1107,9 @@ mod image {
         let freeze_ticks = rt::ticks().wrapping_sub(start);
         let zgrew = ZPOOL.with(|z| z.stats().0 as u32).saturating_sub(zframes0);
         let freed = FRAMES.with(|f| f.free_frames() as u32).wrapping_sub(free0);
+        // Game Mode G8 between the freeze and the thaw: the thaw below then
+        // reads every page back through the store that went to the card.
+        ok &= full_tier(&mut uart);
         let faults0 = state().0;
         let start = rt::ticks();
         let mut intact = true;
@@ -2479,6 +2485,155 @@ mod image {
             FaultError::Io => 4,
             FaultError::Map(_) => 5,
         }
+    }
+
+    /// The compressed store's frames through the kernel's direct map.
+    struct StorePages<'a, 'm>(&'a mut Mem<'m>);
+
+    impl Pages for StorePages<'_, '_> {
+        fn page(&mut self, f: usize) -> &mut [u8; 4096] {
+            let phys = self.0.frame_phys(f);
+            self.0.kernel_page(phys)
+        }
+    }
+
+    /// Stands in for the swap file on the card (G8): one megabyte of RAM
+    /// frames, copied a run at a time. The device's card does the same by
+    /// DMA from the frames' physical addresses.
+    struct RamCard {
+        store: [u16; RUN_FRAMES],
+        len: usize,
+    }
+
+    impl RamCard {
+        fn copy<P: Pages>(mem: &mut P, from: u16, to: u16) {
+            for c in 0..16 {
+                let mut tmp = [0u8; 256];
+                tmp.copy_from_slice(&mem.page(usize::from(from))[c * 256..(c + 1) * 256]);
+                mem.page(usize::from(to))[c * 256..(c + 1) * 256].copy_from_slice(&tmp);
+            }
+        }
+    }
+
+    impl Card for RamCard {
+        fn write_run<P: Pages>(
+            &mut self,
+            mem: &mut P,
+            run: u32,
+            frames: &[u16],
+        ) -> Result<(), CardError> {
+            if run != 0 || frames.len() > self.len {
+                return Err(CardError);
+            }
+            for (k, &f) in frames.iter().enumerate() {
+                Self::copy(mem, f, self.store[k]);
+            }
+            Ok(())
+        }
+
+        fn read_run<P: Pages>(
+            &mut self,
+            mem: &mut P,
+            run: u32,
+            frames: &[u16],
+        ) -> Result<(), CardError> {
+            if run != 0 || frames.len() > self.len {
+                return Err(CardError);
+            }
+            for (k, &f) in frames.iter().enumerate() {
+                Self::copy(mem, self.store[k], f);
+            }
+            Ok(())
+        }
+    }
+
+    /// Game Mode G8 on the target: the store the freeze just filled goes
+    /// out to a card (RAM frames standing in for the swap file) and its
+    /// frames are freed; every free frame is then written over (the game)
+    /// and one of the store's frames kept (a kernel allocation made
+    /// meanwhile); the store comes back, the kept frame's copies moved and
+    /// rehomed in every space. The freeze's thaw right after reads every
+    /// page back through it.
+    fn full_tier(uart: &mut PxaUart<Mmio>) -> bool {
+        let free0 = FRAMES.with(|f| f.free_frames() as u32);
+        let (pass, zframes, moved, rehomed, out_ticks, in_ticks) = with_vm(|vm, s| {
+            let mut card = RamCard {
+                store: [0; RUN_FRAMES],
+                len: 0,
+            };
+            let zframes = vm.zpool.frame_set().len();
+            while card.len < zframes.min(RUN_FRAMES) {
+                let Some(f) = FrameAlloc::alloc(&mut *vm.frames, 0) else {
+                    break;
+                };
+                card.store[card.len] = f as u16;
+                card.len += 1;
+            }
+            let kept = vm.zpool.frame_set().iter().next();
+            let t0 = rt::ticks();
+            let out = TIER.with(|map| {
+                map.swap_out(
+                    vm.zpool,
+                    &mut *vm.frames,
+                    &mut StorePages(vm.mem),
+                    &mut card,
+                )
+            });
+            let out_ticks = rt::ticks().wrapping_sub(t0);
+            // The game: every free frame written over, linked through its
+            // first word so it can be given back.
+            let mut chain = 0u32;
+            while let Some(f) = FrameAlloc::alloc(&mut *vm.frames, 0) {
+                let mut sp = StorePages(vm.mem);
+                let p = sp.page(f);
+                p.fill(0xCC);
+                p[..4].copy_from_slice(&chain.to_le_bytes());
+                chain = f as u32 + 1;
+            }
+            while chain != 0 {
+                let f = chain as usize - 1;
+                let mut sp = StorePages(vm.mem);
+                let p = sp.page(f);
+                chain = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+                let _ = vm.frames.free(f);
+            }
+            let took = kept.is_some_and(|f| vm.frames.take(f));
+            let mut moves = Moves::new();
+            let t0 = rt::ticks();
+            let back = TIER.with(|map| {
+                map.swap_in(
+                    vm.zpool,
+                    &mut *vm.frames,
+                    &mut StorePages(vm.mem),
+                    &mut card,
+                    &mut moves,
+                )
+            });
+            let in_ticks = rt::ticks().wrapping_sub(t0);
+            let rehomed: u32 = s.procs.iter().map(|p| vm.rehome(&p.space, &moves)).sum();
+            if took && let Some(f) = kept {
+                let _ = vm.frames.free(f);
+            }
+            for &f in &card.store[..card.len] {
+                let _ = vm.frames.free(usize::from(f));
+            }
+            let pass = matches!(out, Ok(o) if o.frames as usize == zframes && o.runs == 1)
+                && matches!(back, Ok(b) if b.frames as usize == zframes && b.moved == 1)
+                && took
+                && card.len == zframes
+                && rehomed >= 1
+                && vm.zpool.frame_set().len() == zframes;
+            (pass, zframes, moves.len(), rehomed, out_ticks, in_ticks)
+        });
+        let pass = pass && FRAMES.with(|f| f.free_frames() as u32) == free0;
+        let _ = writeln!(
+            uart,
+            "GAMEMODE full tier {}: {zframes} store frames out in one run and back, every free frame written over meanwhile, {moved} kept and moved, {rehomed} handles rehomed; every frame back",
+            if pass { "OK" } else { "FAIL" }
+        );
+        let _ = writeln!(uart, "BENCH gm_tier_out {out_ticks} {zframes}");
+        let _ = writeln!(uart, "BENCH gm_tier_in {in_ticks} {zframes}");
+        pass
     }
 
     /// Game Mode G3 on the target: the return record's A/B commit in a

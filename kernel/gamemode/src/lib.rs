@@ -32,6 +32,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod tier;
+
 /// The reserve's size: 256 KiB (the owner's ceiling, design B).
 pub const RESERVE: usize = 256 * 1024;
 /// One half: the most one record may take.

@@ -686,6 +686,9 @@ dependencies = [
 [[package]]
 name = "rp-kernel-gamemode"
 version = "0.0.0"
+dependencies = [
+ "rp-kernel-mm",
+]
 
 [[package]]
 name = "rp-kernel-ipc"
@@ -875,6 +878,10 @@ dependencies = [
  "rp-hal-mock",
  "rp-vram-map",
 ]
+
+[[package]]
+name = "rp-mode"
+version = "0.0.0"
 
 [[package]]
 name = "rp-mved"

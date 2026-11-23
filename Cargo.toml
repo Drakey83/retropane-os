@@ -88,6 +88,7 @@ members = [
     "boot/threads",
     "boot/quantum",
     "services/display-host",
+    "services/mode",
     "services/graphics",
     "services/audio",
     "services/audio-s1",

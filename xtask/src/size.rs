@@ -171,7 +171,13 @@ pub const BUDGETS: &[Budget] = &[
         // costs a call, not a copy) with its check. 115,584 B measured
         // (104,236 before G1; the stack guard of item 5 is in between).
         // Measured 112.9 KiB + ~10%.
-        max_load: 124 * 1024,
+        // Raised 124 -> 136 KiB on 2026-11-23 under the standing rule (G8,
+        // +7.7 KB, under 8 KB): Game Mode's full tier (the store's frames out
+        // to the card and back, `Frames::take`, the store parked and taken
+        // back with every link checked, handles rehomed) and its emulator
+        // check with a RAM stand-in for the card. 128,984 B measured
+        // (121,328 after G4). Measured 126.0 KiB + ~8%.
+        max_load: 136 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame
@@ -182,7 +188,12 @@ pub const BUDGETS: &[Budget] = &[
         // threads, not 5 KiB), the port table without `Option`, and callers'
         // slots kept in their kernel stack frames, not an IPC table.
         // Measured 112.9 KiB + ~6%.
-        max_zero: 120 * 1024,
+        // Raised 120 -> 128 KiB on 2026-11-23 under the standing rule (G8):
+        // the compressed store's frame set (2 KiB, one bit a frame: the
+        // tier's page map, no table a page) and the tier's map while a game
+        // runs (2.4 KiB: the store parked, a hash a run). 123,844 B
+        // measured. Measured 120.9 KiB + ~6%.
+        max_zero: 128 * 1024,
         device: OnDevice::NeverReturns,
     },
     // The display+input driver host (ADR-0016, item 46): a user process

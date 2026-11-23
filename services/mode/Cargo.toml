@@ -1,0 +1,11 @@
+[package]
+name = "rp-mode"
+description = "The mode manager's protocol (Game Mode design B, G6): exclusivity grants for the display, input and audio hosts, the 5 s watchdog and the one way out, as pure logic tested against stand-in hosts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -177,6 +177,48 @@ impl<const N: usize> Frames<N> {
         Ok(())
     }
 
+    /// Takes frame `f` alone (order 0) if it is free, splitting the free
+    /// block that holds it and giving back the halves around it; false (and
+    /// nothing changed) if it isn't free. Game Mode's full tier puts the
+    /// compressed store's frames back at the frames they left (G8), so every
+    /// handle naming them stays right with nothing rewritten.
+    pub fn take(&mut self, f: usize) -> bool {
+        let Some((mut head, mut order)) = self.free_block_of(f) else {
+            return false;
+        };
+        self.unlink(head, order);
+        while order > 0 {
+            order -= 1;
+            let half = 1 << order;
+            if f >= head + half {
+                self.link(head, order);
+                head += half;
+            } else {
+                self.link(head + half, order);
+            }
+        }
+        self.tag[f] = USED;
+        self.free -= 1;
+        true
+    }
+
+    /// Whether frame `f` is free (inside a free block).
+    #[must_use]
+    pub fn is_free(&self, f: usize) -> bool {
+        self.free_block_of(f).is_some()
+    }
+
+    /// The free block holding `f`: its head and order.
+    fn free_block_of(&self, f: usize) -> Option<(usize, usize)> {
+        if f >= N {
+            return None;
+        }
+        (0..=MAX_ORDER).find_map(|order| {
+            let head = f & !((1 << order) - 1);
+            (self.tag[head] == FREE | order as u8).then_some((head, order))
+        })
+    }
+
     /// Returns block `f` of `order` to the free lists, merging buddies.
     fn release(&mut self, mut f: usize, mut order: usize) {
         self.free += 1 << order;
@@ -375,6 +417,46 @@ mod tests {
         check(&a);
         assert_eq!(a.largest_free_order(), Some(3)); // 8..16, not 0..16
         assert_eq!(a.free_frames(), 12);
+    }
+
+    #[test]
+    fn a_chosen_free_frame_is_taken_alone_and_merges_back() {
+        let mut a = Frames::<64>::new();
+        a.add_range(0, 64).unwrap();
+        // One order-6 block: taking frame 37 leaves 63 free in blocks
+        // around it, none holding it.
+        assert!(a.is_free(37));
+        assert!(a.take(37));
+        check(&a);
+        assert_eq!(a.free_frames(), 63);
+        assert!(!a.is_free(37) && !a.take(37), "taken twice");
+        assert_eq!(
+            a.free_blocks()[..7],
+            [1, 1, 1, 1, 1, 1, 0],
+            "one of each order below"
+        );
+        for f in (0..64).filter(|&f| f != 37) {
+            assert!(a.is_free(f), "frame {f}");
+        }
+        // Its neighbours can be taken too, then all merge back whole.
+        assert!(a.take(36) && a.take(38) && a.take(0) && a.take(63));
+        check(&a);
+        for f in [37, 0, 63, 38, 36] {
+            a.free(f).unwrap();
+            check(&a);
+        }
+        assert_eq!(a.free_blocks()[6], 1);
+        assert_eq!(a.free_frames(), 64);
+        // An allocated frame, an interior frame of an allocation, a frame
+        // past the end and a frame never added are refused.
+        let mut b = Frames::<64>::new();
+        b.add_range(0, 32).unwrap();
+        let blk = b.alloc(2).unwrap();
+        for f in [blk, blk + 1, 40, 64, 1000] {
+            assert!(!b.take(f), "frame {f}");
+        }
+        assert_eq!(b.free_frames(), 28);
+        check(&b);
     }
 
     #[test]
