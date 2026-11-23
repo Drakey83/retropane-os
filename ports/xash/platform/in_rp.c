@@ -890,6 +890,10 @@ static void RP_End( void )
 			   weapons arrive after the impulse, so a selection in the same
 			   breath found none: run 130 held the hornet gun) */
 			Cbuf_AddText( "weapon_9mmAR\n+attack\n" );
+			/* R360 (-rpflash): the flashlight on through the fight, as the owner
+			   plays (its light relights the walls in its cone every frame) */
+			if( RP_Parm( "-rpflash" ))
+				Cbuf_AddText( "give item_suit\nwait\nimpulse 100\n" );
 		}
 		else if( stage == 2 )
 		{
