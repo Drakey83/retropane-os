@@ -1395,7 +1395,13 @@ mod image {
         let pid = STATE.with(|s| s.pid);
         let touched = rt::try_read((LOAD_BASE + DATA_RVA) as usize);
         let own_form = with_vm(|vm, s| {
-            resolve(vm, s, LOAD_BASE + RDATA_RVA, rp_kernel_mm::space::Access::Read).is_ok()
+            resolve(
+                vm,
+                s,
+                LOAD_BASE + RDATA_RVA,
+                rp_kernel_mm::space::Access::Read,
+            )
+            .is_ok()
         });
         ok &= report(
             &mut uart,
