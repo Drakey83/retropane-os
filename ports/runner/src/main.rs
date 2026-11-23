@@ -1916,6 +1916,19 @@ mod image {
             Some(was)
         };
         if let Some(v) = voice {
+            // R360: the OS mixer's chain the old way, for the A/B against
+            // the fused pass (the same samples bit for bit; the mixer's
+            // own cycle line at the end says what each costs)
+            if args[..arg_count]
+                .iter()
+                .any(|a| a.to_bytes() == b"-rpsndchain0")
+            {
+                v.set_reference_chain(true);
+                let _ = writeln!(
+                    uart,
+                    "sound: R360: -rpsndchain0: the mixer's chain the old way"
+                );
+            }
             s.set_sound(v);
         }
         // `-rppenlog` (R355's measure): each touch of the stylus said in

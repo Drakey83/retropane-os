@@ -517,11 +517,17 @@ impl Slot<'_> {
             while f < BLOCK {
                 let n = (BLOCK - f).min(cap - pos);
                 let src = &self.buf[4 * pos..4 * (pos + n)];
-                for (d, s) in acc[2 * f..2 * (f + n)]
-                    .iter_mut()
-                    .zip(src.as_chunks::<2>().0)
-                {
-                    *d = i32::from(i16::from_le_bytes(*s)) << 8;
+                let dst = &mut acc[2 * f..2 * (f + n)];
+                if let Some(h) = rp_hal_simd::halves(src) {
+                    // R360: a halfword load a sample (the stream's ring is
+                    // the program's, aligned), the same values
+                    for (d, &s) in dst.iter_mut().zip(h) {
+                        *d = i32::from(i16::from_le(s)) << 8;
+                    }
+                } else {
+                    for (d, s) in dst.iter_mut().zip(src.as_chunks::<2>().0) {
+                        *d = i32::from(i16::from_le_bytes(*s)) << 8;
+                    }
                 }
                 f += n;
                 pos = (pos + n) % cap;
@@ -788,6 +794,9 @@ pub struct Mixer<'a> {
     end_frame: u64,
     stats: Stats,
     clock: Option<fn() -> u32>,
+    /// The chain the old way ([`chain::State::run_reference`]), for the
+    /// A/B against R360's fused pass (the same output bit for bit).
+    reference_chain: bool,
 }
 
 impl<'a> Mixer<'a> {
@@ -820,7 +829,14 @@ impl<'a> Mixer<'a> {
             end_frame: 0,
             stats: Stats::default(),
             clock: None,
+            reference_chain: false,
         }
+    }
+
+    /// Runs the chain the old way (R360's A/B: the same samples, the old
+    /// cycles), or the fused pass (the default).
+    pub fn set_reference_chain(&mut self, on: bool) {
+        self.reference_chain = on;
     }
 
     /// A free-running core cycle counter to time the mix's stages with
@@ -1481,7 +1497,11 @@ impl<'a> Mixer<'a> {
             let t1 = self.now();
             let at = ring_rem(b) as usize * 4;
             let out = &mut self.ring[at..at + 4 * BLOCK];
-            let r = self.state.run(&mut acc, self.speaker, out);
+            let r = if self.reference_chain {
+                self.state.run_reference(&mut acc, self.speaker, out)
+            } else {
+                self.state.run(&mut acc, self.speaker, out)
+            };
             let t2 = self.clock.map_or(0, |c| c());
             // Handed to the engine at once, nearest first: the margin need
             // only cover one block's mixing, however long the stretch.

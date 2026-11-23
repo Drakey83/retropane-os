@@ -513,6 +513,31 @@ pub fn args_fit(line: &str) -> Result<(), String> {
     }
 }
 
+/// The names of our float and division helpers (`rp-hal-mem`'s `float`
+/// feature, R282) that every module must hold: without them the modules
+/// link compiler_builtins' generic soft float and the game runs ~12%
+/// slower (R360, run 340a: a kit built while another build of this
+/// checkout ran, 19,627 ms against 17,465).
+const HELPERS: [&[u8]; 2] = [b"rp_fadd_asm\0", b"rp_idiv_asm\0"];
+
+/// `Err` naming the module if it lacks a helper of [`HELPERS`] (looked
+/// for in its symbol names).
+fn helpers_linked(elf: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(elf).map_err(|e| format!("{}: {e}", elf.display()))?;
+    match HELPERS
+        .iter()
+        .find(|h| !bytes.windows(h.len()).any(|w| w == **h))
+    {
+        None => Ok(()),
+        Some(h) => Err(format!(
+            "{}: linked without {} (compiler_builtins' generic soft float in place of ours, R360): \
+             was another build of this checkout running? build the kit again",
+            elf.display(),
+            String::from_utf8_lossy(&h[..h.len() - 1])
+        )),
+    }
+}
+
 pub fn lay_out(
     root: &Path,
     runner: &Path,
@@ -538,6 +563,9 @@ pub fn lay_out(
         (built.join("server.elf"), "server.elf"),
     ] {
         std::fs::copy(&from, elf.join(to)).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
+    for m in ["engine.elf", "client.elf", "server.elf"] {
+        helpers_linked(&elf.join(m))?;
     }
     let background = crate::hlprep::background(&game.join("valve"))?.map(|(file, _)| file);
     if background.is_none() {
@@ -928,9 +956,21 @@ engine c
     fn rewrites_in_place_wait_for_the_render_before() {
         let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
         assert_eq!(
-            src.matches("rp_upload_stage = placed && !rp_nostage;").count(),
-            2,
-            "RP_LmPlace and RP_SurfacePlace both hold their rewrites in place"
+            src.matches("rp_upload_stage = placed && !rp_nostage;")
+                .count(),
+            1,
+            "RP_SurfacePlace holds its rewrites in place"
+        );
+        // R360 fix 1 (d6ea32f0): RP_LmPlace's rewrite of a face drawn in
+        // the last two frames goes to the ring; it is held only with the
+        // old way asked for, no ring, or a recent face
+        assert_eq!(
+            src.matches(
+                "rp_upload_stage = placed && !rp_nostage && ( rp_lmhold || !rp_ring_bytes || recent );"
+            )
+            .count(),
+            1,
+            "RP_LmPlace holds a rewrite in place unless the ring takes it"
         );
         let flush = src
             .find("static void RP_StageFlush( void )")
@@ -940,8 +980,12 @@ engine c
             body.find("rp_gfx_wait( );") < body.find("memcpy("),
             "the held squares copied in only after the render before has ended"
         );
-        let submit = src.find("void RP_EmitSubmit( void )").expect("RP_EmitSubmit");
-        let parts = src[submit..].find("rp_gfx_frame_parts(").expect("the submit");
+        let submit = src
+            .find("void RP_EmitSubmit( void )")
+            .expect("RP_EmitSubmit");
+        let parts = src[submit..]
+            .find("rp_gfx_frame_parts(")
+            .expect("the submit");
         assert!(
             src[submit..submit + parts].contains("RP_StageFlush( );"),
             "the held squares in before the frame that draws them"
@@ -955,15 +999,20 @@ engine c
     #[test]
     fn sky_faces_hide_what_is_behind_them() {
         let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
-        let at = src.find("if( fa->flags & SURF_DRAWSKY )").expect("the sky branch");
+        let at = src
+            .find("if( fa->flags & SURF_DRAWSKY )")
+            .expect("the sky branch");
         assert!(
             src[at..at + 400].contains("RP_SkyFace( fa );"),
             "sky faces drawn from RP_ChipFace's sky branch"
         );
-        let f = src.find("static void RP_SkyFace( msurface_t *fa )").expect("RP_SkyFace");
+        let f = src
+            .find("static void RP_SkyFace( msurface_t *fa )")
+            .expect("RP_SkyFace");
         let body = &src[f..f + 4000];
         assert!(
-            body.contains("RP_Put( RP_Bits( zi ));") && body.contains("RP_Put( RP_Bits( dist * zi ));"),
+            body.contains("RP_Put( RP_Bits( zi ));")
+                && body.contains("RP_Put( RP_Bits( dist * zi ));"),
             "the depth word and the texture's perspective word kept apart"
         );
     }
@@ -975,14 +1024,22 @@ engine c
     #[test]
     fn brush_faces_in_a_world_plane_lose_the_tie() {
         let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
-        let tables = src.find("static int RP_WorldTables( void )").expect("RP_WorldTables");
-        let cook = src[tables..].find("RP_CookRead( mod )").expect("the cooked path");
+        let tables = src
+            .find("static int RP_WorldTables( void )")
+            .expect("RP_WorldTables");
+        let cook = src[tables..]
+            .find("RP_CookRead( mod )")
+            .expect("the cooked path");
         assert!(
             src[tables..tables + cook].contains("RP_CoplanarMark( mod );"),
             "the ties marked before the cooked map's early return"
         );
-        let face = src.find("static int RP_ChipFaceFixed(").expect("RP_ChipFaceFixed");
-        let lm = src[face..].find("if( rp_lm_on && RP_ChipFaceLm(").expect("option B");
+        let face = src
+            .find("static int RP_ChipFaceFixed(")
+            .expect("RP_ChipFaceFixed");
+        let lm = src[face..]
+            .find("if( rp_lm_on && RP_ChipFaceLm(")
+            .expect("option B");
         let body = &src[face..face + lm];
         assert!(
             body.contains("rp_bview.still") && body.contains("zis[i] -= RP_COPLANAR_BIAS;"),

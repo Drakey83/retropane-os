@@ -140,6 +140,11 @@ impl<'a, R: DmaRing> Sound<'a, R> {
         self.mixer.set_clock(clock);
     }
 
+    /// The mixer's chain the old way (R360's A/B, `-rpsndchain0`).
+    pub fn set_reference_chain(&mut self, on: bool) {
+        self.mixer.set_reference_chain(on);
+    }
+
     /// The DMA engine (tests look at what it played).
     pub fn dma(&mut self) -> &mut R {
         &mut self.dma

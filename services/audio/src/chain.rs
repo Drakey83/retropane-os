@@ -146,7 +146,78 @@ impl State {
     /// Runs one block: `mix` is [`BLOCK`] stereo frames, interleaved, Q8;
     /// `speaker` turns the speaker's filter on; `out` gets the 16-bit
     /// frames, left in the low half (the PXA's `SADR`), little-endian.
+    ///
+    /// R360 (2026-11-23), the same output bit for bit as
+    /// [`State::run_reference`] (a test holds them equal), in fewer cycles
+    /// on the PXA270 (its disassembly, run 339a's runner): the filter's
+    /// sums as one `SMULL` and two `SMLAL`s a sample (the denominator's
+    /// coefficients stored negated, and hidden from the compiler, which
+    /// made each product with a constant a `UMULL` and an `MLA` sign fix
+    /// and each subtraction a 64-bit one: 16 instructions a sample where
+    /// there were about 32), the peak branch-free, then the dither and the
+    /// packing in one branch-free pass with the generator in a register
+    /// (it was stored every frame) and one word store a frame where the
+    /// ring is word-aligned (it always is: the DMA ring starts on a cache
+    /// line), four byte stores otherwise.
     pub fn run(&mut self, mix: &mut [i32; 2 * BLOCK], speaker: bool, out: &mut [u8]) -> Block {
+        debug_assert_eq!(out.len(), 4 * BLOCK);
+        let peak = if speaker {
+            self.high_pass_both(mix)
+        } else {
+            peak_of(mix)
+        };
+        let mut b = self.limit_at(mix, peak);
+        let mut rng = self.rng;
+        if let Some(words) = rp_hal_simd::words_mut(out).filter(|w| w.len() == BLOCK) {
+            for (w, f) in words.iter_mut().zip(mix.as_chunks::<2>().0) {
+                let (l, r) = dither_fast(&mut rng, f[0], f[1]);
+                *w = (u32::from(l as u16) | u32::from(r as u16) << 16).to_le();
+            }
+        } else {
+            for (o, f) in out
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(mix.as_chunks::<2>().0)
+            {
+                let (l, r) = dither_fast(&mut rng, f[0], f[1]);
+                let v = u32::from(l as u16) | u32::from(r as u16) << 16;
+                o.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        self.rng = rng;
+        b.limited |= self.gain < UNITY;
+        b
+    }
+
+    /// The speaker's filter on both channels, a channel at a time (its
+    /// state in registers: both at once spilled to the stack), returning
+    /// the filtered block's peak ([`peak_of`]).
+    fn high_pass_both(&mut self, mix: &mut [i32; 2 * BLOCK]) -> i32 {
+        // The coefficients as values the compiler can't see into: with them
+        // as constants it multiplied each 64-bit product by UMULL and an
+        // MLA sign fix (six multiplies a sample, the disassembly of run
+        // 339a's runner); as plain i32s each is one SMULL or SMLAL.
+        let c = core::hint::black_box([SPEAKER_HP[0], NEG_A1, NEG_A2]);
+        for (ch, z) in self.hp.iter_mut().enumerate() {
+            let mut st = *z;
+            for f in mix.as_chunks_mut::<2>().0 {
+                f[ch] = high_pass_mac(&c, &mut st, f[ch]);
+            }
+            *z = st;
+        }
+        peak_of(mix)
+    }
+
+    /// The old way (before R360's fused pass, kept for the A/B:
+    /// `-rpsndchain0` in the port runner, and as the reference its test
+    /// holds [`State::run`] to).
+    pub fn run_reference(
+        &mut self,
+        mix: &mut [i32; 2 * BLOCK],
+        speaker: bool,
+        out: &mut [u8],
+    ) -> Block {
         debug_assert_eq!(out.len(), 4 * BLOCK);
         if speaker {
             // A channel at a time, its state held in locals.
@@ -172,10 +243,15 @@ impl State {
     /// The limiter, then the backstop.
     fn limit(&mut self, mix: &mut [i32; 2 * BLOCK]) -> Block {
         // Each sign against its own full scale: -32768 is in range.
-        let peak = i64::from(
-            mix.iter()
-                .fold(0i32, |m, &s| m.max(if s < 0 { -(s + 256) } else { s })),
-        );
+        let peak = mix
+            .iter()
+            .fold(0i32, |m, &s| m.max(if s < 0 { -(s + 256) } else { s }));
+        self.limit_at(mix, peak)
+    }
+
+    /// The limiter and the backstop, given the block's peak ([`peak_of`]).
+    fn limit_at(&mut self, mix: &mut [i32; 2 * BLOCK], peak: i32) -> Block {
+        let peak = i64::from(peak);
         let want = if peak > i64::from(CEIL) {
             ((i64::from(TARGET) << 16) / peak) as i32
         } else {
@@ -254,6 +330,69 @@ impl State {
         };
         (one(l, x), one(r, x >> 16))
     }
+}
+
+/// A sample's size against its own sign's full scale (the limiter's
+/// measure: -32768 is in range), branch-free: `s` for `s >= 0`, else
+/// `-(s + 256)` (`!s` is `-s - 1`, less 255 more).
+#[inline(always)]
+fn magnitude(s: i32) -> i32 {
+    let sign = s >> 31;
+    (s ^ sign) - (sign & 255)
+}
+
+/// The block's peak as the limiter measures it ([`magnitude`]'s largest,
+/// at least 0).
+fn peak_of(mix: &[i32; 2 * BLOCK]) -> i32 {
+    mix.iter().fold(0i32, |m, &s| m.max(magnitude(s)))
+}
+
+/// [`State::dither`]'s frame with the generator in a local: the same
+/// values, and the generator moves on exactly when that one's does. A
+/// sample already on a 16-bit value takes `-128` in place of the dither,
+/// so one rounding serves both cases (`(s + 128 - 128) >> 8` is `s >> 8`,
+/// in range: the limiter's backstop or its peak test keeps every sample in
+/// `[-CEIL - 256, CEIL]`, so the clamp leaves it).
+#[inline(always)]
+fn dither_fast(rng: &mut u32, l: i32, r: i32) -> (i16, i16) {
+    let x = if (l | r) & 0xFF == 0 {
+        0
+    } else {
+        let mut x = *rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *rng = x;
+        x
+    };
+    let one = |s: i32, x: u32| {
+        let t = if s & 0xFF == 0 {
+            -128
+        } else {
+            (x & 0xFF) as i32 + ((x >> 8) & 0xFF) as i32 - 255
+        };
+        ((s + 128 + t) >> 8).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    };
+    (one(l, x), one(r, x >> 16))
+}
+
+/// The speaker filter's denominator coefficients negated (both fit: the
+/// asserts), so a sample's sum is three multiply-accumulates.
+const NEG_A1: i32 = -SPEAKER_HP[3];
+const NEG_A2: i32 = -SPEAKER_HP[4];
+const _: () = assert!(SPEAKER_HP[3] != i32::MIN && SPEAKER_HP[4] != i32::MIN);
+
+/// [`high_pass_step`] on [`SPEAKER_HP`] as sums of products (the same
+/// integers: `-(a * b)` is `(-a) * b` exactly in 64 bits); `c` is
+/// `[b0, -a1, -a2]`.
+#[inline(always)]
+fn high_pass_mac(c: &[i32; 3], z: &mut [i32; 4], x: i32) -> i32 {
+    let acc = i64::from(c[0]) * i64::from(x - 2 * z[0] + z[1])
+        + i64::from(c[2]) * i64::from(z[3])
+        + i64::from(c[1]) * i64::from(z[2]);
+    let y = (acc >> 30) as i32;
+    *z = [x, z[0], y, z[2]];
+    y
 }
 
 /// The cookbook biquad for a high-pass whose numerator is `b0 (1, -2, 1)`
@@ -500,6 +639,54 @@ mod tests {
             "the gain rippled {lo}..{hi}"
         );
         assert_eq!(clipped, 0);
+    }
+
+    /// R360: the fused pass gives the old way's bytes, block counts and
+    /// state bit for bit, speaker on and off, over noise, full scale both
+    /// ways, overloads that set the limiter off and its release, silence,
+    /// samples already on 16-bit values, and outputs on and off a word.
+    #[test]
+    fn the_fused_pass_is_the_old_way_exactly() {
+        let mut r = 0x9E37_79B9u32;
+        let mut next = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            r
+        };
+        for speaker in [false, true] {
+            let (mut a, mut b) = (State::default(), State::default());
+            // the host's allocator gives a word-aligned start (asserted)
+            let mut store = vec![0u8; 4 * BLOCK + 4];
+            assert!(rp_hal_simd::words_mut(&mut store[..4 * BLOCK]).is_some());
+            for k in 0..20_000u32 {
+                let mut mix = [0i32; 2 * BLOCK];
+                let kind = (k / 37) % 7;
+                for (i, s) in mix.iter_mut().enumerate() {
+                    let n = next();
+                    *s = match kind {
+                        0 => ((n as i32) >> 7).clamp(-CEIL - 256, CEIL),
+                        1 => (n as i32) >> 4, // overloads: the limiter's work
+                        2 => 0,
+                        3 => ((n as i32) >> 16) << 8, // on 16-bit values
+                        4 => [CEIL, -CEIL - 256, CEIL * 3, -CEIL * 3][i % 4],
+                        5 => ((n as i32) >> 9) & !0xFF | i32::from(i % 3 == 0),
+                        _ => (n as i32) >> 12, // quiet: the release
+                    };
+                }
+                let mut mix2 = mix;
+                let (mut oa, mut ob) = ([0u8; 4 * BLOCK], [0u8; 4 * BLOCK]);
+                let ra = a.run_reference(&mut mix, speaker, &mut oa);
+                // the word path, and every third block the byte path
+                // (an output one byte off a word)
+                let off = if k % 3 == 0 { 1 } else { 0 };
+                let rb = b.run(&mut mix2, speaker, &mut store[off..off + 4 * BLOCK]);
+                ob.copy_from_slice(&store[off..off + 4 * BLOCK]);
+                assert_eq!(oa, ob, "speaker {speaker} block {k}");
+                assert_eq!(ra, rb, "speaker {speaker} block {k}");
+                assert_eq!(a, b, "speaker {speaker} block {k}");
+            }
+        }
     }
 
     #[test]

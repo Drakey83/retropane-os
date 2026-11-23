@@ -64,6 +64,33 @@ pub fn dot(win: &[i16], at: usize, coef: &[i16]) -> Option<i32> {
     Some(dot_plain(&win[at..at + coef.len()], coef))
 }
 
+/// `b` as 32-bit words, when it starts on a word and is a whole number of
+/// them (`None` otherwise): a hot loop's output written a word at a time
+/// (the ARMv5 core has no unaligned stores, so a byte slice it can't prove
+/// aligned is written a byte at a time: R360's sound chain). The words'
+/// bytes are `b`'s, in the machine's order (write `v.to_le()` for a
+/// little-endian layout everywhere).
+#[must_use]
+pub fn words_mut(b: &mut [u8]) -> Option<&mut [u32]> {
+    // SAFETY: every bit pattern is a valid u32 and a valid u8; `align_to_mut`
+    // puts in the middle only what is aligned for u32.
+    let (head, words, tail) = unsafe { b.align_to_mut::<u32>() };
+    (head.is_empty() && tail.is_empty()).then_some(words)
+}
+
+/// `b` as 16-bit samples, when it starts on a halfword and is a whole
+/// number of them (`None` otherwise): one halfword load a sample where a
+/// byte slice is read a byte at a time (R360: the sound mixer's copy of a
+/// stream). In the machine's order (read `i16::from_le` for little-endian
+/// data everywhere).
+#[must_use]
+pub fn halves(b: &[u8]) -> Option<&[i16]> {
+    // SAFETY: every bit pattern is a valid i16; `align_to` puts in the
+    // middle only what is aligned for i16.
+    let (head, h, tail) = unsafe { b.align_to::<i16>() };
+    (head.is_empty() && tail.is_empty()).then_some(h)
+}
+
 /// The plain loop: `sum(x[k] * c[k])`, wrapping 32-bit sums.
 #[must_use]
 pub fn dot_plain(x: &[i16], c: &[i16]) -> i32 {
@@ -181,6 +208,26 @@ mod tests {
         }
         assert_eq!(dot(&win, 17, &coef), None);
         assert_eq!(dot(&win[..8], 0, &coef[..16]), None);
+    }
+
+    /// Words only for a word-aligned whole-word slice; the bytes shared.
+    #[test]
+    fn words_mut_views_only_whole_aligned_words() {
+        let mut buf = [0u32; 4];
+        // SAFETY: a test's view of its own u32 buffer as bytes.
+        let bytes: &mut [u8] =
+            unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), 16) };
+        let w = words_mut(&mut bytes[4..12]).unwrap();
+        assert_eq!(w.len(), 2);
+        w[1] = 0x0403_0201u32.to_le();
+        assert_eq!(bytes[8..12], [1, 2, 3, 4]);
+        assert!(words_mut(&mut bytes[1..9]).is_none());
+        assert!(words_mut(&mut bytes[4..11]).is_none());
+        assert_eq!(words_mut(&mut bytes[0..0]).map(|w| w.len()), Some(0));
+        let h = halves(&bytes[8..12]).unwrap();
+        assert_eq!([i16::from_le(h[0]), i16::from_le(h[1])], [0x0201, 0x0403]);
+        assert!(halves(&bytes[1..5]).is_none());
+        assert!(halves(&bytes[2..5]).is_none());
     }
 
     /// Wrapping, not saturating or panicking: the unit's sums wrap.
