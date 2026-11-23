@@ -928,7 +928,7 @@ engine c
     fn rewrites_in_place_wait_for_the_render_before() {
         let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
         assert_eq!(
-            src.matches("rp_upload_stage = placed;").count(),
+            src.matches("rp_upload_stage = placed && !rp_nostage;").count(),
             2,
             "RP_LmPlace and RP_SurfacePlace both hold their rewrites in place"
         );

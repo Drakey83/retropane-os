@@ -215,6 +215,7 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    wall through a surface rebuild; -rpdecalsoft keeps it for a side by side. */
 static int rp_decal_on = 1;
 static int rp_skyface_off; /* R352 after run 331: -rpskybox, the sky faces not drawn (R309's way) */
+static int rp_nostage; /* R360: -rpnostage, rewrites in place written at once (before a68545bb: no wait, the hazard back) */
 static int rp_coplanar_off; /* R352 after run 333: -rpcoplanar, brush entities' faces in a world plane at their own depth (the old way) */
 static uint8_t *rp_cop; /* R352 after run 333: a bit a face, set for a brush entity's face in a world face's plane and side (RP_CoplanarMark) */
 static uint32_t rp_cop_marked; /* how many the map has */
@@ -238,6 +239,8 @@ void RP_EmitInit( void )
 		rp_tex2_plain = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpskybox" ))
 		rp_skyface_off = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rpnostage" ))
+		rp_nostage = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpcoplanar" ))
 		rp_coplanar_off = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352: decals baked into the lit surface, the old way */
@@ -1818,7 +1821,7 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 		RP_LOC( fa ) = 0;
 		return -1;
 	}
-	rp_upload_stage = placed; /* R352: a rewrite in place held to the frame's end */
+	rp_upload_stage = placed && !rp_nostage; /* R352: a rewrite in place held to the frame's end */
 	RP_Upload((const pixel_t *)cache->data, w, h, pg, *x, *y );
 	rp_upload_stage = 0;
 	rp_upload_left -= w * h * 2;
@@ -2339,7 +2342,7 @@ static int RP_LmPlace( msurface_t *fa, int *x, int *y )
 		rp_page[pg].live += 128;
 	}
 	rp_upload_raw = 1;
-	rp_upload_stage = placed; /* R352: a rewrite in place held to the frame's end */
+	rp_upload_stage = placed && !rp_nostage; /* R352: a rewrite in place held to the frame's end */
 	RP_Upload((const pixel_t *)rp_lm_texels, w, h, pg, *x, *y );
 	rp_upload_stage = 0;
 	rp_upload_raw = 0;
