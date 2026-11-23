@@ -98,7 +98,7 @@ kept triangle's three corners (two of every three rejected by the mark),
 and a counter in memory a culled triangle. ~1.78 ms a frame for ~4,800
 model triangles: ~190 cycles a triangle.
 
-## Lever 3: the sort from corner codes (built)
+## Lever 3: the sort from corner codes (built, measured, taken out)
 
 | | What it does |
 |---|---|
@@ -121,3 +121,16 @@ allocates on reads only: 38 samples on one load's use), and the rolled
 loop spilled ten words a triangle. Rebuilt as above (the codes with the
 vertex, no corner pass, a loop a kind); stop rule written before runs
 344a-d: not faster than `-rpsort0` in the same kit, and lever 3 comes out.
+
+**Runs 344a-d (the rebuild, one kit, 2026-11-23):** exact again (`-rpsort2`:
+1,972,567 triangles, 0 differed, 0 fills). The fight: new 17,494 and
+17,497 ms, `-rpsort0` 17,515, `-rpsort2` 17,699. The new way beats the
+switch in its own kit by ~20 ms, but **the kit is ~90 ms slower than the
+code before lever 3** (342a 17,404; 341a/d 17,412 and 17,411): the
+switch's "old way" still carried the lever's support code. The samples
+against 342a: `RP_StudioCmdLit` +75 (the code byte stored each corner,
+two identical runs differ by up to 34), `RP_StudioVertsFixed` +26 (the
+code made each vertex), the sort -25. **Lever 3 is taken out** (the stop
+rule; r_emit.c back to f2d782b9's). What it leaves: the state loop was
+about a third of the sort's samples; the rest is the run emission (the
+inlined `RP_StudioRun`, the TA's words), the next place to read.
