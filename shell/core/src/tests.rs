@@ -208,6 +208,20 @@ fn the_d_pad_reaches_every_target() {
     // quick row under its middle, across it, down to the softkeys.
     s.input(Input::Key(Key::Down));
     assert_eq!(s.focus(), Some(Target::Hero));
+    // The calendar panel, its tasks line on the right and back; down from
+    // either to the quick row.
+    s.input(Input::Key(Key::Down));
+    assert_eq!(s.focus(), Some(Target::Agenda));
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.focus(), Some(Target::TasksLine));
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.focus(), Some(Target::TasksLine));
+    s.input(Input::Key(Key::Left));
+    assert_eq!(s.focus(), Some(Target::Agenda));
+    s.input(Input::Key(Key::Right));
+    s.input(Input::Key(Key::Up));
+    assert_eq!(s.focus(), Some(Target::Hero));
+    s.input(Input::Key(Key::Down));
     s.input(Input::Key(Key::Down));
     assert_eq!(s.focus(), Some(Target::Quick(2)));
     s.input(Input::Key(Key::Left));
@@ -4440,4 +4454,74 @@ fn a_reminder_made_after_its_time_shows_at_once_and_once() {
     s.set_time(at(14, 53));
     assert!(s.reminder_shown());
     assert!(s.take_chime());
+}
+
+/// Today's calendar panel and tasks line from the store (calendar-rule0.md,
+/// tasks-rule0.md): what is left of today with its time, the tasks due and
+/// late on the top right; the panel opens Calendar and the line Tasks.
+#[test]
+fn todays_panel_shows_the_store_and_opens_calendar_and_tasks() {
+    use rp_pim::date::{self, Date};
+    use rp_pim::store::{Kind, tag};
+    let mut s = shell(true);
+    s.use_programs(true);
+    // Before the store is given: the panel says so, no sample lines.
+    let t = texts(&drawn(&mut s));
+    assert!(t.iter().any(|x| x == b"Calendar loading"));
+    assert!(!t.iter().any(|x| x == b"Team call" || x == b"sample data"));
+    s.give_apps(std::vec![0u8; crate::apps::MEMORY].leak());
+    s.set_year(2024);
+    s.set_time(Time {
+        hour: 10,
+        minute: 0,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+    let day = date::days_from(Date {
+        year: 2024,
+        month: 1,
+        day: 1,
+    });
+    {
+        let p = s.pim().unwrap();
+        p.load_start(None);
+        let at = |m: u32| (date::start_of(day) + m).to_le_bytes();
+        let (nine, three) = (at(9 * 60), at(15 * 60));
+        p.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Stand-up"), (tag::START, &nine)],
+        )
+        .unwrap();
+        p.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &three)],
+        )
+        .unwrap();
+        let (today, late) = ((day as u32).to_le_bytes(), ((day - 2) as u32).to_le_bytes());
+        p.put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Pay rent"), (tag::DUE, &today)],
+        )
+        .unwrap();
+        p.put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Taxes"), (tag::DUE, &late)],
+        )
+        .unwrap();
+    }
+    s.dirty(Rect::new(0, 0, W, H));
+    let t = texts(&drawn(&mut s));
+    // The stand-up ended at 10:00: the dentist is what is left.
+    assert!(t.iter().any(|x| x == b"Dentist"));
+    assert!(!t.iter().any(|x| x == b"Stand-up"));
+    assert!(t.iter().any(|x| x == b"3:00 PM"));
+    assert!(t.iter().any(|x| x == b"2 TASKS DUE"));
+    assert!(t.iter().any(|x| x.ends_with(b"1 LATE")));
+    assert_eq!(tap_t(&mut s, Target::TasksLine), Action::OpenProgram(2));
+    assert_eq!(tap_t(&mut s, Target::Agenda), Action::OpenProgram(0));
 }

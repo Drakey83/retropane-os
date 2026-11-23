@@ -33,6 +33,7 @@ pub mod panel;
 mod panel_art;
 pub mod sky;
 pub mod station;
+mod today_feed;
 pub mod weather_app;
 mod weather_net;
 mod weather_settings;
@@ -259,6 +260,22 @@ pub enum WindowBody {
     /// Aero's frame tinted by the app: its accent mixed a little into the
     /// slate (Calendar's coral, Contacts' teal), so each window is its own.
     Tinted,
+}
+
+/// Where Today's tasks line goes (tasks-rule0.md: "Today screen's tasks
+/// line fed from the store"); three drawn for the owner's pick
+/// (R-today-tasks in docs/reminders.md), A the default until then.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TodayTasks {
+    /// A: on the calendar panel's top line, right of "TODAY": "3 TASKS
+    /// DUE · 1 LATE". The panel keeps its two appointment rows.
+    Header,
+    /// B: the panel's second row: the count, the most pressing task's
+    /// title and "+2". One appointment row is left.
+    Row,
+    /// C: a third row under the two appointments, the panel 28 px taller
+    /// (into the gap over the quick buttons).
+    Extra,
 }
 
 /// The washed wallpaper's veil (C), drawn first, kept by the look.
@@ -606,6 +623,10 @@ pub enum Target {
     Reading(u8),
     /// The chart's span chip (0: 12 hours, 1: 2 days).
     Span(u8),
+    /// Today's calendar panel (opens Calendar).
+    Agenda,
+    /// The tasks line on the panel's top right (opens Tasks).
+    TasksLine,
 }
 
 // ---- Layout (480 x 640, portrait) --------------------------------------
@@ -648,6 +669,13 @@ const FORECAST_H: u16 = 74;
 const FORECAST_W: u16 = 83;
 const FORECAST_STEP: u16 = 91;
 const CALENDAR_PANEL: Rect = Rect::new(16, 392, 448, 104);
+/// The tasks line: the calendar panel's top right, beside "TODAY".
+const TASKS_LINE: Rect = Rect::new(
+    CALENDAR_PANEL.x + 152,
+    CALENDAR_PANEL.y + 6,
+    CALENDAR_PANEL.w - 158,
+    32,
+);
 const SOFTKEYS: Rect = Rect::new(0, H - 40, W, 40);
 const SOFT_LEFT: Rect = Rect::new(0, H - 40, 160, 40);
 const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
@@ -843,6 +871,9 @@ const PULL_REFRESH: i32 = 56;
 pub struct Shell {
     /// The organiser apps' state ([`apps`]).
     apps: apps::Apps,
+    /// What Today's calendar panel shows, worked from the store when it
+    /// changes ([`today_feed`]).
+    feed: core::cell::RefCell<today_feed::Feed>,
     /// The device's offset from UTC, minutes (the clock file's).
     utc_offset: i32,
     /// The clipboard programs share.
@@ -1041,6 +1072,8 @@ pub struct Shell {
     light_style: LightStyle,
     /// What fills an app's window behind it ([`WindowBody`]).
     window_body: WindowBody,
+    /// Where Today's tasks line goes.
+    today_tasks: TodayTasks,
     /// The floor of the last frame made ([`Self::floor`]).
     floor_was: Option<(Rect, Argb, Argb)>,
     /// The host paints window backdrops ([`Self::use_backdrops`]).
@@ -1108,6 +1141,7 @@ macro_rules! shell_start {
     ($fonts:expr, $icons:expr, $dev_exit:expr; $($how:tt)*) => {
         rp_hal_mem::in_place!($($how)* Shell {
             apps: apps::Apps::new(),
+            feed: core::cell::RefCell::new(today_feed::Feed::new()),
             utc_offset: 0,
             clip: core::cell::RefCell::new(rp_app::Text::EMPTY),
             shapes: rp_app::Shapes::new(),
@@ -1216,6 +1250,7 @@ macro_rules! shell_start {
             sky_forced: false,
             light_style: LightStyle::Frosted,
             window_body: WindowBody::Tinted,
+            today_tasks: TodayTasks::Header,
             floor_was: None,
             backdrops: false,
             panels_off: false,
@@ -1876,6 +1911,8 @@ impl Shell {
             Target::Timeline => weather_app::TIMELINE,
             Target::Reading(i) => self.reading_rect(i),
             Target::Span(i) => chart::span_chip(i),
+            Target::Agenda => self.panel_rects().0,
+            Target::TasksLine => self.panel_rects().1,
         }
     }
 
@@ -1903,6 +1940,8 @@ impl Shell {
             .chain(self.shows_ok().then_some(Target::Ok))
             .chain((0..back).map(|_| Target::Back))
             .chain((0..hero).map(|_| Target::Hero))
+            // The tasks line before the panel it lies on.
+            .chain((0..hero).flat_map(|_| [Target::TasksLine, Target::Agenda]))
             .chain((0..quick).map(Target::Quick))
             .chain((0..tabs).map(Target::Tab))
             .chain(
@@ -2165,6 +2204,12 @@ impl Shell {
                 }
             },
             Target::Hero => self.open_weather(),
+            // The calendar panel opens Calendar and its tasks line Tasks
+            // (ui.md: each one tap from Today).
+            Target::Agenda if self.programs => return Action::OpenProgram(0),
+            Target::Agenda => self.show_notice(not_yet("Calendar")),
+            Target::TasksLine if self.programs => return Action::OpenProgram(2),
+            Target::TasksLine => self.show_notice(not_yet("Tasks")),
             Target::Station => self.open(Screen::Station),
             Target::Ok => self.go_back(),
             Target::PlaceMenu => {
@@ -3223,6 +3268,16 @@ impl Shell {
 
     /// The nearest target from `from` in the direction of `k`.
     fn neighbour(&self, from: Target, k: Key) -> Option<Target> {
+        // The tasks line lies on the calendar panel: up and down reach the
+        // panel, right from it the line, left from the line the panel back;
+        // from the line, up and down go on as from the panel.
+        let from = match (from, k) {
+            (Target::Agenda, Key::Right) => return Some(Target::TasksLine),
+            (Target::TasksLine, Key::Left) => return Some(Target::Agenda),
+            (Target::TasksLine, Key::Right) => return None,
+            (Target::TasksLine, _) => Target::Agenda,
+            _ => from,
+        };
         let c = |r: Rect| {
             (
                 i32::from(r.x) + i32::from(r.w) / 2,
@@ -3244,7 +3299,7 @@ impl Shell {
             }
         };
         self.targets()
-            .filter(|&t| t != from)
+            .filter(|&t| t != from && t != Target::TasksLine)
             .filter_map(|t| {
                 let r = self.rect_of(t);
                 let (x, y) = c(r);
@@ -3437,6 +3492,26 @@ impl Shell {
     pub fn set_light_style(&mut self, style: LightStyle) {
         self.light_style = style;
         self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// Where Today's tasks line goes (the previews draw each).
+    pub fn set_today_tasks(&mut self, t: TodayTasks) {
+        self.today_tasks = t;
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// Today's calendar panel and its tasks line, as the tasks line's
+    /// place has them.
+    fn panel_rects(&self) -> (Rect, Rect) {
+        let p = CALENDAR_PANEL;
+        match self.today_tasks {
+            TodayTasks::Header => (p, TASKS_LINE),
+            TodayTasks::Row => (p, Rect::new(p.x + 4, p.y + 66, p.w - 8, 30)),
+            TodayTasks::Extra => {
+                let p = Rect::new(p.x, p.y, p.w, p.h + 28);
+                (p, Rect::new(p.x + 4, p.y + 94, p.w - 8, 30))
+            }
+        }
     }
 
     /// What fills an app's window behind it (the previews draw each).
@@ -3839,6 +3914,135 @@ impl Shell {
         }
     }
 
+    /// Today's calendar panel from the store ([`today_feed`]), in the T1
+    /// layout (today-screen-plan.md): "TODAY" and up to two rows of a time
+    /// and a title; what is left of today first, all day first, then
+    /// tomorrow's in the room they leave; on the top right the tasks line,
+    /// "3 TASKS DUE · 1 LATE". A tap on the panel opens Calendar, on the
+    /// tasks line Tasks.
+    fn calendar_panel(&self, f: &mut Frame) {
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
+        let (p, line) = self.panel_rects();
+        let now = self.program_now();
+        let feed = {
+            let mut feed = self.feed.borrow_mut();
+            let store = self.apps.store.try_borrow().ok();
+            feed.update(store.as_ref().and_then(|s| s.as_ref()), now.day, now.minute);
+            *feed
+        };
+        if self.pressed == Some(Target::Agenda) && !self.panels_off {
+            panel::draw_pressed(f, p, self.light());
+        } else {
+            self.glass(f, p, GLASS_LEFT, GLASS_RIGHT);
+        }
+        // B gives the second row to the tasks.
+        let cap = if self.today_tasks == TodayTasks::Row {
+            1
+        } else {
+            2
+        };
+        let all = &feed.rows[..usize::from(feed.n)];
+        let rows = &all[..all.len().min(cap)];
+        let more =
+            u16::from(feed.more) + all[rows.len()..].iter().filter(|r| !r.tomorrow).count() as u16;
+        let head: &[u8] = if !rows.is_empty() && rows.iter().all(|r| r.tomorrow) {
+            b"TOMORROW"
+        } else {
+            b"TODAY"
+        };
+        f.text(p.x + 16, p.y + 28, label, DIM, head);
+        // The tasks line, right-aligned: the count due, then the late ones
+        // in the late colour (the words say it too: colour never alone).
+        if feed.ready && self.today_tasks != TodayTasks::Header {
+            // B and C: a row of its own: the count, the most pressing
+            // task, the late ones.
+            self.press_under(f, Target::TasksLine);
+            let y = line.y + 22;
+            let due = if feed.due == 0 {
+                Line::new().push(b"No tasks")
+            } else {
+                Line::new().num(i32::from(feed.due)).push(b" due")
+            };
+            f.text(p.x + 16, y, ui, DIM, due.as_bytes());
+            let mut room = p.w - 112 - 16;
+            if feed.late > 0 {
+                let late = Line::new().num(i32::from(feed.late)).push(b" late");
+                let lw = ui.width(late.as_bytes());
+                f.text(
+                    p.x + p.w - 16 - lw,
+                    y,
+                    ui,
+                    rp_app::kit::LATE,
+                    late.as_bytes(),
+                );
+                room -= lw + 12;
+            }
+            if feed.due == 0 {
+                f.text(p.x + 112, y, ui, DIM, b"All done for today");
+            } else {
+                rp_app::kit::fitted(f, p.x + 112, y, ui, TEXT, feed.next_task.title(), room);
+            }
+            self.decorate(f, Target::TasksLine);
+        } else if feed.ready {
+            self.press_under(f, Target::TasksLine);
+            let mut due = Line::new();
+            if feed.due == 0 {
+                due = due.push(b"NO TASKS DUE");
+            } else {
+                due = due.num(i32::from(feed.due)).push(if feed.due == 1 {
+                    b" TASK DUE"
+                } else {
+                    b" TASKS DUE"
+                });
+            }
+            let late = if feed.late > 0 {
+                Line::new()
+                    .push(b"  \x80  ")
+                    .num(i32::from(feed.late))
+                    .push(b" LATE")
+            } else {
+                Line::new()
+            };
+            let right = line.x + line.w - 10;
+            let lw = label.width(late.as_bytes());
+            let dw = label.width(due.as_bytes());
+            let x = right - lw - dw;
+            f.text(x, p.y + 28, label, DIM, due.as_bytes());
+            f.text(x + dw, p.y + 28, label, rp_app::kit::LATE, late.as_bytes());
+            self.decorate(f, Target::TasksLine);
+        }
+        // The rows: a time (or "All day", or "Tomorrow" beside today's)
+        // and the title, cut to the panel.
+        let mixed = rows.iter().any(|r| !r.tomorrow);
+        for (k, r) in rows.iter().enumerate() {
+            let y = p.y + 58 + k as u16 * 28;
+            let when = match r.at {
+                _ if r.tomorrow && mixed => Line::new().push(b"Tomorrow"),
+                Some(m) => self.region.time((m / 60) as u8, (m % 60) as u8, true),
+                None => Line::new().push(b"All day"),
+            };
+            f.text(p.x + 16, y, ui, DIM, when.as_bytes());
+            let mut room = p.w - 112 - 16;
+            // "+2" after the last row: today's that did not fit.
+            if k + 1 == rows.len() && more > 0 {
+                let more = Line::new().push(b"+").num(i32::from(more));
+                let mw = ui.width(more.as_bytes());
+                f.text(p.x + p.w - 16 - mw, y, ui, DIM, more.as_bytes());
+                room -= mw + 12;
+            }
+            rp_app::kit::fitted(f, p.x + 112, y, ui, TEXT, r.title(), room);
+        }
+        if rows.is_empty() {
+            let words: &[u8] = if feed.ready {
+                b"Nothing more today"
+            } else {
+                b"Calendar loading"
+            };
+            f.text(p.x + 16, p.y + 58, ui, DIM, words);
+        }
+        self.decorate(f, Target::Agenda);
+    }
+
     /// The Today screen under the title bar: the weather hero and the next
     /// five days (from the shell's forecast), the calendar, the quick
     /// buttons.
@@ -3891,31 +4095,7 @@ impl Shell {
             self.centred(f, r, r.y + r.h - 8, ui, TEXT, hl.as_bytes());
         }
 
-        // The calendar: sample lines until there is a calendar.
-        self.glass(f, CALENDAR_PANEL, GLASS_LEFT, GLASS_RIGHT);
-        f.text(
-            CALENDAR_PANEL.x + 16,
-            CALENDAR_PANEL.y + 28,
-            label,
-            DIM,
-            b"TODAY",
-        );
-        f.text(
-            CALENDAR_PANEL.x + CALENDAR_PANEL.w - 16 - ui.width(b"sample data"),
-            CALENDAR_PANEL.y + 28,
-            ui,
-            DIM,
-            b"sample data",
-        );
-        for (k, (h, m, what)) in [(11u8, 30u8, &b"Team call"[..]), (16, 0, b"Pick up parts")]
-            .iter()
-            .enumerate()
-        {
-            let y = CALENDAR_PANEL.y + 58 + k as u16 * 28;
-            let when = rg.time(*h, *m, true);
-            f.text(CALENDAR_PANEL.x + 16, y, ui, DIM, when.as_bytes());
-            f.text(CALENDAR_PANEL.x + 112, y, ui, TEXT, what);
-        }
+        self.calendar_panel(f);
 
         // Quick buttons.
         for (i, name) in QUICK.iter().enumerate() {
