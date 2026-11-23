@@ -41,22 +41,9 @@ const PLAN_AHEAD: u32 = 7 * DAY_MIN;
 /// already past) still comes up within this many minutes.
 const LATE_MIN: u32 = 60;
 
-/// The banner's look (the owner's pick among the mock-ups; until then all
-/// three are drawn by this code: docs/design/notifications.md).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BannerStyle {
-    /// A. A card under the title bar: what and when over a row of four
-    /// keys (5 MIN, 15 MIN, DISMISS, OPEN).
-    Card,
-    /// B. A compact strip under the title bar: the words left, three keys
-    /// and a close mark right.
-    Strip,
-    /// C. Card A at the bottom, over the softkeys' edge: near the hand,
-    /// the app's title left in view.
-    Bottom,
-}
-
-/// A banner's card and its four keys (5 MIN, 15 MIN, DISMISS, OPEN).
+/// The banner: a glass card under the title bar, what and when over a
+/// row of four keys (5 MIN, 15 MIN, DISMISS, OPEN). The owner's pick, look
+/// A of three (2026-11-23, R370: docs/design/notifications.md).
 #[derive(Clone, Copy)]
 struct Layout {
     card: Rect,
@@ -64,58 +51,30 @@ struct Layout {
 }
 
 const CARD_H: u16 = 124;
-const fn card_keys(y: u16) -> [Rect; 4] {
-    let ky = y + CARD_H - 8 - 34;
-    [
-        Rect::new(16, ky, 106, 34),
-        Rect::new(16 + 114, ky, 106, 34),
-        Rect::new(16 + 2 * 114, ky, 106, 34),
-        Rect::new(16 + 3 * 114, ky, 106, 34),
-    ]
-}
-const LAYOUT_CARD: Layout = Layout {
+const KEY_Y: u16 = 40 + CARD_H - 8 - 34;
+const LAYOUT: Layout = Layout {
     card: Rect::new(8, 40, W - 16, CARD_H),
-    keys: card_keys(40),
-};
-const BOTTOM_Y: u16 = rp_app::CONTENT.y + rp_app::CONTENT.h - 8 - CARD_H;
-const LAYOUT_BOTTOM: Layout = Layout {
-    card: Rect::new(8, BOTTOM_Y, W - 16, CARD_H),
-    keys: card_keys(BOTTOM_Y),
-};
-const LAYOUT_STRIP: Layout = Layout {
-    card: Rect::new(8, 40, W - 16, 84),
     keys: [
-        Rect::new(W - 16 - 80 - 8 - 66 - 8 - 66, 82, 66, 34),
-        Rect::new(W - 16 - 80 - 8 - 66, 82, 66, 34),
-        Rect::new(W - 16 - 34, 46, 34, 30),
-        Rect::new(W - 16 - 80, 82, 80, 34),
+        Rect::new(16, KEY_Y, 106, 34),
+        Rect::new(16 + 114, KEY_Y, 106, 34),
+        Rect::new(16 + 2 * 114, KEY_Y, 106, 34),
+        Rect::new(16 + 3 * 114, KEY_Y, 106, 34),
     ],
 };
 
-impl BannerStyle {
-    const fn layout(self) -> Layout {
-        match self {
-            Self::Card => LAYOUT_CARD,
-            Self::Strip => LAYOUT_STRIP,
-            Self::Bottom => LAYOUT_BOTTOM,
-        }
-    }
-}
-
-/// The previews' and tests' names for the banner's keys (the default
-/// look's).
+/// The previews' and tests' names for the banner's keys.
 pub mod preview {
-    use super::LAYOUT_CARD;
+    use super::LAYOUT;
     /// The banner's Snooze 5 min.
-    pub const REMINDER_SNOOZE: rp_draw::Rect = LAYOUT_CARD.keys[0];
+    pub const REMINDER_SNOOZE: rp_draw::Rect = LAYOUT.keys[0];
     /// The banner's Snooze 15 min.
-    pub const REMINDER_SNOOZE_15: rp_draw::Rect = LAYOUT_CARD.keys[1];
+    pub const REMINDER_SNOOZE_15: rp_draw::Rect = LAYOUT.keys[1];
     /// The banner's Dismiss.
-    pub const REMINDER_DISMISS: rp_draw::Rect = LAYOUT_CARD.keys[2];
+    pub const REMINDER_DISMISS: rp_draw::Rect = LAYOUT.keys[2];
     /// The banner's Open.
-    pub const REMINDER_OPEN: rp_draw::Rect = LAYOUT_CARD.keys[3];
+    pub const REMINDER_OPEN: rp_draw::Rect = LAYOUT.keys[3];
     /// The banner's card.
-    pub const REMINDER_CARD: rp_draw::Rect = LAYOUT_CARD.card;
+    pub const REMINDER_CARD: rp_draw::Rect = LAYOUT.card;
 }
 
 /// An alert waiting on the banner: the record, when it sounded and the
@@ -161,7 +120,6 @@ pub(crate) struct Apps {
     /// down on the banner (its lift is the banner's, wherever it is).
     press: Option<u8>,
     down_on_banner: bool,
-    style: BannerStyle,
 }
 
 impl Apps {
@@ -180,7 +138,6 @@ impl Apps {
             chime: false,
             press: None,
             down_on_banner: false,
-            style: BannerStyle::Card,
         }
     }
 
@@ -477,12 +434,6 @@ impl Shell {
         self.apps.n_due > 0
     }
 
-    /// The banner's look (the previews show each; the owner picks).
-    pub fn set_banner_style(&mut self, style: BannerStyle) {
-        self.apps.style = style;
-        self.dirty(Rect::new(0, 0, W, H));
-    }
-
     /// A touch while the banner shows, before anything under it: a touch
     /// that goes down on the banner is the banner's to its lift (a key
     /// shown pressed under the pen; 5 MIN and 15 MIN snooze, DISMISS takes
@@ -490,7 +441,7 @@ impl Shell {
     /// touch isn't the banner's.
     pub(crate) fn banner_input(&mut self, e: super::Input) -> Option<Action> {
         use super::Input;
-        let lay = self.apps.style.layout();
+        let lay = LAYOUT;
         let key = |x: u16, y: u16| lay.keys.iter().position(|k| k.contains_point(x, y));
         match e {
             Input::PenDown { x, y } => {
@@ -567,8 +518,7 @@ impl Shell {
         let Some(s) = store.as_ref() else { return };
         let Some(r) = s.get(d.id) else { return };
         let (ui, label) = (self.fonts.ui, self.fonts.label);
-        let style = self.apps.style;
-        let lay = style.layout();
+        let lay = LAYOUT;
         let card = lay.card;
         // Solid under the glass: it must read over any screen.
         f.push(Cmd::Fill {
@@ -607,18 +557,14 @@ impl Shell {
         if more > 0 {
             head = head.push(b"  +").num(more as i32);
         }
-        // The words' right edge: before the keys beside them (B) or the
-        // card's (A, C).
-        let (right, head_right) = match style {
-            BannerStyle::Strip => (lay.keys[0].x - 8, lay.keys[2].x - 8),
-            _ => (card.x + card.w - 12, card.x + card.w - 12),
-        };
+        // The words' right edge: the card's.
+        let right = card.x + card.w - 12;
         f.text(
             x,
             card.y + 22,
             label,
             FOCUS,
-            fit(label, head.as_bytes(), head_right - x),
+            fit(label, head.as_bytes(), right - x),
         );
         let title = r.text(tag::TITLE);
         let title = if title.is_empty() && task {
@@ -659,10 +605,7 @@ impl Shell {
         );
         // The keys: the apps' Aero keys, OPEN the blue glow.
         let look = self.program_look();
-        let names: [&[u8]; 4] = match style {
-            BannerStyle::Strip => [b"5 MIN", b"15 MIN", b"X", b"OPEN"],
-            _ => [b"5 MIN", b"15 MIN", b"DISMISS", b"OPEN"],
-        };
+        let names: [&[u8]; 4] = [b"5 MIN", b"15 MIN", b"DISMISS", b"OPEN"];
         for (k, (rr, word)) in lay.keys.iter().zip(names).enumerate() {
             let down = self.apps.press == Some(k as u8);
             let art = if k == 3 {
@@ -702,9 +645,8 @@ impl Shell {
         (self.apps.n_due > 0).then_some(self.apps.due[0].start)
     }
 
-    /// The banner look's card and keys (the tests').
+    /// The banner's card and keys (the tests').
     pub(crate) fn banner_layout(&self) -> (Rect, [Rect; 4]) {
-        let l = self.apps.style.layout();
-        (l.card, l.keys)
+        (LAYOUT.card, LAYOUT.keys)
     }
 }

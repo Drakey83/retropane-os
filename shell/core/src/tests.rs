@@ -4621,16 +4621,14 @@ fn the_banner_answers_over_an_open_app() {
     assert!(!s.reminder_shown());
 }
 
-/// Every banner look draws its card and four keys inside the screen, the
-/// keys inside the card and apart, each look with the words it needs.
+/// The banner draws its card and four keys inside the screen, the keys
+/// inside the card and apart.
 #[test]
-fn every_banner_look_fits_and_draws() {
-    use crate::apps::BannerStyle;
+fn the_banner_fits_and_draws() {
     let (mut s, day) = reminders_shell();
     appointment(&mut s, day, 9, 0, &[0], None);
     s.set_time(clock(9, 0));
-    for style in [BannerStyle::Card, BannerStyle::Strip, BannerStyle::Bottom] {
-        s.set_banner_style(style);
+    {
         let (card, keys) = s.banner_layout();
         assert!(card.x + card.w <= W && card.y + card.h <= rp_app::CONTENT.y + rp_app::CONTENT.h);
         for (i, k) in keys.iter().enumerate() {
@@ -4639,10 +4637,10 @@ fn every_banner_look_fits_and_draws() {
                     && k.y >= card.y
                     && k.x + k.w <= card.x + card.w
                     && k.y + k.h <= card.y + card.h,
-                "{style:?} key {i}"
+                "key {i}"
             );
             for o in &keys[i + 1..] {
-                assert_eq!(k.intersect(o).w, 0, "{style:?} keys overlap");
+                assert_eq!(k.intersect(o).w, 0, "keys overlap");
             }
         }
         let mut f = Frame::new();
@@ -4657,7 +4655,7 @@ fn every_banner_look_fits_and_draws() {
             x: card.x + 2,
             y: card.y + card.h - 2,
         });
-        assert!(s.reminder_shown(), "{style:?}");
+        assert!(s.reminder_shown());
     }
 }
 

@@ -68,20 +68,22 @@ program: R243) builds on this one.
   880 and 1175 Hz were at the same level. Played through the audio service
   (ADR-0032), the codec powered only while it sounds.
 
-## The banner's look: three mock-ups for the owner's pick
+## The banner's look: A, the owner's pick (2026-11-23)
 
-Drawn by the shell's own code (`shell/core/src/apps/mod.rs`,
-`BannerStyle`; `RP_PREVIEW_ONLY=notify cargo xtask ui-preview`, in
-`target/ui-preview/notify-*.png`), in the Aero glass: the wallpaper's
+Three looks were drawn for his pick; he chose A, the card under the
+title bar, and B and C were taken out (R370). Drawn by the shell's own
+code (`shell/core/src/apps/mod.rs`, `LAYOUT`;
+`RP_PREVIEW_ONLY=notify cargo xtask ui-preview`, in
+`target/ui-preview/notify-banner*.png`), in the Aero glass: the wallpaper's
 frosted panel, the apps' gel keys, OPEN the blue glow, the record's
 calendar or list colour as a bar down its words (with the app's name:
 colour never alone).
 
 | Look | What | For | Against |
 |---|---|---|---|
-| **A. Card** (built as the default) | A card under the title bar: CALENDAR IN 15 MIN, the title, the time and place; a row of four keys 5 MIN, 15 MIN, DISMISS, OPEN | Every word and key large; four equal 106 x 34 keys | Covers the app's top 124 px (its large title) |
-| B. Strip | 84 px: the words left, 5 MIN, 15 MIN and OPEN right, an X to dismiss | Covers least | Title cut sooner (about 210 px of it); a small X |
-| C. Bottom | Card A over the bottom of the app, above the softkeys | Near the hand; the app's title stays in view | Covers the foot tabs, and the keyboard when it is up |
+| **A. Card** (picked, built) | A card under the title bar: CALENDAR IN 15 MIN, the title, the time and place; a row of four keys 5 MIN, 15 MIN, DISMISS, OPEN | Every word and key large; four equal 106 x 34 keys | Covers the app's top 124 px (its large title) |
+| B. Strip (not picked, taken out) | 84 px: the words left, 5 MIN, 15 MIN and OPEN right, an X to dismiss | Covers least | Title cut sooner (about 210 px of it); a small X |
+| C. Bottom (not picked, taken out) | Card A over the bottom of the app, above the softkeys | Near the hand; the app's title stays in view | Covers the foot tabs, and the keyboard when it is up |
 
 ## Build list
 
@@ -92,7 +94,7 @@ colour never alone).
 | Snooze 5 and 15 minutes | built | shell/core/src/apps/mod.rs |
 | Several alerts in Calendar's editor | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | The chime | built | services/audio/src/chime.rs, shell/today/src/main.rs |
-| The banner's look picked by the owner (A, B or C) | waiting: the owner's pick (R370) | xtask/src/app_mockups.rs |
+| The banner's look: A, the owner's pick (R370) | built | shell/core/src/apps/mod.rs, xtask/src/app_mockups.rs |
 | The RTC alarm wake when the OS sleeps | waiting: the OS's sleep (R369) | |
 
 ## What would overturn it

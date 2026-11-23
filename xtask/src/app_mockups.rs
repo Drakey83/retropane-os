@@ -588,11 +588,11 @@ pub fn mocks() -> Vec<Mock> {
     all
 }
 
-/// A reminder due at 12:15 on the previews' Monday, the banner in look
-/// `style` (docs/design/notifications.md: the owner's pick), over
+/// A reminder due at 12:15 on the previews' Monday, the banner
+/// (docs/design/notifications.md: the owner's pick, look A), over
 /// Calendar's agenda (Lunch with Sam, 12:30, 15 minutes before) or over
 /// Tasks (a task at 12:15).
-fn banner(s: &mut rp_shell::Shell, style: rp_shell::apps::BannerStyle, task: bool) {
+fn banner(s: &mut rp_shell::Shell, task: bool) {
     use rp_pim::store::{Kind, tag};
     if task {
         sample_tasks(s);
@@ -619,43 +619,20 @@ fn banner(s: &mut rp_shell::Shell, style: rp_shell::apps::BannerStyle, task: boo
         day: 1,
         month: 1,
     });
-    s.set_banner_style(style);
 }
 
 fn base() -> Vec<Mock> {
-    use rp_shell::apps::BannerStyle;
     vec![
-        // The reminder banner's three looks for the owner's pick
-        // (docs/design/notifications.md).
+        // The reminder banner (docs/design/notifications.md).
         Mock {
-            name: "notify-a-card",
-            what: "Reminder banner A: a glass card under the title bar, what and when over four keys (5 MIN, 15 MIN, DISMISS, OPEN), over Calendar",
-            prepare: Box::new(|s| banner(s, BannerStyle::Card, false)),
+            name: "notify-banner",
+            what: "The reminder banner: a glass card under the title bar, what and when over four keys (5 MIN, 15 MIN, DISMISS, OPEN), over Calendar",
+            prepare: Box::new(|s| banner(s, false)),
         },
         Mock {
-            name: "notify-a-card-task",
-            what: "Reminder banner A over Tasks: a task due now",
-            prepare: Box::new(|s| banner(s, BannerStyle::Card, true)),
-        },
-        Mock {
-            name: "notify-b-strip",
-            what: "Reminder banner B: a compact strip under the title bar, three keys and a close mark at the right, over Calendar",
-            prepare: Box::new(|s| banner(s, BannerStyle::Strip, false)),
-        },
-        Mock {
-            name: "notify-b-strip-task",
-            what: "Reminder banner B over Tasks",
-            prepare: Box::new(|s| banner(s, BannerStyle::Strip, true)),
-        },
-        Mock {
-            name: "notify-c-bottom",
-            what: "Reminder banner C: card A at the bottom, over the softkeys' edge (near the hand, the app's title in view), over Calendar",
-            prepare: Box::new(|s| banner(s, BannerStyle::Bottom, false)),
-        },
-        Mock {
-            name: "notify-c-bottom-task",
-            what: "Reminder banner C over Tasks",
-            prepare: Box::new(|s| banner(s, BannerStyle::Bottom, true)),
+            name: "notify-banner-task",
+            what: "The reminder banner over Tasks: a task due now",
+            prepare: Box::new(|s| banner(s, true)),
         },
         // Half-Life's two screens for the owner's pick (hl_mockups.rs).
         Mock {
