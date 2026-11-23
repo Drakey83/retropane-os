@@ -65,7 +65,7 @@ tick it off with a satisfying tap.
 | Coloured priority flags (word in the editor) | sheet | built | apps/tasks/src/lib.rs |
 | Subtasks with "2 of 5" | apps-and-packs: subtasks | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | pending | |
-| Reminders through the notification banner and sound | apps-and-packs: reminders | pending | |
+| Reminders through the notification banner and sound | apps-and-packs: reminders | built | shell/pim/src/remind.rs, shell/core/src/apps/mod.rs, services/audio/src/chime.rs, shell/today/src/main.rs, shell/core/src/tests.rs |
 | Tasks on their due days in Calendar; make a task from an appointment | apps-and-packs: tie-ins with Calendar | pending | |
 | Today screen's tasks line fed from the store | sheet | pending | |
 | CalDAV tasks and Google Tasks sync over any connection | sheet | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |

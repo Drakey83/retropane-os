@@ -141,11 +141,23 @@ struct Edit {
     all_day: bool,
     /// 0 none, then Every's order: day, week, month, year.
     repeat: u8,
-    /// 0 none, 1 at the start, 2 15 min, 3 1 h, 4 1 day before.
-    alert: u8,
-    /// The alert's lead in minutes when it is none of the quick ones
-    /// (`alert` 5).
+    /// The alerts on (several, calendar-rule0.md): bit k for chip k, 1 at
+    /// the start, 2 15 min, 3 1 h, 4 1 day before, 5 its own lead
+    /// ([`Edit::alert_other`]); none on is chip 0, NONE.
+    alerts: u8,
+    /// The own lead in minutes (chip 5).
     alert_other: u32,
+    /// The D-pad's chip on the alert row (left and right move it, the
+    /// centre turns it on or off: a row of several needs a cursor apart
+    /// from what is on).
+    alert_at: u8,
+    /// The record's alerts as they were ([`tag::REMIND`]), kept as they
+    /// are unless the alert row is changed (an imported appointment's
+    /// leads the chips can't show, two of its own, are never lost by an
+    /// edit of its title).
+    kept: [u8; 4 * rp_pim::remind::LEADS_MAX],
+    kept_n: u8,
+    alerts_changed: bool,
     cal: usize,
     /// From a calendar link: shown, not changed.
     read_only: bool,
@@ -160,24 +172,67 @@ const ALERTS: [Option<u32>; 5] = [None, Some(0), Some(15), Some(60), Some(1440)]
 const ALERT_NAMES: [&[u8]; 5] = [b"NONE", b"AT START", b"15 MIN", b"1 HOUR", b"1 DAY"];
 
 impl Edit {
-    /// The alert's lead in minutes (`None`: no alert).
-    fn alert_minutes(&self) -> Option<u32> {
-        match ALERTS.get(usize::from(self.alert)) {
-            Some(a) => *a,
-            None => Some(self.alert_other),
+    /// The alerts' leads in minutes (none: no alert), latest first.
+    fn leads(&self) -> ([u32; 5], usize) {
+        let mut v = [0u32; 5];
+        let mut n = 0;
+        for k in (1..=5u8).rev() {
+            if self.alerts & (1 << k) != 0 {
+                v[n] = ALERTS
+                    .get(usize::from(k))
+                    .copied()
+                    .flatten()
+                    .unwrap_or(self.alert_other);
+                n += 1;
+            }
         }
+        v[..n].sort_unstable_by(|a, b| b.cmp(a));
+        (v, n)
     }
 
-    /// The alert set to `lead` minutes before: one of the quick ones, or
-    /// its own (the sixth chip).
+    /// The own lead (the sixth chip's pad) set to `lead` minutes before:
+    /// a quick one lights its own chip; `None` takes the own one off.
     fn set_alert(&mut self, lead: Option<u32>) {
+        self.alerts &= !(1 << 5);
         match ALERTS.iter().position(|a| *a == lead) {
-            Some(k) => self.alert = k as u8,
+            Some(0) => {}
+            Some(k) => self.alerts |= 1 << k,
             None => {
-                self.alert = 5;
+                self.alerts |= 1 << 5;
                 self.alert_other = lead.unwrap_or(0);
             }
         }
+        self.alerts_changed = true;
+    }
+
+    /// Chip `k` of the alert row tapped: NONE takes every alert off, a
+    /// quick one turns on or off.
+    fn toggle_alert(&mut self, k: usize) {
+        match k {
+            0 => self.alerts = 0,
+            1..=4 => self.alerts ^= 1 << k,
+            _ => return,
+        }
+        self.alerts_changed = true;
+    }
+
+    /// The alerts read from a record's leads.
+    fn load_alerts(&mut self, r: &rp_pim::store::Rec<'_>) {
+        self.alerts = 0;
+        for lead in rp_pim::remind::leads(r) {
+            match ALERTS.iter().position(|a| *a == Some(lead)) {
+                Some(k) => self.alerts |= 1 << k,
+                None => {
+                    self.alerts |= 1 << 5;
+                    self.alert_other = lead;
+                }
+            }
+        }
+        let raw = r.text(tag::REMIND);
+        let n = raw.len().min(self.kept.len()) / 4 * 4;
+        self.kept[..n].copy_from_slice(&raw[..n]);
+        self.kept_n = n as u8;
+        self.alerts_changed = false;
     }
 }
 const REPEAT_NAMES: [&[u8]; 5] = [b"NONE", b"DAILY", b"WEEKLY", b"MONTHLY", b"YEARLY"];
@@ -598,8 +653,12 @@ impl Calendar {
             // the X51v, 2026-11-15, set one a few minutes off, the alert's
             // time was past as it was made, and "it never went off when it
             // was supposed to"; run today-0150 has no reminder in 814 s).
-            alert: 1,
+            alerts: 1 << 1,
             alert_other: 0,
+            alert_at: 1,
+            kept: [0; 4 * rp_pim::remind::LEADS_MAX],
+            kept_n: 0,
+            alerts_changed: true,
             cal: 0,
             read_only: false,
             typing: None,
@@ -632,7 +691,7 @@ impl Calendar {
                         rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
                         rp_pim::repeat::Every::Year => 4,
                     });
-                e.set_alert(r.num(tag::REMIND));
+                e.load_alerts(&r);
                 let cal = r.num(tag::CAL);
                 e.cal = cal
                     .and_then(|c| self.cals[..self.n_cals].iter().position(|x| x.id == c))
@@ -683,7 +742,17 @@ impl Calendar {
             }
             .pack(e.day))
         });
-        let alert = e.alert_minutes().map(le);
+        // Several alerts (rp_pim::remind): the chips' leads, or the
+        // record's own as they were when the row wasn't changed.
+        let mut alert = [0u8; 4 * rp_pim::remind::LEADS_MAX];
+        let alert_n = if e.alerts_changed {
+            let (v, n) = e.leads();
+            rp_pim::remind::pack(&v[..n], &mut alert)
+        } else {
+            let n = usize::from(e.kept_n);
+            alert[..n].copy_from_slice(&e.kept[..n]);
+            n
+        };
         let mut fields: [(u8, &[u8]); 8] = [
             (tag::TITLE, &e.title[..e.title_n]),
             (tag::PLACE, &e.place[..e.place_n]),
@@ -703,8 +772,8 @@ impl Calendar {
         if let Some(r) = &rule {
             fields[6].1 = r;
         }
-        if let Some(a) = &alert {
-            fields[7].1 = a;
+        if alert_n > 0 {
+            fields[7].1 = &alert[..alert_n];
         }
         let Some(cell) = cx.pim else { return false };
         let Ok(mut guard) = cell.try_borrow_mut() else {
@@ -819,7 +888,7 @@ impl Calendar {
         // brings the pad: a number and its unit, as Google Calendar's
         // custom alert; the owner, 2026-11-15, "by the min").
         let mut other = Buf::<10>::new();
-        if e.alert == 5 {
+        if e.alerts & (1 << 5) != 0 {
             let m = e.alert_other;
             if m.is_multiple_of(1440) {
                 other.num(m / 1440).s(b" DAY");
@@ -839,7 +908,24 @@ impl Calendar {
             ALERT_NAMES[4],
             other.get(),
         ];
-        chips_row(f, E_ALERT + 14, b"ALERT", &alerts, usize::from(e.alert));
+        // Several on at once (each lit), NONE lit when none is; the
+        // D-pad's chip ringed while the row is chosen.
+        kit::text(f, MARGIN + 4, E_ALERT + 10, cx.fonts.label, DIM, b"ALERTS");
+        let row = Rect::new(MARGIN, E_ALERT + 14, WIDE, 30);
+        for (k, word) in alerts.iter().enumerate() {
+            let on = if k == 0 {
+                e.alerts == 0
+            } else {
+                e.alerts & (1 << k) != 0
+            };
+            kit::gel(f, cx, kit::chip(row, alerts.len(), k), word, on);
+        }
+        if e.row == Some(6) {
+            f.push(rp_app::Cmd::Outline {
+                r: kit::chip(row, alerts.len(), usize::from(e.alert_at)),
+                color: TEXT,
+            });
+        }
         let mut names: [&[u8]; 4] = [b""; 4];
         let n = self.n_cals.min(4);
         for (k, c) in self.cals[..n].iter().enumerate() {
@@ -909,6 +995,19 @@ impl Calendar {
             (_, Some(r)) => {
                 let (top, h) = EDIT_ROWS[usize::from(r)];
                 let right = k != Key::Left;
+                if r == 6 {
+                    let row = Rect::new(MARGIN, E_ALERT + 14, WIDE, 30);
+                    if k == Key::Enter {
+                        let c = kit::chip(row, 6, usize::from(e.alert_at));
+                        return self.edit_tap(cx, c.x + c.w / 2, c.y + c.h / 2);
+                    }
+                    e.alert_at = if right {
+                        (e.alert_at + 1).min(5)
+                    } else {
+                        e.alert_at.saturating_sub(1)
+                    };
+                    return Reply::Redraw;
+                }
                 let x = match r {
                     // (The centre on the start: its time pad.)
                     0 | 1 | 3 | 8 if k == Key::Enter => W / 2,
@@ -922,7 +1021,6 @@ impl Calendar {
                     5..=7 if k != Key::Enter => {
                         let (n, at) = match r {
                             5 => (5, usize::from(e.repeat)),
-                            6 => (6, usize::from(e.alert)),
                             _ => (n_cals, e.cal),
                         };
                         if n == 0 {
@@ -999,12 +1097,13 @@ impl Calendar {
         } else if hit(E_REPEAT + 14, 30) {
             e.repeat = chip(5) as u8;
         } else if hit(E_ALERT + 14, 30) {
-            match chip(6) {
-                5 => {
-                    let lead = e.alert_minutes().filter(|_| e.alert == 5);
-                    self.pad = Some((1, rp_app::timepad::TimePad::before(lead)));
-                }
-                k => e.alert = k as u8,
+            let k = chip(6);
+            e.alert_at = k as u8;
+            if k == 5 {
+                let lead = (e.alerts & (1 << 5) != 0).then_some(e.alert_other);
+                self.pad = Some((1, rp_app::timepad::TimePad::before(lead)));
+            } else {
+                e.toggle_alert(k);
             }
         } else if hit(E_CAL + 14, 30) && n_cals > 0 {
             e.cal = chip(n_cals);

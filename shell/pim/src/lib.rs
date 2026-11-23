@@ -12,5 +12,6 @@ pub mod expr;
 pub mod net;
 pub mod phone;
 pub mod quick;
+pub mod remind;
 pub mod repeat;
 pub mod store;
