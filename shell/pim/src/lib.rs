@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod calc;
+pub mod contact;
 pub mod date;
 pub mod expr;
 pub mod net;
