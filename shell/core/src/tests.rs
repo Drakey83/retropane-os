@@ -4606,3 +4606,60 @@ fn a_programs_map_is_the_radars_coloured_into_its_picture() {
     s.input(Input::Key(Key::Home));
     assert_eq!(s.prog_map_key(), None);
 }
+
+/// A program asking with an argument of any script (R370).
+struct Abroad(&'static [u8], bool);
+
+impl rp_app::Program for Abroad {
+    fn title(&self) -> &'static str {
+        "Abroad"
+    }
+    fn softkeys(&self) -> (&'static str, &'static str) {
+        ("", "")
+    }
+    fn draw(&mut self, _f: &mut Frame, _cx: &rp_app::Ctx) {}
+    fn event(&mut self, _e: rp_app::Event, _cx: &rp_app::Ctx) -> rp_app::Reply {
+        rp_app::Reply::Nothing
+    }
+    fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        (!core::mem::replace(&mut self.1, true)).then(|| rp_app::NetAsk {
+            what: b"ADDR",
+            arg: rp_app::Text::of(self.0),
+        })
+    }
+}
+
+#[test]
+fn an_address_of_any_script_reaches_the_relay_whole() {
+    // R370: only ASCII went, so "Zürich" was asked as "Zrich". Letters of
+    // every script go as their UTF-8 bytes in %XX (the relay decodes and
+    // checks them); symbols, control bytes and broken UTF-8 stay out; a
+    // letter that won't fit whole is left off, the line always ends.
+    let ask = |arg: &'static [u8]| {
+        let mut s = shell(true);
+        while s.next_ask().is_some() {
+            s.net_answer(false, b"");
+        }
+        s.open_program(Box::leak(Box::new(Abroad(arg, false))));
+        let q = s.next_ask().expect("asked");
+        std::string::String::from_utf8(q.line().to_vec()).unwrap()
+    };
+    assert_eq!(
+        ask("Bahnhofstrasse 1, Zürich".as_bytes()),
+        "RPNET ADDR Bahnhofstrasse 1, Z%C3%BCrich\n"
+    );
+    assert_eq!(ask("東京".as_bytes()), "RPNET ADDR %E6%9D%B1%E4%BA%AC\n");
+    assert_eq!(
+        ask("Kraków; €5\u{7}".as_bytes()),
+        "RPNET ADDR Krak%C3%B3w 5\n"
+    );
+    assert_eq!(ask(b"Z\xFFrich \xC3"), "RPNET ADDR Zrich \n");
+    // 64 bytes of three-byte letters (21 of them): as many whole as fit.
+    let long = ask("東".repeat(21).leak().as_bytes());
+    assert!(long.ends_with('\n') && long.len() <= 95, "{long}");
+    let body = &long["RPNET ADDR ".len()..long.len() - 1];
+    assert!(
+        body.len() % 9 == 0 && !body.is_empty(),
+        "whole letters only: {body}"
+    );
+}

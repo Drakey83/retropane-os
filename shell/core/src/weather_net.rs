@@ -136,6 +136,36 @@ impl Question {
             }
         }
     }
+
+    /// A program's argument (UTF-8) onto the line: ASCII letters, digits
+    /// and ` -',.#/` as they are; a letter of any other script (Zürich,
+    /// Málaga, Kraków, 東京) as its UTF-8 bytes in `%XX`, whole or not at all,
+    /// room for the line's end kept; anything else left out. The relay
+    /// decodes them and checks them as letters again (R370: only ASCII
+    /// went, so "Zürich" was asked as "Zrich": the international rule).
+    fn push_arg(&mut self, arg: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for chunk in arg.utf8_chunks() {
+            for ch in chunk.valid().chars() {
+                let room = self.line.len() - 2 - self.n;
+                if ch.is_ascii() {
+                    let c = ch as u8;
+                    if (c.is_ascii_alphanumeric() || b" -',.#/".contains(&c)) && room >= 1 {
+                        self.push(&[c]);
+                    }
+                } else if ch.is_alphabetic() || ch.is_numeric() {
+                    let mut b = [0u8; 4];
+                    let bytes = ch.encode_utf8(&mut b).as_bytes();
+                    if room < 3 * bytes.len() {
+                        return;
+                    }
+                    for &x in bytes {
+                        self.push(&[b'%', HEX[usize::from(x >> 4)], HEX[usize::from(x & 15)]]);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// `v` thousandths of a degree as `-89.861`.
@@ -180,15 +210,11 @@ impl Shell {
                 tile: None,
             };
             q.push(b"RPNET ");
-            // Its name and argument as the relay checks them: letters,
-            // digits, a few signs.
+            // Its name and argument as the relay checks them: letters (of
+            // any script), digits, a few signs.
             q.push(ask.what);
             q.push(b" ");
-            for &c in ask.arg.get() {
-                if c.is_ascii_alphanumeric() || b" -',.#/".contains(&c) {
-                    q.push(&[c]);
-                }
-            }
+            q.push_arg(ask.arg.get());
             // The line's end, as every question has: without it the relay
             // read no line until Weather's next question ended it, and
             // refused the two run together (the load of 2026-11-15:

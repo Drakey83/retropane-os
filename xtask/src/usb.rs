@@ -1683,6 +1683,65 @@ mod tests {
     /// The relay takes every frame number RainViewer's two hours give
     /// (R184 step 2: 13 frames; a one-digit check refused 10-12 and the
     /// newest frames showed dry, run today-0054), and keeps all of them.
+    /// The relay's address check (R370), run in PowerShell as the relay
+    /// runs it: every script's letters come as %XX and are taken; anything
+    /// that isn't an address, or isn't UTF-8, is refused. Skipped where no
+    /// PowerShell is installed.
+    #[test]
+    fn the_relay_takes_addresses_of_every_script_and_nothing_else() {
+        let src = include_str!("usb.rs");
+        // (Its name in two pieces: this test's own text holds it too.)
+        let start = src
+            .find(&["function Address", "-Text($raw)"].concat())
+            .expect("the check");
+        let end = start + src[start..].find("\n}}\n").expect("its end") + 4;
+        let func = src[start..end].replace("{{", "{").replace("}}", "}");
+        let cases = [
+            ("410 Pine St", Some("410 Pine St")),
+            (
+                "Bahnhofstrasse 1, Z%C3%BCrich",
+                Some("Bahnhofstrasse 1, Zürich"),
+            ),
+            (
+                "Calle Larios 2, M%C3%A1laga",
+                Some("Calle Larios 2, Málaga"),
+            ),
+            ("%E6%9D%B1%E4%BA%AC", Some("東京")),
+            ("Kra%C5%82k%C3%B3w", Some("Kra\u{142}ków")),
+            // Not UTF-8, a cut sequence, a symbol, a lower-case hex, junk.
+            ("Z%FFrich", None),
+            ("Z%C3", None),
+            ("A%E2%82%AC1", None),
+            ("Z%c3%bcrich", None),
+            ("a;b", None),
+            ("x", None),
+        ];
+        let mut script = format!("{func}\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n");
+        for (raw, _) in &cases {
+            script.push_str(&format!(
+                "$r = Address-Text '{raw}'; if ($null -eq $r) {{ 'NULL' }} else {{ $r }}\n"
+            ));
+        }
+        let Ok(out) = std::process::Command::new("pwsh")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+        else {
+            eprintln!("no PowerShell: the relay's address check not run");
+            return;
+        };
+        let got = String::from_utf8_lossy(&out.stdout);
+        let got: Vec<&str> = got.lines().collect();
+        assert_eq!(
+            got.len(),
+            cases.len(),
+            "{got:?} {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for ((raw, want), g) in cases.iter().zip(got) {
+            assert_eq!(g, want.unwrap_or("NULL"), "{raw}");
+        }
+    }
+
     #[test]
     fn the_relay_serves_all_thirteen_rain_frames() {
         let src = include_str!("usb.rs");
@@ -2230,6 +2289,22 @@ function Fetch($url) {{
     $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
     [Text.Encoding]::UTF8.GetBytes($r.Content)
 }}
+# An address as the device sends it (R370): ASCII letters, digits and
+# ` ,.'#/-` as they are, every other script's letters as their UTF-8 bytes
+# in %XX. Decoded strictly (a byte sequence that isn't UTF-8 is refused),
+# then held to letters (any script, with their marks), digits and those
+# signs, 2 to 60 of them; $null when it isn't one.
+function Address-Text($raw) {{
+    if ($raw -cnotmatch "^([A-Za-z0-9 ,.'#/-]|%[0-9A-F]{{2}}){{2,240}}$") {{ return $null }}
+    $bytes = New-Object 'Collections.Generic.List[byte]'
+    for ($i = 0; $i -lt $raw.Length; $i++) {{
+        if ($raw[$i] -eq '%') {{ $bytes.Add([Convert]::ToByte($raw.Substring($i + 1, 2), 16)); $i += 2 }}
+        else {{ $bytes.Add([byte][char]$raw[$i]) }}
+    }}
+    try {{ $t = ([Text.UTF8Encoding]::new($false, $true)).GetString($bytes.ToArray()) }} catch {{ return $null }}
+    if ($t -cnotmatch "^[\p{{L}}\p{{M}}\p{{N}} ,.'#/-]{{2,60}}$") {{ return $null }}
+    $t
+}}
 # The pictures in local\photos, by name.
 function Photo-Files {{
     # local\photos first, then the user's own Pictures folder and the
@@ -2290,8 +2365,9 @@ while ($true) {{
                 # Photon, OpenStreetMap's search built for typing (Nominatim's
                 # public server forbids as-you-type use). Raw GeoJSON: the
                 # device reads it (rp_pim::net::photon), as it will over Wi-Fi.
-                $q = $line.Substring(11)
-                if ($q -notmatch "^[A-Za-z0-9 ,.'#/-]{{2,60}}$") {{ Refuse 400 'not an address'; continue }}
+                # Any country's (R370): letters of every script come as %XX.
+                $q = Address-Text $line.Substring(11)
+                if ($null -eq $q) {{ Refuse 400 'not an address'; continue }}
                 if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\photon-410-pi.json")); continue }}
                 $b = Fetch "https://photon.komoot.io/api/?q=$([uri]::EscapeDataString($q))&limit=5&lang=en"
                 "ADDR for '$q': $($b.Length) bytes"
