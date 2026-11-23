@@ -56,7 +56,11 @@ fn days_that_do_not_exist_are_refused() {
         // A known year 4 would read back as unknown.
         (Some(4), 1, 1),
     ] {
-        assert_eq!(Day { year, month, day }.field(), None, "{year:?}-{month}-{day}");
+        assert_eq!(
+            Day { year, month, day }.field(),
+            None,
+            "{year:?}-{month}-{day}"
+        );
     }
     assert_eq!(Day::of_field(&[1, 2, 3]), None);
     assert_eq!(Day::of_field(&[]), None);
@@ -69,7 +73,13 @@ fn the_next_birthday_and_the_age() {
         month: 12,
         day: 10,
     };
-    let on = |y, m, d| date::days_from(Date { year: y, month: m, day: d });
+    let on = |y, m, d| {
+        date::days_from(Date {
+            year: y,
+            month: m,
+            day: d,
+        })
+    };
     assert_eq!(ada.next_from(on(2026, 11, 23)), on(2026, 12, 10));
     assert_eq!(ada.next_from(on(2026, 12, 10)), on(2026, 12, 10));
     assert_eq!(ada.next_from(on(2026, 12, 11)), on(2027, 12, 10));
@@ -102,9 +112,15 @@ fn an_address_of_the_first_version_is_read_into_its_parts() {
     );
     // Photon's city line, and the shapes people type.
     let a = Address::city_line(b"Seattle, Washington 98101-1234");
-    assert_eq!((a.city, a.region, a.postal), (&b"Seattle"[..], &b"Washington"[..], &b"98101-1234"[..]));
+    assert_eq!(
+        (a.city, a.region, a.postal),
+        (&b"Seattle"[..], &b"Washington"[..], &b"98101-1234"[..])
+    );
     let a = Address::city_line(b"Portland, OR");
-    assert_eq!((a.city, a.region, a.postal), (&b"Portland"[..], &b"OR"[..], &b""[..]));
+    assert_eq!(
+        (a.city, a.region, a.postal),
+        (&b"Portland"[..], &b"OR"[..], &b""[..])
+    );
     let a = Address::city_line(b"London SW1A 1AA");
     assert_eq!((a.city, a.region), (&b"London SW1A 1AA"[..], &b""[..]));
     let a = Address::city_line(b"Paris, 75001");
@@ -125,7 +141,10 @@ fn an_address_round_trips_as_five_lines() {
     };
     let mut out = [0u8; 128];
     let n = a.field(&mut out).unwrap();
-    assert_eq!(&out[..n], b"10 Downing St\nLondon\n\nSW1A 2AA\nUnited Kingdom");
+    assert_eq!(
+        &out[..n],
+        b"10 Downing St\nLondon\n\nSW1A 2AA\nUnited Kingdom"
+    );
     assert_eq!(Address::of(&out[..n]), a);
     // A city with a comma stays the city (no first-version guess on five
     // lines).

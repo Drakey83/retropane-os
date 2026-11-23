@@ -140,8 +140,14 @@ pub struct Address<'a> {
 }
 
 fn trim(s: &[u8]) -> &[u8] {
-    let a = s.iter().position(|c| !c.is_ascii_whitespace()).unwrap_or(s.len());
-    let b = s.iter().rposition(|c| !c.is_ascii_whitespace()).map_or(a, |i| i + 1);
+    let a = s
+        .iter()
+        .position(|c| !c.is_ascii_whitespace())
+        .unwrap_or(s.len());
+    let b = s
+        .iter()
+        .rposition(|c| !c.is_ascii_whitespace())
+        .map_or(a, |i| i + 1);
     &s[a..b.max(a)]
 }
 
@@ -389,9 +395,7 @@ pub fn same_email(a: &[u8], b: &[u8]) -> bool {
 #[must_use]
 pub fn same_name(first_a: &[u8], last_a: &[u8], first_b: &[u8], last_b: &[u8]) -> bool {
     let (fa, la, fb, lb) = (trim(first_a), trim(last_a), trim(first_b), trim(last_b));
-    !(fa.is_empty() && la.is_empty())
-        && fa.eq_ignore_ascii_case(fb)
-        && la.eq_ignore_ascii_case(lb)
+    !(fa.is_empty() && la.is_empty()) && fa.eq_ignore_ascii_case(fb) && la.eq_ignore_ascii_case(lb)
 }
 
 #[cfg(test)]

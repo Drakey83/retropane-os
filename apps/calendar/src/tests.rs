@@ -834,3 +834,86 @@ fn repeating_tasks_show_on_each_of_their_days() {
     assert_eq!(titles(&c, 19_725), [b"Run".to_vec()]);
     assert_eq!(titles(&c, 19_727), [b"Run".to_vec()]);
 }
+
+/// The Birthdays calendar (calendar-rule0.md, contacts-rule0.md): made the
+/// first time a contact has a birthday, after this device's own calendar;
+/// the contacts' days on it, gone when hidden or when the contact goes;
+/// its rows open no editor, and no appointment can be put in it.
+#[test]
+fn contacts_birthdays_make_the_birthdays_calendar() {
+    use rp_pim::contact::Day;
+    let pim = store();
+    let born = Day {
+        year: Some(1983),
+        month: 1,
+        day: 3,
+    }
+    .field()
+    .unwrap();
+    let sam = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Contact,
+            None,
+            &[
+                (tag::FIRST, b"Sam"),
+                (tag::LAST, b"Lee"),
+                (tag::BIRTHDAY, &born),
+            ],
+        )
+        .unwrap();
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    c.show(View::Agenda);
+    draw(&mut c, &cx);
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let cals: std::vec::Vec<_> = s
+            .all(Kind::Calendar)
+            .map(|r| r.text(tag::NAME).to_vec())
+            .collect();
+        assert_eq!(cals, [b"Calendar".to_vec(), b"Birthdays".to_vec()]);
+        assert!(rp_pim::birthdays::calendar(s).is_some());
+    }
+    draw(&mut c, &cx);
+    // Wednesday 3 January 2024.
+    let (list, n) = c.on(19_725);
+    let b = list[..n]
+        .iter()
+        .find(|a| a.id == sam)
+        .expect("the birthday");
+    assert_eq!(b.title.get(), b"Sam Lee's 41st birthday");
+    assert_eq!(b.len, 0);
+    assert_eq!(c.cals[usize::from(b.cal)].name.get(), b"Birthdays");
+    // Its row opens no editor.
+    c.open_edit(&cx, Some(sam));
+    assert!(c.edit.is_none());
+    assert_ne!(c.view, View::Edit);
+    // The editor's calendars leave it out.
+    let (ix, k) = c.chip_cals();
+    assert_eq!(k, 1);
+    assert_eq!(c.cals[ix[0]].name.get(), b"Calendar");
+    // Hidden, its days go; shown again, back.
+    let bid = c.cals[usize::from(b.cal)].id;
+    c.toggle_hidden(&cx, bid);
+    draw(&mut c, &cx);
+    assert!(!c.on(19_725).0[..c.on(19_725).1].iter().any(|a| a.id == sam));
+    c.toggle_hidden(&cx, bid);
+    draw(&mut c, &cx);
+    assert!(c.on(19_725).0[..c.on(19_725).1].iter().any(|a| a.id == sam));
+    // The contact gone: its birthday too, no record left behind.
+    pim.borrow_mut().as_mut().unwrap().remove(sam).unwrap();
+    draw(&mut c, &cx);
+    assert!(!c.on(19_725).0[..c.on(19_725).1].iter().any(|a| a.id == sam));
+    assert_eq!(
+        pim.borrow()
+            .as_ref()
+            .unwrap()
+            .all(Kind::Appointment)
+            .count(),
+        0
+    );
+}

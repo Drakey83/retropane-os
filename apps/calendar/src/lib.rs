@@ -68,6 +68,9 @@ struct CalRow {
     name: Text,
     colour: u32,
     hidden: bool,
+    /// The Birthdays calendar: its days are the contacts' own
+    /// ([`rp_pim::birthdays`]), none of them records of its own.
+    contacts: bool,
 }
 
 /// One appointment as a view shows it.
@@ -305,6 +308,8 @@ pub struct Calendar {
     /// The store's change count and the window's first day the list was
     /// made at (P1: made when the records change, not each frame).
     seen: Option<(u32, i32)>,
+    /// The store's change count the Birthdays calendar was looked for at.
+    bdays_seen: Option<u32>,
     view: View,
     /// The chosen day.
     day: i32,
@@ -446,6 +451,7 @@ impl Calendar {
             name: Text::EMPTY,
             colour: kit::IDENTITY[0],
             hidden: false,
+            contacts: false,
         }; 8];
         for (r, c) in rows.iter_mut().zip(cals) {
             r.name = Text::of(c.name);
@@ -480,6 +486,7 @@ impl Calendar {
             n_cals: cals.len().clamp(1, 8),
             appts: [None; MAX],
             seen: None,
+            bdays_seen: None,
             view: View::Home,
             day: today,
             line: [0; 64],
@@ -516,6 +523,7 @@ impl Calendar {
                     name: Text::of(r.text(tag::NAME)),
                     colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(0) % 8) as usize],
                     hidden: r.num(tag::HIDDEN) == Some(1),
+                    contacts: r.text(tag::SOURCE) == rp_pim::birthdays::SOURCE,
                 };
                 n_cals += 1;
             }
@@ -572,6 +580,35 @@ impl Calendar {
                 }
             }
         }
+        // The Birthdays calendar: the contacts' birthdays and anniversaries
+        // on their days, all day, unless it is hidden. Its rows carry the
+        // contact's id: the editor opens appointments only.
+        if let Some(b) = self.cals[..self.n_cals]
+            .iter()
+            .position(|c| c.contacts && !c.hidden)
+        {
+            let appts = &mut self.appts;
+            rp_pim::birthdays::all(store, from, WINDOW, |e| {
+                let Some(r) = store.get(e.id) else { return };
+                if k >= MAX {
+                    return;
+                }
+                let mut t = [0u8; 40];
+                let n = rp_pim::birthdays::title(&r, &e, &mut t);
+                appts[k] = Some(Appt {
+                    day: e.day,
+                    start: 0,
+                    len: 0,
+                    title: Text::of(&t[..n]),
+                    place: Text::EMPTY,
+                    cal: b as u8,
+                    repeats: true,
+                    task: false,
+                    id: e.id,
+                });
+                k += 1;
+            });
+        }
         // Tasks on their due days (calendar-rule0.md, tasks-rule0.md: the
         // tie-in), the open ones, in the tasks' blue; a repeating one on
         // each of its days to come as well (Fantastical shows repeating
@@ -614,6 +651,53 @@ impl Calendar {
         }
     }
 
+    /// The Birthdays calendar's record made the first time a contact has a
+    /// birthday or an anniversary (in the eighth colour, the previews'
+    /// Birthdays calendar's; shown and hidden as any calendar). A store
+    /// with no calendar yet keeps this device's own first, so appointments
+    /// with none still belong to it. Looked at once per change of the
+    /// store.
+    fn ensure_birthdays(&mut self, cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        if self.bdays_seen == Some(store.changes()) {
+            return;
+        }
+        self.bdays_seen = Some(store.changes());
+        if rp_pim::birthdays::calendar(store).is_some() || !rp_pim::birthdays::any(store) {
+            return;
+        }
+        if store.all(Kind::Calendar).next().is_none() {
+            let first = &self.cals[0];
+            let c = kit::IDENTITY
+                .iter()
+                .position(|&x| x == first.colour)
+                .unwrap_or(0) as u32;
+            let _ = store.put(
+                Kind::Calendar,
+                None,
+                &[
+                    (tag::NAME, first.name.get()),
+                    (tag::COLOUR, &c.to_le_bytes()),
+                ],
+            );
+        }
+        let _ = store.put(
+            Kind::Calendar,
+            None,
+            &[
+                (tag::NAME, b"Birthdays"),
+                (tag::COLOUR, &7u32.to_le_bytes()),
+                (tag::SOURCE, rp_pim::birthdays::SOURCE),
+            ],
+        );
+        self.bdays_seen = Some(store.changes());
+        self.seen = None;
+    }
+
     /// Opens appointment `id` (or a new one from the quick-add line) in the
     /// editor.
     fn open_edit(&mut self, cx: &Ctx, id: Option<u32>) {
@@ -647,6 +731,10 @@ impl Calendar {
                 let Ok(guard) = cell.try_borrow() else { return };
                 let Some(store) = guard.as_ref() else { return };
                 let Some(r) = store.get(id) else { return };
+                // A birthday's row is its contact: nothing to edit here.
+                if r.kind != Kind::Appointment {
+                    return;
+                }
                 let t = r.text(tag::TITLE);
                 e.title_n = t.len().min(64);
                 e.title[..e.title_n].copy_from_slice(&t[..e.title_n]);
@@ -822,6 +910,21 @@ impl Calendar {
         e.title_n > 0 && store.put(Kind::Task, None, &fields[..n]).is_ok()
     }
 
+    /// The calendars an appointment can be put in (the editor's chips,
+    /// four at most): every one but Birthdays, whose days are the
+    /// contacts'.
+    fn chip_cals(&self) -> ([usize; 4], usize) {
+        let mut ix = [0; 4];
+        let mut n = 0;
+        for (i, c) in self.cals[..self.n_cals].iter().enumerate() {
+            if !c.contacts && n < ix.len() {
+                ix[n] = i;
+                n += 1;
+            }
+        }
+        (ix, n)
+    }
+
     /// The editor's grouped cards.
     #[inline(never)]
     fn edit_view(&self, f: &mut Frame, cx: &Ctx) {
@@ -936,16 +1039,16 @@ impl Calendar {
         ];
         chips_row(f, E_ALERT + 14, b"ALERT", &alerts, usize::from(e.alert));
         let mut names: [&[u8]; 4] = [b""; 4];
-        let n = self.n_cals.min(4);
-        for (k, c) in self.cals[..n].iter().enumerate() {
-            names[k] = c.name.get();
+        let (ix, n) = self.chip_cals();
+        for (k, &i) in ix[..n].iter().enumerate() {
+            names[k] = self.cals[i].name.get();
         }
         chips_row(
             f,
             E_CAL + 14,
             b"CALENDAR",
             &names[..n],
-            e.cal.min(n.saturating_sub(1)),
+            ix[..n].iter().position(|&i| i == e.cal).unwrap_or(0),
         );
         // A kept appointment (a calendar link's too) makes a task in
         // Tasks; one of this device's can be deleted beside it.
@@ -1008,7 +1111,7 @@ impl Calendar {
     /// Mobile's editor walks its fields in tab order and opens a picker
     /// for each.
     fn edit_key(&mut self, cx: &Ctx, k: Key) -> Reply {
-        let n_cals = self.n_cals.min(4);
+        let (ix, n_cals) = self.chip_cals();
         let Some(e) = self.edit.as_mut() else {
             return Reply::Nothing;
         };
@@ -1046,7 +1149,10 @@ impl Calendar {
                         let (n, at) = match r {
                             5 => (5, usize::from(e.repeat)),
                             6 => (6, usize::from(e.alert)),
-                            _ => (n_cals, e.cal),
+                            _ => (
+                                n_cals,
+                                ix[..n_cals].iter().position(|&i| i == e.cal).unwrap_or(0),
+                            ),
                         };
                         if n == 0 {
                             return Reply::Nothing;
@@ -1082,7 +1188,7 @@ impl Calendar {
 
     /// A tap in the editor.
     fn edit_tap(&mut self, cx: &Ctx, x: u16, y: u16) -> Reply {
-        let n_cals = self.n_cals.min(4);
+        let (ix, n_cals) = self.chip_cals();
         let Some(e) = self.edit.as_mut() else {
             return Reply::Nothing;
         };
@@ -1142,7 +1248,7 @@ impl Calendar {
                 k => e.alert = k as u8,
             }
         } else if hit(E_CAL + 14, 30) && n_cals > 0 {
-            e.cal = chip(n_cals);
+            e.cal = ix[chip(n_cals)];
         } else if on_delete && e.id.is_some() {
             if e.confirm_delete {
                 let id = e.id;
@@ -2511,6 +2617,7 @@ impl Program for Calendar {
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
+        self.ensure_birthdays(cx);
         self.refresh(cx);
         self.hits.clear();
         if let Some((which, pad)) = &self.pad {
