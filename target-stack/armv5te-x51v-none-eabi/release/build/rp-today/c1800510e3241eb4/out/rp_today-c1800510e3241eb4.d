@@ -19,4 +19,4 @@ C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack
 
 # env-dep:OUT_DIR=C:\\Users\\reidc\\retropane-os\\.claude\\worktrees\\apps-a-records-6fdd03\\target-stack\\armv5te-x51v-none-eabi\\release\\build\\rp-today/f3b5bc2da398137e\\out
 # env-dep:RP_TODAY_OFFSET_MIN=-360
-# env-dep:RP_TODAY_UTC_MIN=29924221
+# env-dep:RP_TODAY_UTC_MIN=29924292

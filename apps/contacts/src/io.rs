@@ -785,10 +785,17 @@ impl Contacts {
         };
         let v = if self.io.v4 { Version::V4 } else { Version::V3 };
         let mut len = 0;
-        emit_from(store, &mut self.work, v, 0, &mut |_, b| {
-            len += b.len();
-            true
-        });
+        emit_from(
+            store,
+            &mut self.work,
+            &mut self.jpeg_buf,
+            v,
+            0,
+            &mut |_, b| {
+                len += b.len();
+                true
+            },
+        );
         x.len = len;
         drop(guard);
         self.io.export = Some(x);
@@ -820,19 +827,26 @@ impl Contacts {
         let v = if self.io.v4 { Version::V4 } else { Version::V3 };
         let room = out.len();
         let (mut n, mut pos, mut first) = (0, x.rec_at, (x.rec, x.rec_at));
-        emit_from(store, &mut self.work, v, x.rec, &mut |k, b| {
-            if pos < at && k > first.0 {
-                first = (k, pos);
-            }
-            for &c in b {
-                if pos >= at && pos - at < room {
-                    out[pos - at] = c;
-                    n = n.max(pos - at + 1);
+        emit_from(
+            store,
+            &mut self.work,
+            &mut self.jpeg_buf,
+            v,
+            x.rec,
+            &mut |k, b| {
+                if pos < at && k > first.0 {
+                    first = (k, pos);
                 }
-                pos += 1;
-            }
-            pos < at + room
-        });
+                for &c in b {
+                    if pos >= at && pos - at < room {
+                        out[pos - at] = c;
+                        n = n.max(pos - at + 1);
+                    }
+                    pos += 1;
+                }
+                pos < at + room
+            },
+        );
         x.rec = first.0;
         x.rec_at = first.1;
         self.io.export = Some(x);
@@ -1321,6 +1335,7 @@ fn picture_of(
 fn emit_from(
     store: &Store<'_>,
     work: &mut Card,
+    jpeg: &mut [u8; JPEG_ROOM],
     v: Version,
     from: usize,
     sink: &mut dyn FnMut(usize, &[u8]) -> bool,
@@ -1331,8 +1346,30 @@ fn emit_from(
             return;
         }
         vcard::read_into(&r, work);
-        vcard::write(work, None, v, |b| go = go && sink(k, b));
+        let n = picture_jpeg(store, r.id, jpeg);
+        let photo = n.map(|n| (&jpeg[..n], &b"jpeg"[..]));
+        vcard::write(work, photo, v, |b| go = go && sink(k, b));
     }
+}
+
+/// The room a person's picture is written as a JPEG in.
+pub(crate) const JPEG_ROOM: usize = 8192;
+
+/// Person `id`'s kept picture as a JPEG in `out` (quality 85, lower if it
+/// doesn't fit): its length; `None` without a picture.
+fn picture_jpeg(store: &Store<'_>, id: u32, out: &mut [u8; JPEG_ROOM]) -> Option<usize> {
+    let (ids, n) = Contacts::photo_pages(store, id);
+    if n == 0 {
+        return None;
+    }
+    let mut pages: [&[u8]; PHOTO_PAGES] = [&[]; PHOTO_PAGES];
+    for (p, &page) in pages.iter_mut().zip(&ids[..n]) {
+        *p = store.get(page)?.text(tag::INK);
+    }
+    let kept = photo::Kept::of(&pages[..n])?;
+    [85, 70, 50]
+        .into_iter()
+        .find_map(|q| rp_pim::jpeg_out::encode(&|x, y| kept.rgb(x, y), q, out))
 }
 
 #[cfg(test)]

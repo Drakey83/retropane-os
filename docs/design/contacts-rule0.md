@@ -84,7 +84,7 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Structured address, + add for more phones and e-mails, custom labels, birthday, anniversary, website | sheet | built | shell/pim/src/contact.rs, apps/contacts/src/form.rs, apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | Map: the address on the radar's map tiles with a pin | sheet | pending | |
 | Duplicates offered as one merge | sheet | built | shell/pim/src/contact.rs, shell/pim/src/vcard.rs, apps/contacts/src/io.rs, apps/contacts/src/tests.rs |
-| vCard 3 and 4 import and export | apps-and-packs: vCard import/export | built | shell/pim/src/vcard.rs, apps/contacts/src/io.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs |
+| vCard 3 and 4 import and export | apps-and-packs: vCard import/export | built | shell/pim/src/vcard.rs, shell/pim/src/jpeg_out.rs, apps/contacts/src/io.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs |
 | CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |
 | Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
 | The Contacts button opens Contacts | sheet | built | shell/core/src/lib.rs, shell/core/src/tests.rs |
@@ -118,7 +118,10 @@ without fighting the keyboard; the same people as the phone and the PC.
   2.1, 3.0 and 4.0 read with every writer's labels (Apple's groups and
   1604 years, Outlook's 2.1 quoted-printable and Latin-1); what the device
   doesn't keep counted and said; export of everyone as 3.0 (Outlook
-  reads no 4.0) or 4.0, to the card or the PC, written a piece at a time.
+  reads no 4.0) or 4.0, to the card or the PC, written a piece at a time,
+  each picture as a baseline JPEG of the kept disc (about 4 KB, read a
+  pixel at a time from its pages: `rp_pim::jpeg_out`), so a picture
+  survives a round trip through any phone or Outlook.
 - **Pictures:** from a vCard's PHOTO and from a JPEG on the card (the
   chooser lists the card's pictures beside the PC's), read with
   `rp_pim::jpeg`: a camera's own Exif thumbnail when it covers the

@@ -5,7 +5,7 @@ C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack
 boot\probe\src\main.rs:
 boot\probe\src\report.rs:
 
-# env-dep:RP_BUILD_ID=6d1fd577+
+# env-dep:RP_BUILD_ID=ead4a035+
 # env-dep:RP_PROBE_FROM
 # env-dep:RP_PROBE_HW
 # env-dep:RP_PROBE_MINI

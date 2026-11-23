@@ -16,5 +16,5 @@ C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack
 # env-dep:RP_TODAY_REPLAY_HOLD_MS
 # env-dep:RP_TODAY_REPLAY_NET
 # env-dep:RP_TODAY_REPLAY_RECORD
-# env-dep:RP_TODAY_UTC_MIN=29924221
+# env-dep:RP_TODAY_UTC_MIN=29924292
 # env-dep:RP_TODAY_WALLPAPER_NAME=sunset

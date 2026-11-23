@@ -1111,6 +1111,32 @@ fn everyone_is_exported_a_piece_at_a_time_and_reads_back() {
             .unwrap();
         }
     }
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let id = s
+            .all(Kind::Contact)
+            .find(|r| r.text(tag::FIRST) == b"Person3")
+            .unwrap()
+            .id;
+        let mut raw = vec![0u8; photo::RAW];
+        for y in 0..photo::SIDE {
+            for x in 0..photo::SIDE {
+                let (r, gr, b) = ((x * 255 / 95) as u16, (y * 255 / 95) as u16, 96u16);
+                let p = (r >> 3) << 11 | (gr >> 2) << 5 | b >> 3;
+                raw[(y * photo::SIDE + x) * 2..][..2].copy_from_slice(&p.to_le_bytes());
+            }
+        }
+        photo::encode(&raw, |page| {
+            s.put(
+                Kind::Ink,
+                None,
+                &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, page)],
+            )
+            .is_ok()
+        })
+        .unwrap();
+    }
     let mut c = Contacts::new();
     draw(&mut c, &cx);
     tap_rect(&mut c, &cx, io::TOOLS_KEY);
@@ -1150,6 +1176,44 @@ fn everyone_is_exported_a_piece_at_a_time_and_reads_back() {
         back.iter()
             .all(|c| c.last.get() == b"Example; with, escapes")
     );
+    // Person 3's picture went out as a JPEG of what the device keeps.
+    let with: Vec<_> = back.iter().filter(|c| c.photo.is_some()).collect();
+    assert_eq!(with.len(), 1);
+    assert_eq!(with[0].first.get(), b"Person3");
+    let mut jpeg = vec![0u8; 16 * 1024];
+    let n = rp_pim::vcard::photo_bytes(&file, with[0].photo.unwrap(), &mut jpeg).unwrap();
+    assert!(n < io::JPEG_ROOM, "{n} bytes");
+    let mut d = rp_pim::jpeg::Decoder::new();
+    let mut acc = vec![0u32; rp_pim::jpeg::WORDS];
+    assert_eq!(
+        d.feed(&jpeg[..n], true, &mut acc),
+        Ok(rp_pim::jpeg::Progress::Done)
+    );
+    let g = pim.borrow();
+    let store = g.as_ref().unwrap();
+    let id = store
+        .all(Kind::Contact)
+        .find(|r| r.text(tag::FIRST) == b"Person3")
+        .unwrap()
+        .id;
+    let (ids, pn) = Contacts::photo_pages(store, id);
+    let pages: Vec<&[u8]> = ids[..pn]
+        .iter()
+        .map(|&p| store.get(p).unwrap().text(tag::INK))
+        .collect();
+    let kept = photo::Kept::of(&pages).unwrap();
+    let mut total = 0u64;
+    for y in 0..96 {
+        for x in 0..96 {
+            let (a, b) = (d.rgb(&acc, x, y), kept.rgb(x, y));
+            total += u64::from(a.0.abs_diff(b.0))
+                + u64::from(a.1.abs_diff(b.1))
+                + u64::from(a.2.abs_diff(b.2));
+        }
+    }
+    let mean = total as f64 / (96.0 * 96.0 * 3.0);
+    assert!(mean < 6.0, "{mean:.2} levels off");
+    drop(g);
     assert_eq!(back[7].phones[1].label.get(), b"Cabin");
     assert_eq!(
         back[7].birthday.map(|d| (d.month, d.day, d.year)),

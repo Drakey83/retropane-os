@@ -292,6 +292,8 @@ pub struct Contacts {
     dec: rp_pim::jpeg::Decoder,
     pic_buf: [u8; 2048],
     other: rp_pim::vcard::Card,
+    /// A person's picture written as a JPEG for an export.
+    jpeg_buf: [u8; io::JPEG_ROOM],
     /// The street text last asked about, and whether the last answer came
     /// from the device's own addresses (no connection).
     asked: Text<64>,
@@ -408,6 +410,7 @@ macro_rules! contacts_start {
             recount: false,
             dec: rp_pim::jpeg::Decoder::new(),
             pic_buf: [0; 2048],
+            jpeg_buf: @each 0,
             other: rp_pim::vcard::Card::new(),
             asked: Text::EMPTY,
             offline: false,

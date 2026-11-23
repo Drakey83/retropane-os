@@ -12,6 +12,7 @@ pub mod date;
 pub mod expr;
 pub mod ics;
 pub mod jpeg;
+pub mod jpeg_out;
 pub mod net;
 pub mod phone;
 pub mod quick;

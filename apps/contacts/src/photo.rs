@@ -202,6 +202,70 @@ pub fn decode(pages: &[&[u8]], size: usize, px: &mut [Argb]) -> bool {
     true
 }
 
+/// A kept picture read a pixel at a time straight from its pages (no
+/// frame of it held: the export writes it as a JPEG from here). A pixel
+/// outside the disc is its row's nearest inside it.
+pub struct Kept<'a> {
+    pages: &'a [&'a [u8]],
+    /// Each row's first pixel's place among the disc's pixels.
+    rows: [u16; SIDE],
+    chroma: usize,
+}
+
+impl<'a> Kept<'a> {
+    /// The picture in `pages` (as [`encode`] handed them, in order);
+    /// `None` for pages that are not one.
+    #[must_use]
+    pub fn of(pages: &'a [&'a [u8]]) -> Option<Self> {
+        let len: usize = pages.iter().map(|p| p.len()).sum();
+        let whole = pages.iter().rev().skip(1).all(|p| p.len() == PAGE);
+        let first = pages.first()?.first().copied();
+        if !whole || first != Some(VERSION) || len < 1 + HALF * HALF {
+            return None;
+        }
+        let mut rows = [0u16; SIDE];
+        let mut n = 0u16;
+        for (y, r) in rows.iter_mut().enumerate() {
+            *r = n;
+            let (x0, x1) = span(y);
+            n += (x1 - x0) as u16;
+        }
+        Some(Self {
+            pages,
+            rows,
+            chroma: len - HALF * HALF,
+        })
+    }
+
+    fn byte(&self, i: usize) -> u8 {
+        self.pages
+            .get(i / PAGE)
+            .and_then(|p| p.get(i % PAGE))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Pixel (x, y): red, green, blue, as [`decode`] shows it at full size.
+    #[must_use]
+    pub fn rgb(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let y = y.min(SIDE - 1);
+        let (x0, x1) = span(y);
+        let x = x.clamp(x0, x1 - 1);
+        let bit = 5 * (usize::from(self.rows[y]) + x - x0);
+        let at = 1 + bit / 8;
+        let two = u32::from(self.byte(at)) << 8 | u32::from(self.byte(at + 1));
+        let luma = ((two >> (11 - bit % 8)) & 31) as i32 * 255 / 31;
+        let c = self.byte(self.chroma + (y / 2) * HALF + x / 2);
+        let (cb, cr) = ((i32::from(c >> 4) - 8) * 17, (i32::from(c & 15) - 8) * 17);
+        let v = |v: i32| v.clamp(0, 255) as u8;
+        (
+            v(luma + ((359 * cr) >> 8)),
+            v(luma - ((88 * cb + 183 * cr) >> 8)),
+            v(luma + ((454 * cb) >> 8)),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -304,5 +368,31 @@ mod tests {
         assert!(!decode(&[&[9, 9, 9]], 40, &mut [0u32; 1600]));
         // A page missing: no picture, never a wrong one.
         assert!(!decode(&pages[1..], 40, &mut [0u32; 1600]));
+    }
+
+    #[test]
+    fn a_kept_picture_reads_a_pixel_at_a_time_as_it_draws() {
+        let pages = packed(&square());
+        let refs: std::vec::Vec<&[u8]> = pages.iter().map(|p| &p[..]).collect();
+        let k = Kept::of(&refs).expect("a picture");
+        let mut px = vec![0u32; SIDE * SIDE];
+        assert!(decode(&refs, SIDE, &mut px));
+        let mut worst = 0;
+        for y in 0..SIDE {
+            let (x0, x1) = span(y);
+            for x in x0..x1 {
+                let p = px[y * SIDE + x];
+                let (r, g, b) = k.rgb(x, y);
+                for (a, b) in [(r, (p >> 16) as u8), (g, (p >> 8) as u8), (b, p as u8)] {
+                    worst = worst.max(a.abs_diff(b));
+                }
+            }
+        }
+        // (The drawing keeps five bits a colour, the reader eight.)
+        assert!(worst <= 8, "{worst}");
+        // Outside the disc: its row's nearest pixel inside.
+        assert_eq!(k.rgb(0, 48), k.rgb(span(48).0, 48));
+        assert!(Kept::of(&[]).is_none());
+        assert!(Kept::of(&[&[9u8; 10][..]]).is_none());
     }
 }

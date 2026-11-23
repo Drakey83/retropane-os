@@ -32,7 +32,7 @@ cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-reco
 cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\shell\today\../..
 cargo:rerun-if-changed=build.rs
 cargo:rerun-if-env-changed=RP_TODAY_FORCE
-cargo:rustc-env=RP_TODAY_UTC_MIN=29924221
+cargo:rustc-env=RP_TODAY_UTC_MIN=29924292
 cargo:rustc-env=RP_TODAY_OFFSET_MIN=-360
 cargo:rerun-if-env-changed=RP_TODAY_REPLAY_FILE
 cargo:rerun-if-env-changed=RP_TODAY_REPLAY_GAP_MS
