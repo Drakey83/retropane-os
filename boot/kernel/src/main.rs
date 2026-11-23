@@ -699,12 +699,20 @@ mod image {
         addr: u32,
         access: rp_kernel_mm::space::Access,
     ) -> Result<rp_kernel_mm::space::Outcome, rp_kernel_mm::space::FaultError> {
-        load_page(vm, s.pid, addr);
         // The XScale's FAR holds the modified (FCSE-relocated) address, but
         // QEMU reports the address before relocation, and prefetch aborts
         // give the PC as the process saw it. Relocating is right for all
         // three: addresses already at or above 32 MiB pass through.
         let mva = layout::mva(addr, s.pid);
+        // The image's page cache works in the process's own addresses: the
+        // relocated form taken back to them (G5 run 3 on the X51v: given
+        // `0x0a103000`, the fill found no image page; QEMU's unrelocated
+        // FAR always gave it `0x00103000`).
+        let own = match layout::slot_of(mva) {
+            Some(slot) if slot == s.pid => mva - layout::slot_base(slot),
+            _ => addr,
+        };
+        load_page(vm, s.pid, own);
         space_of(s, s.pid).map_or(Err(rp_kernel_mm::space::FaultError::NoRegion), |sp| {
             vm.handle_fault(sp, mva, access)
         })
@@ -1379,12 +1387,20 @@ mod image {
         // touch would be, the image's page loaded first. Before the clients
         // run, so their `.data` page isn't loaded yet (G5 run 2 on the
         // X51v: refused, "I/O error").
+        // Both forms of a fault address resolve: the XScale reports the
+        // FCSE-relocated one (`0x0a103000`), the emulator the process's own
+        // (`0x00103000`); the relocated form is given here directly, so the
+        // emulator checks the device's case too.
         let pid = STATE.with(|s| s.pid);
         let touched = rt::try_read((LOAD_BASE + DATA_RVA) as usize);
+        let relocated = with_vm(|vm, s| {
+            let at = layout::mva(LOAD_BASE + RDATA_RVA, s.pid);
+            resolve(vm, s, at, rp_kernel_mm::space::Access::Read).is_ok()
+        });
         ok &= report(
             &mut uart,
             "kernel touch of an unloaded image page",
-            pid == PROC_SLOT && touched.is_some(),
+            pid == PROC_SLOT && touched.is_some() && relocated,
             touched.unwrap_or(0),
         );
         RUN.with(|r| {
