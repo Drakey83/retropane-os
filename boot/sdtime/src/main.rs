@@ -26,6 +26,14 @@
 //! written, replaced or deleted. The loader resets the card when this
 //! returns.
 //!
+//! **The Game Mode run** (`RP_SDTIME_GAMEMODE`, R364) instead measures
+//! design B's full tier on the card: `GAMEMODE.BIN` (30 MiB) preallocated
+//! in one run of clusters (timed), written whole three times in 1 MiB DMA
+//! commands (without ACMD23, with it, and again over the same blocks), each
+//! MiB timed (min, median, max: the card's stalls), then read back and
+//! checked; the file and the folder removed after. Only inside
+//! `/rp-storage-bench/`.
+//!
 //! **The guard run** (`RP_SDTIME_GUARD`, quality audit C32) instead checks
 //! block numbers off the end of the card: the HAL's card-log writer (G1)
 //! and the driver's `read`, `read_many`, `write`, `write_many` and the
@@ -104,7 +112,12 @@ mod image {
 
     fn main() -> ! {
         rt::init_mmu();
-        if GUARD {
+        if GAMEMODE {
+            log!(
+                "{MARKER} 1: Game Mode's full-tier write pattern (R364, docs/design/game-mode-build.md), version 1"
+            );
+            gamemode();
+        } else if GUARD {
             log!(
                 "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 6"
             );
@@ -161,6 +174,173 @@ mod image {
         writes(&mut card, lba, scratch);
         fat_layer(&mut card, start, scratch);
         clean_up(&mut card, start);
+    }
+
+    /// The Game Mode run instead (`RP_SDTIME_GAMEMODE`, see the crate's docs).
+    const GAMEMODE: bool = option_env!("RP_SDTIME_GAMEMODE").is_some();
+    /// Game Mode's full-tier file: preallocated once, then rewritten whole.
+    const GM_FILE: &str = "rp-storage-bench/GAMEMODE.BIN";
+    /// Its size: design B's full tier (30 MiB); `RP_SDTIME_GM_MIB` sets
+    /// another (the emulator's SD card is 32 MiB).
+    const GM_MIB: u32 = match option_env!("RP_SDTIME_GM_MIB") {
+        Some(n) => parse_mib(n),
+        None => 30,
+    };
+
+    /// A size in MiB from the build's environment (1..=64).
+    const fn parse_mib(s: &str) -> u32 {
+        let b = s.as_bytes();
+        let mut n = 0u32;
+        let mut i = 0;
+        while i < b.len() {
+            assert!(b[i].is_ascii_digit(), "RP_SDTIME_GM_MIB: digits only");
+            n = n * 10 + (b[i] - b'0') as u32;
+            i += 1;
+        }
+        assert!(n >= 1 && n <= 64, "RP_SDTIME_GM_MIB: 1 to 64");
+        n
+    }
+    const GM_BYTES: usize = (GM_MIB as usize) << 20;
+    /// Blocks in one write or read command (1 MiB).
+    const GM_RUN: u32 = 2048;
+
+    /// The Game Mode run (R364): the write pattern design B's full tier
+    /// uses, on the owner's card, inside the image's own folder only.
+    fn gamemode() {
+        let Some(mut cpld) = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0) else {
+            log!("no CPLD");
+            return;
+        };
+        cpld.set_backlight_enable(true);
+        cpld.set_sd_power(true);
+        rt::delay_us(10_000);
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(rp_hal_pxa27x::dma_map::SD))
+        else {
+            log!("no MMC or DMA");
+            return;
+        };
+        let mut card = match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
+            Ok(c) => c,
+            Err((e, _)) => {
+                log!("M0 card init failed: {}", e.name());
+                return;
+            }
+        };
+        log!(
+            "M0 card: {} blocks, high capacity {}, 4-bit {}",
+            card.blocks(),
+            card.is_high_capacity(),
+            card.is_wide()
+        );
+        let Some(scratch) = devices::take_scratch() else {
+            log!("no scratch");
+            return;
+        };
+        let Some(start) = card_partition(&mut card, scratch) else {
+            return;
+        };
+        // M1: the one-time preallocation (a run of clusters, zeros).
+        let lba = {
+            let mut vol = match Volume::mount(&mut card, start) {
+                Ok(v) => v,
+                Err(e) => {
+                    log!("M1 not FAT32 ({}): nothing written", e.name());
+                    return;
+                }
+            };
+            rt::check_in();
+            let t0 = rt::ticks();
+            let r = vol.reserve(GM_FILE, GM_BYTES, &mut scratch[..1 << 20]);
+            let t = rt::ticks().wrapping_sub(t0);
+            match r {
+                Ok(r) => {
+                    log!(
+                        "M1 {GM_FILE} preallocated, {GM_MIB} MiB in one run at LBA {}: {} ms, {} KiB/s",
+                        r.lba,
+                        ns(t) / 1_000_000,
+                        kib_s(GM_BYTES, t)
+                    );
+                    r.lba
+                }
+                Err(e) => {
+                    log!("M1 preallocation failed: {}", e.name());
+                    return;
+                }
+            }
+        };
+        card.host_mut().set_dma(true, true);
+        let buf = &mut scratch[..GM_RUN as usize * BLOCK];
+        // M2-M4: the file written whole three times (a first switch, the
+        // same with ACMD23, then a later switch over the same blocks).
+        for (pass, pre_erase) in [(2, false), (3, true), (4, false)] {
+            let mut p = Phases::default();
+            let mut each = [0u32; GM_MIB as usize];
+            let t0 = rt::ticks();
+            for (i, slot) in each.iter_mut().enumerate() {
+                rt::check_in();
+                let at = i as u32 * GM_RUN;
+                let s = rt::ticks();
+                write_raw(&mut card, lba, at, buf, pre_erase, &mut p);
+                *slot = rt::ticks().wrapping_sub(s);
+            }
+            let t = rt::ticks().wrapping_sub(t0);
+            each.sort_unstable();
+            log!(
+                "M{pass} write {GM_MIB} MiB in 1 MiB runs, DMA, ACMD23 {pre_erase}: {} KiB/s, {} ms; per MiB min {} med {} max {} ms; busy {} ms in {} polls; {} by DMA, {} failed",
+                kib_s(GM_BYTES, t),
+                ns(t) / 1_000_000,
+                ns(each[0]) / 1_000_000,
+                ns(each[each.len() / 2]) / 1_000_000,
+                ns(each[each.len() - 1]) / 1_000_000,
+                ns(p.stop.wrapping_add(p.ready)) / 1_000_000,
+                p.polls,
+                p.dma,
+                p.failed
+            );
+        }
+        // M5: read back whole (the thaw) and checked against the pattern.
+        let mut bad = 0u32;
+        let mut failed = 0u32;
+        let t0 = rt::ticks();
+        for i in 0..GM_MIB {
+            rt::check_in();
+            let at = i * GM_RUN;
+            if card.read_many(lba + at, buf).is_err() {
+                failed += 1;
+                continue;
+            }
+            for (k, block) in buf.as_chunks::<BLOCK>().0.iter().enumerate() {
+                let b = at + k as u32;
+                let ok = block
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .all(|(w, v)| u32::from_le_bytes(*v) == pattern(b, w as u32));
+                if !ok {
+                    bad += 1;
+                }
+            }
+        }
+        let t = rt::ticks().wrapping_sub(t0);
+        log!(
+            "M5 read back {GM_MIB} MiB in 1 MiB runs, DMA, checked: {} KiB/s with the check, {} ms; {bad} blocks differ, {failed} reads failed",
+            kib_s(GM_BYTES, t),
+            ns(t) / 1_000_000
+        );
+        card.host_mut().set_dma(false, false);
+        // M6: the file and the folder removed, nothing else.
+        let Ok(mut vol) = Volume::mount(&mut card, start) else {
+            log!("M6 clean-up: mount failed; {DIR} left on the card");
+            return;
+        };
+        let file = vol.remove(GM_FILE);
+        let dir = vol.remove(DIR);
+        log!(
+            "M6 clean-up: {GM_FILE} {}, {DIR} {}",
+            file.map_or_else(|e| e.name(), |()| "removed"),
+            dir.map_or_else(|e| e.name(), |()| "removed")
+        );
     }
 
     /// The guard run instead (`RP_SDTIME_GUARD`, see the crate's docs).

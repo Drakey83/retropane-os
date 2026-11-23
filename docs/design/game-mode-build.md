@@ -36,7 +36,7 @@ What does block it is work not yet built, not a gate line:
 
 | # | Measurement | Result (2026-11-22) | Source |
 |---|---|---|---|
-| 1a | SD write speed, large sequential, owner's card | **already measured on the X51v:** 1 MiB DMA writes 4,891 KiB/s (run 1, 2026-10-16), 1.6-2.2 MB/s (r7, 2026-10-24, the 8 GB card era); 64 KiB writes 2,897 KiB/s; FIFO 1,167-1,284 KiB/s. Design B assumed 2-5 MB/s: inside it. The two runs disagree by 2.2-3x, so the full tier's own write pattern (a preallocated file, 1 MiB runs, 30 MB) is measured once more on the owner's card in its own folder (R364, a device run for the owner's go) | `docs/research/storage-speed.md` "S2", `local/rp-storfast-run1.txt`, `local/rp-storfast-r7-log.txt` |
+| 1a | SD write speed, large sequential, owner's card | **measured on the X51v with the full tier's own pattern (2026-11-23, `rp-sdtime` Game Mode run, `RP_SDTIME_GAMEMODE`, run 1):** a 30 MiB file preallocated in one run of clusters once: 8.5 s; written whole in 1 MiB DMA commands: **5,048-5,052 KiB/s (6.1 s for 30 MiB)** once the blocks had been written before, 3,444 KiB/s (8.9 s) the first time over fresh blocks; each MiB 135 ms (median), one stall a pass of 1.0-1.4 s (the card's own housekeeping); ACMD23 (pre-erase) made no difference once warm; read back by DMA and checked: **7,278 KiB/s (4.2 s)**, every block intact. So a 30 MiB full tier costs ~6 s out and ~4 s back, inside design B's 15 s each way, and LZ4's 2.0x makes it ~60 MiB of RAM. The two older runs' disagreement (4.9 MB/s run 1, 1.6-2.2 MB/s r7) fits the fresh-blocks cost seen here: a file written once is the fast case, so G8 keeps one file and writes over it | `local/rp-sdtime-gamemode-run1.txt`; earlier: `docs/research/storage-speed.md` "S2", `local/rp-storfast-run1.txt`, `local/rp-storfast-r7-log.txt` |
 | 1b | Internal flash write speed | **not measurable by our code** (K5). Possible under Windows Mobile: a WM tool timing a file written to its built-in storage gives WM's driver's speed, a finding only (R365) | — |
 | 2 | LZ4's ratio on real heap pages | **the shell's, measured in the emulator:** see below. A CE app's: blocked (K4) | `cargo xtask emu-heap-ratio` |
 | 3 | Resident sizes from run logs | the 2700G's layout and every shell cache are measured (`docs/memory-budget.md`: screens 600 KiB each, work picture 1.17 MiB, background 1.17 MiB, image cache 384 KiB, glyph atlases 384 KiB, area cache 600 KiB: ~6.7 MiB of 2700G memory the game gets back); RAM: `rp-today` 933,224 B loaded + 102,304 B zeroed (the build's size check, 2026-11-22); the services as processes don't exist yet (K2) | `docs/memory-budget.md`, `cargo xtask` size check |
@@ -204,9 +204,11 @@ time and translation misses. Waits on G4 and G5.
 
 A preallocated swap file on the card, its blocks found once at boot; the
 frozen pages compressed first, then gathered into 1 MiB runs written by
-DMA (measured: 1 MiB writes 4.9 MB/s against 64 KiB writes 2.9 MB/s on the
-X51v; page-sized writes would be slower still), read back by DMA on the way
-out. Rule 0: Linux's swap writes clusters of pages as reclaim finds them;
+DMA (measured with this exact pattern on the X51v, 2026-11-23: 30 MiB in
+6.1 s at 5.0 MB/s over a file written before, 8.9 s the first time over
+fresh blocks, read back in 4.2 s at 7.3 MB/s; 64 KiB writes 2.9 MB/s,
+page-sized writes slower still), read back by DMA on the way out. The file
+is made and written once at install, so every switch is the warm case. Rule 0: Linux's swap writes clusters of pages as reclaim finds them;
 CE has no swap; ours writes only compressed bytes, in the card's fastest
 size, once, at a moment when nothing else uses the card.
 

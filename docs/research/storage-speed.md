@@ -325,6 +325,19 @@ small write.
   on reads only. This run made 544 DMA writes, all correct (read back
   exact).
 
+- **Long sequential writes, Game Mode's pattern (2026-11-23, R364,
+  `rp-sdtime` with `RP_SDTIME_GAMEMODE`, `local/rp-sdtime-gamemode-run1.txt`,
+  the owner's 31 GB SDHC card):** a 30 MiB file preallocated in one run of
+  clusters (8.5 s through the FAT layer, 3,624 KiB/s), then written whole
+  in 1 MiB DMA commands three times: 3,444 KiB/s over fresh blocks, then
+  5,048 KiB/s (ACMD23) and 5,052 KiB/s (without) over the same blocks
+  again. Each MiB takes 135 ms (7.4 MiB/s while the card streams); one
+  1.0-1.4 s stall a pass is the card's own housekeeping and is most of the
+  gap. Read back by DMA with the check: 7,278 KiB/s, every block exact.
+  ACMD23 again made no difference. The earlier 1 MiB runs that disagreed
+  (4.9 MB/s, 1.6-2.2 MB/s) fit the fresh-blocks cost: rewriting a file
+  already written is the fast case.
+
 ## B5. The FAT layer
 
 | Operation | Speed | Note |

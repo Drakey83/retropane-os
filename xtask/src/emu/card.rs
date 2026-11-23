@@ -601,6 +601,48 @@ pub(crate) fn cardlog_checks(root: &Path) -> Result<(), String> {
         "    cardlog sdtime guard OK: every block off the card refused before a command, the last block as it was, each end-of-card wait logged"
     );
 
+    // rp-sdtime's Game Mode run (R364): the file preallocated in one run,
+    // written whole three times in 1 MiB DMA commands, read back and
+    // checked, then removed with its folder.
+    // 8 MiB here: the emulator's SD card is 32 MiB (the device run: 30).
+    let gm = variant_image_with(
+        root,
+        "rp-sdtime",
+        ("RP_SDTIME_GAMEMODE", "1"),
+        Some(("RP_SDTIME_GM_MIB", "8")),
+    )?;
+    let gm = std::fs::read(&gm).map_err(|e| format!("{}: {e}", gm.display()))?;
+    let out = run("sdtime", &gm, None, "RPL END")?;
+    let card = check("sdtime", 3, &out, "returned")?;
+    for want in [
+        "M1 rp-storage-bench/GAMEMODE.BIN preallocated, 8 MiB in one run",
+        " 0 failed",
+        "M5 read back 8 MiB in 1 MiB runs, DMA, checked: ",
+        "; 0 blocks differ, 0 reads failed",
+        "M6 clean-up: rp-storage-bench/GAMEMODE.BIN removed, rp-storage-bench removed",
+    ] {
+        if !card.contains(want) {
+            return Err(format!(
+                "cardlog sdtime gamemode: no `{want}`:
+{card}"
+            ));
+        }
+    }
+    if card
+        .lines()
+        .filter(|l| l.contains(" by DMA, 0 failed"))
+        .count()
+        != 3
+    {
+        return Err(format!(
+            "cardlog sdtime gamemode: a write pass failed or wasn't by DMA:
+{card}"
+        ));
+    }
+    eprintln!(
+        "    cardlog sdtime gamemode OK: 8 MiB preallocated, written three times by DMA, read back intact, removed"
+    );
+
     let out = run("crash", &image("rp-crash")?, None, "RPL END")?;
     check("crash", 1, &out, "crashed")?;
     eprintln!("    cardlog crash OK: closed as crashed");
