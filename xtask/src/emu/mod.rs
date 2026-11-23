@@ -671,6 +671,58 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The kernel's device build for G5 (K1, Game Mode): `rp-kernel` built
+/// with `RP_KERNEL_RETURN` under the resident loader, as the X51v will run
+/// it. Every check's line reaches the run log, the kernel passes, and it
+/// hands the Axim back to the loader (the run log after `RPL LOG`) instead
+/// of halting into the watchdog.
+pub fn boot_loader_kernel(root: &Path) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    let image = variant_image(root, "rp-kernel", ("RP_KERNEL_RETURN", "1"))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL END")),
+            during: None,
+            then: None,
+            timeout: BOOT_TIMEOUT + Duration::from_secs(40),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("kernel under the loader: no run log after the image returned")?;
+    for want in KERNEL_EXPECT
+        .iter()
+        .chain(&[KERNEL_MARKER, "stack: deepest "])
+    {
+        if !log.contains(want) {
+            return Err(format!(
+                "kernel under the loader: no `{want}` in the run log:{log}"
+            ));
+        }
+    }
+    if log.contains("DISPLAY waiting for the power button") {
+        return Err("kernel under the loader: the device build waited for the button".into());
+    }
+    eprintln!(
+        "    kernel under the loader OK: every check in the run log, back at the loader (the G5 device build)"
+    );
+    Ok(())
+}
+
 /// Must match `rp_threads::MARKER`.
 const THREADS_MARKER: &str = "RETROPANE-THREADS-OK";
 /// What the threads image must report.
@@ -2849,6 +2901,19 @@ fn variant_image_build(root: &Path, image: &str, envs: &[(&str, &str)]) -> Resul
     cmd.current_dir(root);
     for &(k, v) in envs {
         cmd.env(k, v);
+    }
+    // The user programs `cargo xtask` packaged beside the main build
+    // (`<name>.pe`, embedded by images such as the kernel at build time):
+    // the variant's own folder gets them too, or it embeds them empty.
+    let variant_release = root.join(&dir).join("armv5te-x51v-none-eabi/release");
+    std::fs::create_dir_all(&variant_release)
+        .map_err(|e| format!("{}: {e}", variant_release.display()))?;
+    for name in crate::userimg::IMAGES {
+        let pe = crate::arm_release(root).join(format!("{name}.pe"));
+        if pe.exists() {
+            let to = variant_release.join(format!("{name}.pe"));
+            std::fs::copy(&pe, &to).map_err(|e| format!("{}: {e}", to.display()))?;
+        }
     }
     run(cmd.args([
         "build",

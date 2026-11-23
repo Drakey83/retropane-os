@@ -244,6 +244,19 @@ was), its VM, IPC and supervision steps run on the device, its `BENCH`
 lines (the freeze and thaw's among them) read from the run log. A device
 run: the owner's go first.
 
+**Device build (2026-11-23):** `RP_KERNEL_RETURN=1` builds `rp-kernel`
+to return to the resident loader at the end (no wait for the power
+button; the default build still halts for the emulator's direct boot),
+and every line the kernel's checks print goes to the run log and the
+card's log as well as the serial port (as `rp-threads` does). RAM stays
+identity-mapped under the kernel's tables, so the loader's hand-back
+works from them; a hang is caught by the loader's 30 s run limit (an FIQ
+the kernel leaves to the runtime), not the hardware watchdog.
+`cargo xtask emu-kernel-loader` runs that build under the loader in the
+emulator: every check in the run log, back at the loader. Variant builds
+now get the packaged user programs (`rp-display-host.pe`) in their own
+folder (they were embedded empty, so IPC's setup failed in any variant).
+
 ### G6. Exclusivity grants and the mode manager
 
 The display, input and audio hosts take a grant token for one slot and

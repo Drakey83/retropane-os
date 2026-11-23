@@ -719,6 +719,25 @@ mod image {
         }
     }
 
+    /// Whether this build returns to the resident loader at the end (the
+    /// device build for G5, K1: `RP_KERNEL_RETURN=1`): no wait for the
+    /// power button, then back to the loader with the run log. The default
+    /// build halts (the emulator boots it directly).
+    const RETURNS: bool = option_env!("RP_KERNEL_RETURN").is_some();
+
+    /// Everything the kernel's checks print goes to the FFUART and, when the
+    /// resident loader started it, into the run log too (and the card's
+    /// log), so a device run brings the kernel's lines to the PC.
+    struct Tee(PxaUart<Mmio>);
+
+    impl Write for Tee {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let _ = self.0.write_str(s);
+            rp_hal_x51v::devices::log_write(s.as_bytes());
+            Ok(())
+        }
+    }
+
     fn main() -> ! {
         // Until the kernel's device map is live, print through a temporary
         // handle at the identity address; the real one is taken after the
@@ -798,7 +817,7 @@ mod image {
         let Some(bus) = rt::take_ffuart() else {
             rp_image::fail("no UART")
         };
-        let mut uart = PxaUart::new(bus);
+        let mut uart = Tee(PxaUart::new(bus));
         let _ = writeln!(
             uart,
             "VM tables OK (L1 at {l1:#010x}, {free_after_setup} frames free)"
@@ -1379,7 +1398,14 @@ mod image {
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
-            power_button(&mut uart);
+            if !RETURNS {
+                power_button(&mut uart);
+            }
+        }
+        if RETURNS {
+            // Back to the loader (it was started from there): the run log
+            // goes to the PC.
+            rp_image::finish()
         }
         halt()
     }
@@ -1398,7 +1424,7 @@ mod image {
     /// and every one of their threads must be off the run queues. Thawed,
     /// they go on and finish (the IPC checks after this see their results
     /// whole).
-    fn freeze_clients(uart: &mut PxaUart<Mmio>) -> bool {
+    fn freeze_clients(uart: &mut Tee) -> bool {
         // ~1 ms naps until the clients have made some calls.
         let mut waited = 0;
         while IPC.with(|i| i.calls) < 20 && RUN.with(|r| r.finished) == 0 && waited < 2000 {
@@ -2266,7 +2292,7 @@ mod image {
 
     /// Checks every client's report, the server's own word, and that
     /// threads were switched while inside calls.
-    fn report_clients(uart: &mut PxaUart<Mmio>, pe_pages: u32) -> bool {
+    fn report_clients(uart: &mut Tee, pe_pages: u32) -> bool {
         let ticks = rt::ticks().wrapping_sub(IPC.with(|i| i.first_call));
         switch_to(SERVER_SLOT);
         let server_word = rt::try_read((layout::slot_base(SERVER_SLOT) + testprog::DATA) as usize);
@@ -2350,7 +2376,7 @@ mod image {
     /// A handle table grows into a page only when its inline handles are
     /// taken, and the page goes back when the process exits: one handle
     /// past the inline ones into an empty slot's table costs one frame.
-    fn check_handle_pages(uart: &mut PxaUart<Mmio>) -> bool {
+    fn check_handle_pages(uart: &mut Tee) -> bool {
         const EMPTY_SLOT: u8 = 20;
         let free = || FRAMES.with(|f| f.free_frames() as u32);
         let before = free();
@@ -2375,7 +2401,7 @@ mod image {
 
     /// The trace ring after the run: it wrapped many times and kept the
     /// newest 128 events intact and in order; and a record costs little.
-    fn check_trace(uart: &mut PxaUart<Mmio>) -> bool {
+    fn check_trace(uart: &mut Tee) -> bool {
         let (total, intact, ordered, cap) = TRACE.with(|t| {
             let Some(t) = t else {
                 return (0, 0, false, 0);
@@ -2402,7 +2428,7 @@ mod image {
         report_as_trace(uart, pass, total, cap)
     }
 
-    fn report_as_trace(uart: &mut PxaUart<Mmio>, pass: bool, total: u32, cap: u32) -> bool {
+    fn report_as_trace(uart: &mut Tee, pass: bool, total: u32, cap: u32) -> bool {
         let _ = uart.write_str("TRACE ring");
         if pass {
             let _ = writeln!(uart, " OK ({total} events, newest {cap} kept)");
@@ -2414,7 +2440,7 @@ mod image {
 
     /// The display host's checks (item 46): its client's report, both
     /// restarts, and the level in the hardware.
-    fn report_display(uart: &mut PxaUart<Mmio>) -> bool {
+    fn report_display(uart: &mut Tee) -> bool {
         let (report, restarts, starts, clean) = RUN.with(|r| {
             (
                 r.display_report.unwrap_or([0; 4]),
@@ -2439,7 +2465,7 @@ mod image {
 
     /// After the marker: the power button, pressed by the emulator, turns
     /// the light off through the host, and on again at the level it had.
-    fn power_button(uart: &mut PxaUart<Mmio>) {
+    fn power_button(uart: &mut Tee) {
         let duty = pwm_duty;
         let on = duty();
         let _ = writeln!(uart, "DISPLAY waiting for the power button (duty {on})");
@@ -2464,7 +2490,7 @@ mod image {
         }
     }
 
-    fn report_ipc(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {
+    fn report_ipc(uart: &mut Tee, what: &str, pass: bool, got: u32) -> bool {
         let _ = uart.write_str("IPC ");
         let _ = uart.write_str(what);
         if pass {
@@ -2554,7 +2580,7 @@ mod image {
     /// meanwhile); the store comes back, the kept frame's copies moved and
     /// rehomed in every space. The freeze's thaw right after reads every
     /// page back through it.
-    fn full_tier(uart: &mut PxaUart<Mmio>) -> bool {
+    fn full_tier(uart: &mut Tee) -> bool {
         let free0 = FRAMES.with(|f| f.free_frames() as u32);
         let (pass, zframes, moved, rehomed, out_ticks, in_ticks) = with_vm(|vm, s| {
             let mut card = RamCard {
@@ -2641,7 +2667,7 @@ mod image {
     /// G4's layout work): two records, a build that fails (the older stays
     /// newest), a flipped bit refused, sections read back; and XXH32 timed
     /// over 64 KiB.
-    fn return_record(uart: &mut PxaUart<Mmio>) -> bool {
+    fn return_record(uart: &mut Tee) -> bool {
         use rp_kernel_gamemode::{Kind, Record, commit, newest, xxh32};
         let mut reserve = [0u8; 2048];
         let one = commit(&mut reserve, &mut |w| w.section(Kind::Process, &[5; 12]));
@@ -2692,7 +2718,7 @@ mod image {
     /// fault taken; a word every 4 KiB read across it timed (one TLB entry
     /// a megabyte, against one a page for paged memory); then removed and
     /// every frame back.
-    fn large_region(uart: &mut PxaUart<Mmio>) -> bool {
+    fn large_region(uart: &mut Tee) -> bool {
         const LEN: u32 = 4 << 20;
         let base = layout::LARGE_BASE;
         let free0 = FRAMES.with(|f| f.free_frames() as u32);
@@ -2763,7 +2789,7 @@ mod image {
         pass
     }
 
-    fn report(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {
+    fn report(uart: &mut Tee, what: &str, pass: bool, got: u32) -> bool {
         let _ = uart.write_str("VM ");
         let _ = uart.write_str(what);
         if pass {

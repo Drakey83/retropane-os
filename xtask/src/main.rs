@@ -332,6 +332,7 @@ commands:
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
   emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
+  emu-kernel-loader the kernel's device build (G5) under the loader
   emu-screen-measure the colorimeter patches' check (rp-screen-measure driven
             by a measurement program: steps on time, the table switched, a
             damaged program refused; not part of `emu`): run it before `measure`
@@ -534,6 +535,7 @@ fn main() -> ExitCode {
         | "emu-handover"
         | "emu-nightlight"
         | "emu-cfdetect"
+        | "emu-kernel-loader"
         | "emu-display-cal"
         | "emu-looks"
         | "emu-tone"
@@ -1037,6 +1039,7 @@ fn run_step(step: &str) -> Result {
         "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
         "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
         "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),
+        "emu-kernel-loader" => cross().and_then(|()| emu::boot_loader_kernel(&workspace_root())),
         "emu-display-cal" => cross().and_then(|()| emu::boot_loader_display_cal(&workspace_root())),
         "emu-looks" => cross().and_then(|()| emu::boot_loader_looks(&workspace_root())),
         "emu-tone" => cross().and_then(|()| emu::boot_loader_tone(&workspace_root())),
@@ -1110,6 +1113,7 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_handover", emu::boot_loader_handover),
                 ("boot_loader_nightlight", emu::boot_loader_nightlight),
                 ("boot_loader_cfdetect", emu::boot_loader_cfdetect),
+                ("boot_loader_kernel", emu::boot_loader_kernel),
                 ("boot_loader_display_cal", emu::boot_loader_display_cal),
                 ("boot_loader_looks", emu::boot_loader_looks),
                 ("boot_loader_refresh", emu::boot_loader_refresh),
