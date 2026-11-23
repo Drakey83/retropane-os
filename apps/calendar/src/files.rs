@@ -165,26 +165,13 @@ impl Default for Io {
     }
 }
 
-/// The tzdata name of a kept zone record (`Kind::Data` named "zone").
-fn chosen_zone(store: &rp_pim::store::Store<'_>) -> Option<Zone> {
-    store
-        .all(Kind::Data)
-        .find(|r| r.text(tag::NAME) == b"zone")
-        .and_then(|r| zone::find(r.text(tag::TEXT)))
-}
-
 /// The device's zone: the one chosen, else guessed from the dock PC's
-/// offset now (a US zone first). Whether it was guessed.
+/// offset now (a US zone first). Whether it was guessed
+/// ([`rp_pim::zone::device`], the Today screen's too).
 #[must_use]
 pub fn device_zone(store: &rp_pim::store::Store<'_>, cx: &Ctx) -> (Option<Zone>, bool) {
-    if let Some(z) = chosen_zone(store) {
-        return (Some(z), false);
-    }
     let local = i64::from(cx.now.day) * 1440 + i64::from(cx.now.minute);
-    (
-        zone::guess(local - i64::from(cx.utc_offset), cx.utc_offset),
-        true,
-    )
+    zone::device(store, local, cx.utc_offset)
 }
 
 /// A zone's name as people say it with its offset now: "New York (UTC-5)".
@@ -205,37 +192,7 @@ fn zone_line(z: Zone, utc: i64) -> Buf<48> {
     b
 }
 
-/// `wall` in zone `name` as the device's wall time (unchanged with no
-/// device zone, a floating time, or a zone no table has).
-#[must_use]
-pub fn shown(device: Option<Zone>, name: &[u8], wall: u32) -> u32 {
-    let (Some(d), false) = (device, name.is_empty()) else {
-        return wall;
-    };
-    let Some(z) = zone::find(name) else {
-        return wall;
-    };
-    if z == d {
-        return wall;
-    }
-    u32::try_from(z.rule().to(i64::from(wall), &d.rule())).unwrap_or(wall)
-}
-
-/// The device's wall time `wall` as the wall time of zone `name` (the
-/// editor's time kept in the appointment's own zone).
-#[must_use]
-pub fn kept(device: Option<Zone>, name: &[u8], wall: u32) -> u32 {
-    let (Some(d), false) = (device, name.is_empty()) else {
-        return wall;
-    };
-    let Some(z) = zone::find(name) else {
-        return wall;
-    };
-    if z == d {
-        return wall;
-    }
-    u32::try_from(d.rule().to(i64::from(wall), &z.rule())).unwrap_or(wall)
-}
+pub use rp_pim::zone::{kept, shown};
 
 fn digits(n: usize) -> Buf<8> {
     let mut b = Buf::new();

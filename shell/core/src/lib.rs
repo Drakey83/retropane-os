@@ -3977,7 +3977,12 @@ impl Shell {
         let feed = {
             let mut feed = self.feed.borrow_mut();
             let store = self.apps.store.try_borrow().ok();
-            feed.update(store.as_ref().and_then(|s| s.as_ref()), now.day, now.minute);
+            feed.update(
+                store.as_ref().and_then(|s| s.as_ref()),
+                now.day,
+                now.minute,
+                self.utc_offset,
+            );
             *feed
         };
         if self.pressed == Some(Target::Agenda) && !self.panels_off {

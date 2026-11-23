@@ -13,6 +13,7 @@
 use rp_pim::date;
 use rp_pim::repeat::Rule;
 use rp_pim::store::{Kind, Store, tag};
+use rp_pim::zone;
 
 /// The rows the panel has room for.
 pub(crate) const ROWS: usize = 2;
@@ -60,7 +61,7 @@ impl Row {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Feed {
     /// The store, the day and the minute it was worked out for.
-    key: Option<(u32, i32, u16)>,
+    key: Option<(u32, i32, u16, i32)>,
     /// The store is there and loaded (else the panel says it is coming).
     pub ready: bool,
     /// What is left of today, in order (all day first), then tomorrow's
@@ -92,16 +93,22 @@ impl Feed {
 
     /// Worked again from `store` if it changed, the day turned or the
     /// minute moved since; `None` (no store yet) shows as not ready.
-    pub(crate) fn update(&mut self, store: Option<&Store<'_>>, today: i32, minute: u16) {
+    pub(crate) fn update(
+        &mut self,
+        store: Option<&Store<'_>>,
+        today: i32,
+        minute: u16,
+        utc_offset: i32,
+    ) {
         let Some(s) = store.filter(|s| s.loaded()) else {
             *self = Self::new();
             return;
         };
-        let key = (s.changes(), today, minute);
+        let key = (s.changes(), today, minute, utc_offset);
         if self.key == Some(key) {
             return;
         }
-        *self = feed(s, today, minute);
+        *self = feed(s, today, minute, utc_offset);
         self.key = Some(key);
     }
 }
@@ -140,7 +147,7 @@ impl Pick {
     }
 }
 
-fn feed(s: &Store<'_>, today: i32, minute: u16) -> Feed {
+fn feed(s: &Store<'_>, today: i32, minute: u16, utc_offset: i32) -> Feed {
     let mut out = Feed::new();
     out.ready = true;
     let mut pick = Pick {
@@ -152,24 +159,42 @@ fn feed(s: &Store<'_>, today: i32, minute: u16) -> Feed {
         cal.and_then(|c| s.get(c))
             .is_some_and(|c| c.num(tag::HIDDEN) == Some(1))
     };
+    let local = i64::from(today) * 1440 + i64::from(minute);
+    let device = zone::device(s, local, utc_offset).0;
     for r in s.all(Kind::Appointment) {
         if hidden(r.num(tag::CAL)) {
             continue;
         }
         let start = r.num(tag::START).unwrap_or(0);
         let first = date::day_of(start);
-        let at = (start % date::DAY_MIN) as u16;
+        let wall = (start % date::DAY_MIN) as u16;
         let all_day = r.num(tag::ALL_DAY) == Some(1);
         let len = r.num(tag::MINUTES).unwrap_or(60).clamp(1, 24 * 60) as u16;
         let rule = r.num(tag::REPEAT).and_then(|v| Rule::unpack(v, first));
-        for off in 0..2u8 {
-            let day = today + i32::from(off);
+        // A time kept in another zone shows in the device's, as Calendar
+        // shows it (rp_pim::zone::shown, one occurrence at a time: a clock
+        // change between two moves one and not the other); a shift can
+        // bring yesterday's occurrence into today or push one past it.
+        let zone = r.text(tag::ZONE);
+        for occ in today - 1..today + 2 {
             let on = match rule {
-                Some(x) => x.occurs(first, day),
-                None => first == day,
+                Some(x) => x.occurs(first, occ),
+                None => first == occ,
+            };
+            if !on {
+                continue;
+            }
+            let (day, at) = if all_day || zone.is_empty() {
+                (occ, wall)
+            } else {
+                let t = zone::shown(device, zone, date::start_of(occ) + u32::from(wall));
+                (date::day_of(t), (t % date::DAY_MIN) as u16)
+            };
+            let Ok(off) = u8::try_from(day - today) else {
+                continue;
             };
             // Today's that have ended are past.
-            if !on || (off == 0 && !all_day && at + len <= minute) {
+            if off > 1 || (off == 0 && !all_day && at + len <= minute) {
                 continue;
             }
             let row = Row::of((!all_day).then_some(at), off == 1, r.text(tag::TITLE));
@@ -279,7 +304,7 @@ mod tests {
         );
         let mut f = Feed::new();
         // 8 AM: all day first, then the stand-up; the dentist is more.
-        f.update(Some(&s), TODAY, 8 * 60);
+        f.update(Some(&s), TODAY, 8 * 60, 0);
         assert!(f.ready);
         assert_eq!(
             titles(&f),
@@ -290,7 +315,7 @@ mod tests {
         );
         assert_eq!(f.more, 1);
         // 9:30: the stand-up has ended.
-        f.update(Some(&s), TODAY, 9 * 60 + 30);
+        f.update(Some(&s), TODAY, 9 * 60 + 30, 0);
         assert_eq!(
             titles(&f),
             [
@@ -308,7 +333,7 @@ mod tests {
         appt(&mut s, b"Gym", TODAY + 1, 18 * 60, 60, &[]);
         appt(&mut s, b"Car", TODAY + 1, 8 * 60, 60, &[]);
         let mut f = Feed::new();
-        f.update(Some(&s), TODAY, 14 * 60);
+        f.update(Some(&s), TODAY, 14 * 60, 0);
         // Today's one left, then tomorrow's first.
         assert_eq!(
             titles(&f),
@@ -317,7 +342,7 @@ mod tests {
                 (b"Car", Some(480), true)
             ]
         );
-        f.update(Some(&s), TODAY, 17 * 60);
+        f.update(Some(&s), TODAY, 17 * 60, 0);
         assert_eq!(
             titles(&f),
             [(&b"Car"[..], Some(480), true), (b"Gym", Some(1080), true)]
@@ -359,7 +384,7 @@ mod tests {
         )
         .unwrap();
         let mut f = Feed::new();
-        f.update(Some(&s), TODAY, 12 * 60);
+        f.update(Some(&s), TODAY, 12 * 60, 0);
         assert_eq!(
             titles(&f),
             [
@@ -367,7 +392,7 @@ mod tests {
                 (b"Choir", Some(1140), false)
             ]
         );
-        f.update(None, TODAY, 12 * 60);
+        f.update(None, TODAY, 12 * 60, 0);
         assert!(!f.ready);
     }
 
@@ -405,9 +430,43 @@ mod tests {
         )
         .unwrap();
         let mut f = Feed::new();
-        f.update(Some(&s), TODAY, 600);
+        f.update(Some(&s), TODAY, 600, 0);
         assert_eq!((f.due, f.late), (3, 2));
         // Late before flagged; the older of the late ones.
         assert_eq!(f.next_task.title(), b"Taxes");
+    }
+
+    /// R376: an appointment kept in another zone shows at the device's
+    /// wall time, as Calendar shows it, and on the device's day.
+    #[test]
+    fn a_zoned_appointment_shows_at_the_devices_time_and_day() {
+        let mut s = store();
+        s.put(
+            Kind::Data,
+            None,
+            &[(tag::NAME, b"zone"), (tag::TEXT, b"America/Los_Angeles")],
+        )
+        .unwrap();
+        let ny: &[(u8, &[u8])] = &[(tag::ZONE, b"America/New_York")];
+        // 9 AM in New York is 6 AM on the device.
+        appt(&mut s, b"Call", TODAY, 9 * 60, 30, ny);
+        // 1 AM today in New York was 10 PM yesterday here: not shown.
+        appt(&mut s, b"Night", TODAY, 60, 30, ny);
+        // 2 AM tomorrow in New York is 11 PM today here.
+        appt(&mut s, b"Late", TODAY + 1, 2 * 60, 30, ny);
+        let mut f = Feed::new();
+        f.update(Some(&s), TODAY, 5 * 60, -8 * 60);
+        assert_eq!(
+            titles(&f),
+            [
+                (&b"Call"[..], Some(6 * 60), false),
+                (b"Late", Some(23 * 60), false)
+            ]
+        );
+        // A time with no zone is the device's own, unchanged.
+        let mut s = store();
+        appt(&mut s, b"Here", TODAY, 9 * 60, 30, &[]);
+        f.update(Some(&s), TODAY, 5 * 60, -8 * 60);
+        assert_eq!(titles(&f), [(&b"Here"[..], Some(9 * 60), false)]);
     }
 }

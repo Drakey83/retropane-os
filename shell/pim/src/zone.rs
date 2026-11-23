@@ -297,6 +297,65 @@ pub fn guess(utc: i64, offset: i32) -> Option<Zone> {
         .find(|z| z.rule().offset_at(utc) == offset)
 }
 
+/// The zone the device was set to (a `Kind::Data` record named "zone"
+/// holding its tzdata name), if any.
+#[must_use]
+pub fn chosen(store: &crate::store::Store<'_>) -> Option<Zone> {
+    use crate::store::{Kind, tag};
+    store
+        .all(Kind::Data)
+        .find(|r| r.text(tag::NAME) == b"zone")
+        .and_then(|r| find(r.text(tag::TEXT)))
+}
+
+/// The device's zone: the one chosen, else guessed from the dock PC's
+/// offset (`utc_offset` minutes east) at local minute `local` (a US zone
+/// first); and whether it was guessed. Calendar and the Today screen ask
+/// this one place, so both show a time in the same zone.
+#[must_use]
+pub fn device(
+    store: &crate::store::Store<'_>,
+    local: i64,
+    utc_offset: i32,
+) -> (Option<Zone>, bool) {
+    if let Some(z) = chosen(store) {
+        return (Some(z), false);
+    }
+    (guess(local - i64::from(utc_offset), utc_offset), true)
+}
+
+/// `wall` in zone `name` as the device's wall time (unchanged with no
+/// device zone, a floating time, or a zone no table has).
+#[must_use]
+pub fn shown(device: Option<Zone>, name: &[u8], wall: u32) -> u32 {
+    let (Some(d), false) = (device, name.is_empty()) else {
+        return wall;
+    };
+    let Some(z) = find(name) else {
+        return wall;
+    };
+    if z == d {
+        return wall;
+    }
+    u32::try_from(z.rule().to(i64::from(wall), &d.rule())).unwrap_or(wall)
+}
+
+/// The device's wall time `wall` as the wall time of zone `name` (an
+/// editor's time kept in the appointment's own zone).
+#[must_use]
+pub fn kept(device: Option<Zone>, name: &[u8], wall: u32) -> u32 {
+    let (Some(d), false) = (device, name.is_empty()) else {
+        return wall;
+    };
+    let Some(z) = find(name) else {
+        return wall;
+    };
+    if z == d {
+        return wall;
+    }
+    u32::try_from(d.rule().to(i64::from(wall), &z.rule())).unwrap_or(wall)
+}
+
 #[cfg(test)]
 #[path = "zone_tests.rs"]
 mod tests;

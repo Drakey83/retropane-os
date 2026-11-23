@@ -1268,7 +1268,10 @@ impl Calendar {
         );
         // A rule the chip says only part of, in words beside the label
         // ("Every 2 weeks on Mon, Wed until Mar 3"): what is kept on save.
-        if let Some((r, _)) = e.kept_rule.filter(|&(r, c)| c == e.repeat && !r.plain(e.day)) {
+        if let Some((r, _)) = e
+            .kept_rule
+            .filter(|&(r, c)| c == e.repeat && !r.plain(e.day))
+        {
             let mut w = [0u8; 64];
             let n = r.words(e.day, cx.us, &mut w);
             let x = MARGIN + 4 + cx.fonts.label.width(b"REPEAT") + 10;
