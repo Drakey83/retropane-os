@@ -1050,14 +1050,14 @@ fn emit_from(
 }
 
 /// The editor's line under its start: where a time kept in another zone
-/// is from ("9:00 AM in New York").
-pub fn zone_note(name: &[u8], wall: u32) -> Option<Buf<48>> {
+/// is from ("9:00 AM in New York"), in the clock chosen.
+pub fn zone_note(name: &[u8], wall: u32, clock12: bool) -> Option<Buf<48>> {
     let z = zone::find(name)?;
     let mut place = [0u8; 32];
     let n = z.place(&mut place);
     let mut b = Buf::new();
     b.s(b"KEPT AS ")
-        .s(clock((wall % date::DAY_MIN) as u16).get())
+        .s(clock((wall % date::DAY_MIN) as u16, clock12).get())
         .s(b" IN ")
         .s(&place[..n]);
     Some(b)

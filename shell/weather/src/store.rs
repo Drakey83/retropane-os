@@ -25,6 +25,11 @@ const KEY: usize = 1 + crate::settings::KEY_MAX;
 const MAGIC: &[u8; 4] = b"RPWS";
 /// The appearance byte's top bit: the living sky off.
 const SKY_OFF: u8 = 0x80;
+/// The units byte's bit 0: metric. Bit 1: the clock chosen (a record from
+/// before it has none, and reads as its region's clock); bit 2: 12-hour.
+const METRIC: u8 = 1;
+const CLOCK_SET: u8 = 2;
+const CLOCK12: u8 = 4;
 const VERSION: u8 = 2;
 /// The magic, version and the single-byte fields.
 const HEAD: usize = 16;
@@ -39,7 +44,7 @@ pub fn encode(s: &Settings) -> [u8; LEN] {
     r[..4].copy_from_slice(MAGIC);
     r[4] = VERSION;
     r[5] = s.region;
-    r[6] = u8::from(s.metric);
+    r[6] = (if s.metric { METRIC } else { 0 }) | CLOCK_SET | if s.clock12 { CLOCK12 } else { 0 };
     r[7] = s.n_places;
     r[8] = s.current;
     r[9] = s.home;
@@ -99,7 +104,7 @@ pub fn decode(r: &[u8], key: crate::settings::Secret) -> Settings {
     };
     let mut s = Settings {
         region: r[5],
-        metric: r[6] != 0,
+        metric: r[6] & METRIC != 0,
         n_places: r[7],
         current: r[8],
         home: r[9],
@@ -134,6 +139,11 @@ pub fn decode(r: &[u8], key: crate::settings::Secret) -> Settings {
     for p in s.places.iter_mut().skip(usize::from(s.n_places)) {
         *p = Place::NONE;
     }
+    s.clock12 = if r[6] & CLOCK_SET != 0 {
+        r[6] & CLOCK12 != 0
+    } else {
+        s.region_info().clock12
+    };
     s.tidy();
     s
 }
@@ -195,8 +205,8 @@ mod tests {
 
     fn same(a: &Settings, b: &Settings) {
         assert_eq!(
-            (a.region, a.metric, a.n_places, a.current, a.home),
-            (b.region, b.metric, b.n_places, b.current, b.home)
+            (a.region, a.metric, a.clock12, a.n_places, a.current, a.home),
+            (b.region, b.metric, b.clock12, b.n_places, b.current, b.home)
         );
         assert_eq!(
             (a.provider, a.station, a.refresh, a.pack),
@@ -226,6 +236,27 @@ mod tests {
         same(&old, &s);
         assert_eq!(old.tempest_key.expose(), b"kept");
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn the_clock_is_kept_and_a_record_from_before_it_reads_the_regions() {
+        let mut s = Settings::DEFAULT;
+        // Germany (24-hour) with the 12-hour clock chosen: kept.
+        s.region = 4;
+        s.metric = true;
+        s.clock12 = true;
+        let mut r = encode(&s);
+        assert!(decode(&r, Secret::NONE).clock12);
+        s.region = 0;
+        s.clock12 = false;
+        assert!(!decode(&encode(&s), Secret::NONE).clock12, "US, 24-hour");
+        // Written before the clock was a setting: bits 1 and 2 clear, the
+        // region's clock read (Germany: 24-hour).
+        r[6] &= METRIC;
+        let crc = crc32(&r[..LEN - 4]);
+        r[LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+        let old = decode(&r, Secret::NONE);
+        assert!(old.metric && !old.clock12);
     }
 
     #[test]

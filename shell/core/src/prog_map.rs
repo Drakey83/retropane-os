@@ -293,7 +293,9 @@ impl Shell {
             now: self.program_now(),
             pics: self.app_pics,
             forecast: &self.forecast[..usize::from(self.forecast_n)],
-            us: true,
+            // The region's date order and the clock chosen (R383).
+            us: self.region.month_first,
+            clock12: self.region.clock12,
             utc_offset: self.utc_offset,
             shapes: &self.shapes,
             clip: &self.clip,

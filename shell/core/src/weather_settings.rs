@@ -66,6 +66,8 @@ pub(crate) enum Item {
     LivingSky,
     /// T1: the region and its units.
     Units,
+    /// T1: the 12- or 24-hour clock (R383).
+    Clock,
     /// T1: the icon pack.
     Icons,
     /// T3: a provider.
@@ -124,6 +126,7 @@ impl Shell {
                     Item::Appearance,
                     Item::LivingSky,
                     Item::Units,
+                    Item::Clock,
                     Item::Icons,
                 ] {
                     add(i);
@@ -206,7 +209,7 @@ impl Shell {
             }
             (
                 Screen::WeatherSettings,
-                Item::Appearance | Item::LivingSky | Item::Units | Item::Icons,
+                Item::Appearance | Item::LivingSky | Item::Units | Item::Clock | Item::Icons,
             ) => b"LOOK",
             (Screen::WeatherFrom, Item::Provider(_)) => b"FORECAST",
             (Screen::WeatherFrom, Item::StationKind(_)) => b"YOUR WEATHER STATION",
@@ -336,6 +339,10 @@ impl Shell {
             }
             (_, Item::Units) => {
                 self.wset.next_region();
+                self.settings_changed(false);
+            }
+            (_, Item::Clock) => {
+                self.wset.clock12 = !self.wset.clock12;
                 self.settings_changed(false);
             }
             (_, Item::Icons) => {
@@ -703,6 +710,18 @@ impl Shell {
                     },
                 );
                 right(f, t.as_bytes(), DIM);
+            }
+            Item::Clock => {
+                f.text(r.x + 12, base, ui, TEXT, b"Clock");
+                // A two-way switch, as Living sky's: the clock chosen lit.
+                let mut x = r.x + r.w - 12 - 2 * 76;
+                for (twelve, name) in [(true, b"12-hour" as &[u8]), (false, b"24-hour")] {
+                    let seg = Rect::new(x, r.y + 7, 76, r.h - 14);
+                    let lit = twelve == s.clock12;
+                    self.segment(f, seg, lit);
+                    centre_in(f, seg, label, if lit { TEXT } else { DIM }, name);
+                    x += 76;
+                }
             }
             Item::Icons => {
                 f.text(r.x + 12, base, ui, TEXT, b"Icons");

@@ -281,20 +281,25 @@ pub struct Region {
     pub wind: Wind,
     /// 12-hour clock with AM and PM.
     pub clock12: bool,
+    /// Dates month first ("Jan 1") and weeks from Sunday, as the US and
+    /// Canada write them; else "1 Jan" and weeks from Monday.
+    pub month_first: bool,
 }
 
 impl Region {
-    /// US customary: °F, mph, 12-hour clock.
+    /// US customary: °F, mph, 12-hour clock, month first.
     pub const US: Self = Self {
         temp: Temp::F,
         wind: Wind::Mph,
         clock12: true,
+        month_first: true,
     };
-    /// Metric: °C, km/h, 24-hour clock.
+    /// Metric: °C, km/h, 24-hour clock, day first.
     pub const METRIC: Self = Self {
         temp: Temp::C,
         wind: Wind::Kmh,
         clock12: false,
+        month_first: false,
     };
 
     /// A temperature (tenths of °C) as a whole number in this region's unit.

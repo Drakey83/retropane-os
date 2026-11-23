@@ -230,22 +230,12 @@ fn holds(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 const FLAGS: [u32; 4] = [0, kit::IDENTITY[4], kit::AMBER, LATE];
 
-/// `m` minutes from midnight as a clock time: "3:05 PM" where the region
-/// counts twelve hours (`us`), "15:05" elsewhere.
-fn clock(m: u16, us: bool, out: &mut [u8; 8]) -> usize {
-    let (h, min) = (m / 60 % 24, m % 60);
-    let shown = if us { (h + 11) % 12 + 1 } else { h };
-    let mut n = num(out, u32::from(shown));
-    out[n] = b':';
-    out[n + 1] = b'0' + (min / 10) as u8;
-    out[n + 2] = b'0' + (min % 10) as u8;
-    n += 3;
-    if us {
-        for &c in if h < 12 { b" AM" } else { b" PM" } {
-            out[n] = c;
-            n += 1;
-        }
-    }
+/// `m` minutes from midnight in the clock chosen: "3:05 PM" or "15:05"
+/// (R383: the one writer every app shares).
+fn clock(m: u16, clock12: bool, out: &mut [u8; 8]) -> usize {
+    let t = rp_app::clock::time(m, clock12);
+    let n = t.get().len();
+    out[..n].copy_from_slice(t.get());
     n
 }
 
@@ -1497,7 +1487,7 @@ impl Tasks {
                 let mut tb = [0u8; 8];
                 let (shown, col): (&[u8], _) = match t.time {
                     Some(m) => {
-                        let n = clock(m, cx.us, &mut tb);
+                        let n = clock(m, cx.clock12, &mut tb);
                         (&tb[..n], TEXT)
                     }
                     None => (b"None", DIM),
@@ -1562,7 +1552,7 @@ impl Tasks {
             // Its time after its day: "Today 3:00 PM".
             if let Some(m) = t.time {
                 let mut tb = [0u8; 8];
-                let tn = clock(m, cx.us, &mut tb);
+                let tn = clock(m, cx.clock12, &mut tb);
                 let gap = usize::from(sn > 0);
                 for &c in b" "[..gap].iter().chain(&tb[..tn]) {
                     sub[sn] = c;
@@ -1839,7 +1829,7 @@ impl Program for Tasks {
                             .flatten()
                             .find(|t| t.id == id)
                             .and_then(|t| t.time);
-                        self.pad = Some((id, rp_app::timepad::TimePad::clock(time)));
+                        self.pad = Some((id, rp_app::timepad::TimePad::clock(time, cx.clock12)));
                         return Reply::Redraw;
                     }
                     self.revealed = None;
@@ -2039,10 +2029,10 @@ impl Tasks {
         (t, n)
     }
 
-    /// The time pad up on `minutes` (the previews: on the device a touch
-    /// on a task's TIME row brings it).
-    pub fn show_time_pad(&mut self, minutes: Option<u16>) {
-        self.pad = Some((0, rp_app::timepad::TimePad::clock(minutes)));
+    /// The time pad up on `minutes`, on the 12- or 24-hour clock (the
+    /// previews: on the device a touch on a task's TIME row brings it).
+    pub fn show_time_pad(&mut self, minutes: Option<u16>, clock12: bool) {
+        self.pad = Some((0, rp_app::timepad::TimePad::clock(minutes, clock12)));
     }
 
     /// Task `id`'s time set to `minutes` from midnight (`None`: no time).

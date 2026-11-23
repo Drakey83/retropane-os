@@ -298,14 +298,17 @@ fn text_formats() {
         day: 13,
         month: 10,
     };
-    assert_eq!(date_line(&mut b, t), b"TUE 13 OCTOBER");
+    assert_eq!(date_line(&mut b, t, false), b"TUE 13 OCTOBER");
+    // The region's order (R383 follow-on): month first in the US.
+    assert_eq!(date_line(&mut b, t, true), b"TUE OCTOBER 13");
     let t = Time {
         weekday: 6,
         day: 1,
         month: 1,
         ..t
     };
-    assert_eq!(date_line(&mut b, t), b"SUN 1 JANUARY");
+    assert_eq!(date_line(&mut b, t, false), b"SUN 1 JANUARY");
+    assert_eq!(date_line(&mut b, t, true), b"SUN JANUARY 1");
     // Out-of-range values are clamped, never a panic.
     let bad = Time {
         hour: 99,
@@ -314,7 +317,8 @@ fn text_formats() {
         day: 0,
         month: 0,
     };
-    assert_eq!(date_line(&mut b, bad), b"SUN 1 JANUARY");
+    assert_eq!(date_line(&mut b, bad, false), b"SUN 1 JANUARY");
+    assert_eq!(date_line(&mut b, bad, true), b"SUN JANUARY 1");
 }
 
 #[test]
@@ -1888,10 +1892,12 @@ fn an_alert_in_force_shows_in_the_header_and_opens_in_full() {
     tap(&mut s, chip);
     assert_eq!(s.screen(), Screen::Alert);
     let f = drawn(&mut s);
-    let meta = rp_weather::Line::new()
-        .push(b"MODERATE  UNTIL 2 NOVEMBER ")
-        .push(s.region.time(11, 0, true).as_bytes());
-    assert!(texts(&f).contains(&meta.as_bytes().to_vec()));
+    // In the region's order and clock: the US's, then a 24-hour day-first
+    // region's.
+    assert!(texts(&f).contains(&b"MODERATE  UNTIL NOVEMBER 2 11:00 AM".to_vec()));
+    s.set_region(rp_weather::Region::METRIC);
+    let f = drawn(&mut s);
+    assert!(texts(&f).contains(&b"MODERATE  UNTIL 2 NOVEMBER 11:00".to_vec()));
     tap(&mut s, SOFT_LEFT);
     assert_eq!(s.screen(), Screen::Weather);
 }
@@ -5002,4 +5008,43 @@ fn todays_panel_shows_the_store_and_opens_calendar_and_tasks() {
     assert!(t.iter().any(|x| x.ends_with(b"1 LATE")));
     assert_eq!(tap_t(&mut s, Target::TasksLine), Action::OpenProgram(2));
     assert_eq!(tap_t(&mut s, Target::Agenda), Action::OpenProgram(0));
+}
+
+/// R383: the clock is a setting of its own beside the region. The Clock
+/// row switches it and nothing else; every screen's clock follows, and it
+/// is kept with the other settings.
+#[test]
+fn the_clock_row_switches_the_24_hour_clock_and_only_it() {
+    let mut s = weather(0);
+    s.set_time(Time {
+        hour: 14,
+        minute: 5,
+        ..Time::default()
+    });
+    tap(&mut s, SOFT_RIGHT);
+    assert_eq!(s.screen(), Screen::WeatherSettings);
+    let before = (s.wset.region, s.wset.metric, s.region.temp);
+    assert!(s.region.clock12);
+    tap_item(&mut s, Item::Clock);
+    assert!(!s.wset.clock12 && !s.region.clock12);
+    assert_eq!((s.wset.region, s.wset.metric, s.region.temp), before);
+    // Its row shows the choice lit, the screen still fits above the bar.
+    let t = texts(&drawn(&mut s));
+    assert!(t.contains(&b"Clock".to_vec()) && t.contains(&b"24-hour".to_vec()));
+    let (items, n) = s.items();
+    let last = s.settings_rect(Target::Row(n - 1));
+    assert_eq!(items[usize::from(n) - 1], Item::Icons);
+    assert!(last.y + last.h <= H - 40, "the rows fit above the bar");
+    // The title clock follows.
+    tap(&mut s, SOFT_LEFT);
+    assert!(texts(&drawn(&mut s)).contains(&b"14:05".to_vec()));
+    // Kept.
+    let back = rp_weather::store::decode(
+        &rp_weather::store::encode(&s.wset),
+        rp_weather::settings::Secret::NONE,
+    );
+    assert!(!back.clock12);
+    // A region moved to brings its own clock (the next is Canada's 12-hour).
+    s.wset.next_region();
+    assert!(s.wset.clock12);
 }

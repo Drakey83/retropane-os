@@ -54,6 +54,7 @@ fn ctx() -> Ctx<'static> {
         pics: None,
         forecast: &[],
         us: true,
+        clock12: true,
         utc_offset: 0,
         shapes: Box::leak(Box::new(Shapes::new())),
         clip: Box::leak(Box::new(core::cell::RefCell::new(Text::EMPTY))),

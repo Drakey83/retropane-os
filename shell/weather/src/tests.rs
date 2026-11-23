@@ -221,19 +221,32 @@ fn a_region_sets_its_units_and_clock_and_the_system_switch_overrides() {
         })
         .collect();
     assert_eq!(names.last(), Some(&"United States"), "it cycles round");
-    s.region = 2; // the United Kingdom: Celsius with mph, 24-hour
+    // The United Kingdom set by hand: Celsius with mph; the clock is the
+    // one kept (next_region brings a region's own).
+    s.region = 2;
     s.metric = true;
     assert_eq!(
         s.units(),
         Region {
             temp: Temp::C,
             wind: Wind::Mph,
-            clock12: false
-        }
+            clock12: true,
+            month_first: false,
+        },
+        "region 2 set by hand: the clock still the US's 12-hour"
     );
+    s.clock12 = false;
     s.metric = false;
     assert_eq!(s.units().temp, Temp::F);
-    assert!(!s.units().clock12, "the clock stays the region's");
+    assert!(!s.units().clock12, "the clock stays as chosen");
+    // The clock is its own switch: a region moved to brings its own, and
+    // changing it changes nothing else.
+    s.region = 3; // Australia: 12-hour
+    s.next_region(); // Germany: 24-hour
+    assert!(!s.clock12);
+    s.clock12 = true;
+    assert_eq!(s.units().temp, Temp::C);
+    assert!(s.units().clock12 && !s.units().month_first);
 }
 
 #[test]
