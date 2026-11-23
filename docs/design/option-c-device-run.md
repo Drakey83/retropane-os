@@ -24,6 +24,17 @@ Also read from the same log: every `slow frame` and `slow answer` line,
 `frame N: full` (none expected: 208 commands, the busiest test frame 155),
 and the store's use (`... of 33 slots`).
 
+## What the run found (today-0048, 2026-11-01; today-0150, 2026-11-15)
+
+A decode at size: slowest 82.5 ms (missed 10 ms); a pack pick: the table
+160 ms + 20 pictures 1.35 s (missed 0.1 s); start 1,074 ms, every later run
+1,050-1,573 (missed 0.5 s); Hourly's graph in the store (24.8 ms, met); the
+default pack read 1.5-2.9 s; the radar's ten-minute keep not reached. The
+misses are designed next in
+[weather-p4-p5-p7.md](../research/sheets/weather-p4-p5-p7.md) (its cause
+found: the image reads the card two sectors a command, ~10x below the
+card's 8.2 MB/s).
+
 ## The run, step by step (the owner's hands)
 
 Before it: `cargo xtask load` puts the packs on the SD card (now only their
