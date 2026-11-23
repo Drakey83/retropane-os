@@ -672,28 +672,41 @@ mod image {
         let Some(access) = access_for(arm::classify(a.fsr), !a.data) else {
             return false;
         };
-        with_vm(|vm, s| {
-            // The XScale's FAR holds the modified (FCSE-relocated) address, but
-            // QEMU reports the address before relocation, and prefetch aborts
-            // give the PC as the process saw it. Relocating is right for all
-            // three: addresses already at or above 32 MiB pass through.
-            let mva = layout::mva(a.addr, s.pid);
-            let r = space_of(s, s.pid)
-                .map_or(Err(rp_kernel_mm::space::FaultError::NoRegion), |sp| {
-                    vm.handle_fault(sp, mva, access)
-                });
-            match r {
-                Ok(o) => {
-                    s.faults += 1;
-                    s.last = Some(o);
-                    trace(Kind::Fault, o as u32, a.addr);
-                    true
-                }
-                Err(e) => {
-                    s.error = Some(e.name());
-                    false
-                }
+        with_vm(|vm, s| match resolve(vm, s, a.addr, access) {
+            Ok(o) => {
+                s.faults += 1;
+                s.last = Some(o);
+                trace(Kind::Fault, o as u32, a.addr);
+                true
             }
+            Err(e) => {
+                s.error = Some(e.name());
+                false
+            }
+        })
+    }
+
+    /// Resolves a fault at `addr` in the running process, the one way for
+    /// both handlers: the user's own touches (`on_user_fault`) and the
+    /// kernel's touches of user memory in a system call (`on_abort`). The
+    /// test image's page cache fills a view page first (`load_page`); the
+    /// kernel's path skipped it, and on the X51v (2026-11-23, G5 run 2) a
+    /// system call reached a client's `.data` page before the client did:
+    /// "I/O error", a page the emulator's timing always had loaded.
+    fn resolve(
+        vm: &mut KernelVm<'_>,
+        s: &mut State,
+        addr: u32,
+        access: rp_kernel_mm::space::Access,
+    ) -> Result<rp_kernel_mm::space::Outcome, rp_kernel_mm::space::FaultError> {
+        load_page(vm, s.pid, addr);
+        // The XScale's FAR holds the modified (FCSE-relocated) address, but
+        // QEMU reports the address before relocation, and prefetch aborts
+        // give the PC as the process saw it. Relocating is right for all
+        // three: addresses already at or above 32 MiB pass through.
+        let mva = layout::mva(addr, s.pid);
+        space_of(s, s.pid).map_or(Err(rp_kernel_mm::space::FaultError::NoRegion), |sp| {
+            vm.handle_fault(sp, mva, access)
         })
     }
 
@@ -1361,6 +1374,19 @@ mod image {
             let _ = uart.write_str("\n");
             rp_image::fail("IPC setup")
         };
+        // The kernel touching a user page the process never touched (a
+        // system call reading its memory): resolved as the process's own
+        // touch would be, the image's page loaded first. Before the clients
+        // run, so their `.data` page isn't loaded yet (G5 run 2 on the
+        // X51v: refused, "I/O error").
+        let pid = STATE.with(|s| s.pid);
+        let touched = rt::try_read((LOAD_BASE + DATA_RVA) as usize);
+        ok &= report(
+            &mut uart,
+            "kernel touch of an unloaded image page",
+            pid == PROC_SLOT && touched.is_some(),
+            touched.unwrap_or(0),
+        );
         RUN.with(|r| {
             r.done = done;
             r.entry = LOAD_BASE + TEXT_RVA + programs.client;
@@ -2075,13 +2101,8 @@ mod image {
     fn on_user_fault(f: &mut Frame, kind: rt::Fault, addr: u32) {
         let prefetch = matches!(kind, rt::Fault::PrefetchAbort);
         let (fsr, _) = cpu::fault_registers();
-        let resolved = access_for(arm::classify(fsr), prefetch).is_some_and(|access| {
-            with_vm(|vm, s| {
-                load_page(vm, s.pid, addr);
-                let mva = layout::mva(addr, s.pid);
-                space_of(s, s.pid).is_some_and(|sp| vm.handle_fault(sp, mva, access).is_ok())
-            })
-        });
+        let resolved = access_for(arm::classify(fsr), prefetch)
+            .is_some_and(|access| with_vm(|vm, s| resolve(vm, s, addr, access).is_ok()));
         if resolved {
             return;
         }

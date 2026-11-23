@@ -583,6 +583,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "GAMEMODE return record OK",
     "GAMEMODE large region OK",
     "GAMEMODE full tier OK",
+    "VM kernel touch of an unloaded image page OK",
     "VM many regions OK",
     "VM unmap OK",
     // IPC (ADR-0016): two user processes, a migrating call and back 1000

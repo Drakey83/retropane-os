@@ -271,6 +271,22 @@ every device window the HAL hands out is in the kernel map, and
 kernel's log on both (it reproduces the panic without the fix; the first
 emulator check had no cards, so the card log never ran).
 
+**Run 2 (2026-11-23, `local/rp-kernel-g5-run2.txt`, sha `deca079088d4ac13`):
+the kernel's first run past its tables on the X51v.** Every VM check
+passed (zero page, file page, copy-on-write, FCSE, domains, fault loop,
+compressed RAM, reclaim, pinned, many regions, unmap) and every Game Mode
+one: `GAMEMODE full tier OK` (1 store frame out and back, 1 moved, 49
+handles rehomed), `VM freeze OK`, `GAMEMODE return record OK` (XXH32 over
+64 KiB in 511 us), `GAMEMODE large region OK` (4 MiB as 4 sections, 0
+faults), and `THREADS freeze OK` (100 calls before, 0 during 30 ms frozen,
+151 after; freeze 47 us, thaw 7 us). Then a system call touched a client's
+`.data` page before the client had: the kernel's own fault path never
+filled the image's page cache (the user path did), "I/O error", back at
+the loader. Fixed as a class: one `resolve` for both fault paths, and a
+kernel check that touches an unloaded image page before the clients run
+(fails without the fix in the emulator). The device's numbers (the
+`BENCH` lines) go into K1's row when the whole run passes.
+
 ### G6. Exclusivity grants and the mode manager
 
 The display, input and audio hosts take a grant token for one slot and
