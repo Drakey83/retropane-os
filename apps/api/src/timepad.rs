@@ -54,10 +54,14 @@ pub enum Answer {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TimePad {
     mode: Mode,
-    /// Clock: the hour (1-12) and the minute; Before: the number in `a`.
+    /// Clock: the hour (1-12, or 0-23 on the 24-hour clock) and the
+    /// minute; Before: the number in `a`.
     a: u16,
     b: u16,
     pm: bool,
+    /// Clock: the 24-hour clock (R373): the hour 0-23 typed in full, no AM
+    /// and PM keys.
+    h24: bool,
     /// Before: 0 minutes, 1 hours, 2 days.
     unit: u8,
     /// The part typed into: 0 the hour (or the number), 1 the minute.
@@ -101,18 +105,24 @@ fn cell(r: Rect, cols: u16, rows: u16, i: u16) -> Rect {
 }
 
 impl TimePad {
-    /// The pad on a time of day (`None`: 9:00 AM to start from).
+    /// The pad on a time of day (`None`: 9:00 AM to start from), on the
+    /// 12-hour clock (`clock12`, [`Ctx::clock12`]) or the 24-hour one.
     #[must_use]
-    pub fn clock(minutes: Option<u16>) -> Self {
+    pub fn clock(minutes: Option<u16>, clock12: bool) -> Self {
         let m = minutes.unwrap_or(9 * 60) % 1440;
         Self {
             mode: Mode::Clock,
-            a: match (m / 60) % 12 {
-                0 => 12,
-                h => h,
+            a: if clock12 {
+                match (m / 60) % 12 {
+                    0 => 12,
+                    h => h,
+                }
+            } else {
+                m / 60
             },
             b: m % 60,
             pm: m >= 720,
+            h24: !clock12,
             unit: 0,
             part: 0,
             typed: 0,
@@ -137,6 +147,7 @@ impl TimePad {
             a: a.min(999) as u16,
             b: 0,
             pm: false,
+            h24: false,
             unit,
             part: 0,
             typed: 0,
@@ -148,6 +159,7 @@ impl TimePad {
     #[must_use]
     pub fn value(&self) -> u32 {
         match self.mode {
+            Mode::Clock if self.h24 => u32::from(self.a % 24) * 60 + u32::from(self.b),
             Mode::Clock => {
                 (u32::from(self.a % 12) + if self.pm { 12 } else { 0 }) * 60 + u32::from(self.b)
             }
@@ -163,7 +175,11 @@ impl TimePad {
             .take(fields)
             .zip(0u8..)
             .chain(
-                (0..if self.mode == Mode::Clock { 2 } else { 3 })
+                (0..match self.mode {
+                    Mode::Clock if self.h24 => 0,
+                    Mode::Clock => 2,
+                    Mode::Before => 3,
+                })
                     .map(|k| (self.side(k), 10 + k as u8)),
             )
             .chain((0..12).map(|i| (cell(PAD, 3, 4, i), 20 + i as u8)))
@@ -183,6 +199,25 @@ impl TimePad {
     /// A digit typed into the part chosen.
     fn digit(&mut self, d: u16) {
         match (self.mode, self.part) {
+            (Mode::Clock, 0) if self.h24 => {
+                // The hour 0-23: a second digit after a 0 or a 1, or after
+                // a 2 when it is 0-3; any other digit is the hour whole, and
+                // an hour complete moves on to the minutes ("7" is 07; "2"
+                // then "5" is 02, the 5 the first of the minutes).
+                if self.typed == 1 && (self.a <= 1 || (self.a == 2 && d <= 3)) {
+                    self.a = self.a * 10 + d;
+                    self.next_part();
+                } else if self.typed == 1 {
+                    self.next_part();
+                    self.digit(d);
+                } else {
+                    self.a = d;
+                    self.typed = 1;
+                    if d > 2 {
+                        self.next_part();
+                    }
+                }
+            }
             (Mode::Clock, 0) => {
                 // The hour: a second digit only after a 1 (10, 11, 12);
                 // complete, it moves on to the minutes.
@@ -233,6 +268,7 @@ impl TimePad {
     fn step(&mut self, by: i16) {
         self.typed = 0;
         match (self.mode, self.part) {
+            (Mode::Clock, 0) if self.h24 => self.a = (self.a as i16 + by).rem_euclid(24) as u16,
             (Mode::Clock, 0) => {
                 let h = (self.a as i16 - 1 + by).rem_euclid(12) + 1;
                 // (Through 12 the half of the day turns, as a clock's.)
@@ -254,13 +290,14 @@ impl TimePad {
                 self.typed = 0;
             }
             10..=12 => match self.mode {
+                Mode::Clock if self.h24 => {}
                 Mode::Clock => self.pm = key == 11,
                 Mode::Before => self.unit = key - 10,
             },
             29 => {
                 // CLEAR: the part chosen back to nothing typed.
                 match (self.mode, self.part) {
-                    (Mode::Clock, 0) => self.a = 12,
+                    (Mode::Clock, 0) => self.a = if self.h24 { 0 } else { 12 },
                     (Mode::Clock, _) => self.b = 0,
                     (Mode::Before, _) => self.a = 0,
                 }
@@ -269,11 +306,17 @@ impl TimePad {
             31 => {
                 // Back a digit.
                 match (self.mode, self.part) {
+                    (Mode::Clock, 0) if self.h24 => self.a /= 10,
                     (Mode::Clock, 0) => self.a = if self.a >= 10 { 1 } else { 12 },
                     (Mode::Clock, _) => self.b /= 10,
                     (Mode::Before, _) => self.a /= 10,
                 }
-                self.typed = u8::from(self.mode == Mode::Clock && self.part == 0 && self.a == 1);
+                // (A first digit left that can take a second: waiting for it.)
+                self.typed = u8::from(
+                    self.mode == Mode::Clock
+                        && self.part == 0
+                        && (self.a == 1 || (self.h24 && self.a <= 2)),
+                );
             }
             30 => self.digit(0),
             20..=28 => self.digit(u16::from(key - 19)),
@@ -370,7 +413,7 @@ impl TimePad {
         };
         match self.mode {
             Mode::Clock => {
-                field(f, HOUR, self.part == 0, self.a, false);
+                field(f, HOUR, self.part == 0, self.a, self.h24);
                 kit::centred(
                     f,
                     Rect::new(HOUR.right(), 0, MINUTE.x - HOUR.right(), 1),
@@ -380,7 +423,9 @@ impl TimePad {
                     b":",
                 );
                 field(f, MINUTE, self.part == 1, self.b, true);
-                for (k, w) in [&b"AM"[..], b"PM"].iter().enumerate() {
+                // (The 24-hour clock has no half of the day to choose.)
+                let halves: &[&[u8]] = if self.h24 { &[] } else { &[b"AM", b"PM"] };
+                for (k, w) in halves.iter().enumerate() {
                     let r = self.side(k);
                     let on = self.pm == (k == 1);
                     kit::key(f, cx, r, if on { KeyState::On } else { KeyState::Rest });
@@ -456,7 +501,7 @@ mod tests {
     #[test]
     fn three_taps_set_seven_past_three() {
         // "3:07 PM": 3, 0, 7, PM, SET.
-        let mut p = TimePad::clock(None);
+        let mut p = TimePad::clock(None, true);
         assert_eq!(p.value(), 9 * 60);
         for d in [22, 30, 26] {
             assert_eq!(tap(&mut p, d), Answer::Redraw);
@@ -464,7 +509,7 @@ mod tests {
         tap(&mut p, 11);
         assert_eq!(tap(&mut p, 52), Answer::Set(Some(15 * 60 + 7)));
         // 12:30 AM is half past midnight; 12:30 PM half past noon.
-        let mut p = TimePad::clock(None);
+        let mut p = TimePad::clock(None, true);
         for d in [20, 21, 22, 30] {
             tap(&mut p, d);
         }
@@ -473,13 +518,13 @@ mod tests {
         tap(&mut p, 11);
         assert_eq!(p.value(), 12 * 60 + 30);
         // 10, 11 and 12 take their second digit; 1 then 5 is 1:5_.
-        let mut p = TimePad::clock(None);
+        let mut p = TimePad::clock(None, true);
         tap(&mut p, 20);
         tap(&mut p, 24);
         tap(&mut p, 28);
         assert_eq!(p.value(), 13 * 60 - 12 * 60 + 59, "1:59 AM");
         // Every minute can be said, and none past 59.
-        let mut p = TimePad::clock(Some(0));
+        let mut p = TimePad::clock(Some(0), true);
         tap(&mut p, 1);
         tap(&mut p, 28);
         tap(&mut p, 28);
@@ -493,7 +538,7 @@ mod tests {
 
     #[test]
     fn the_d_pad_steps_a_part_round_its_range() {
-        let mut p = TimePad::clock(Some(11 * 60 + 59));
+        let mut p = TimePad::clock(Some(11 * 60 + 59), true);
         p.event(Event::Key(Key::Up));
         assert_eq!(p.value(), 12 * 60 + 59, "11 AM up is noon's hour");
         p.event(Event::Key(Key::Right));
@@ -507,6 +552,57 @@ mod tests {
             Answer::Set(Some(12 * 60 + 58))
         );
         assert_eq!(p.event(Event::Key(Key::SoftLeft)), Answer::Cancel);
+    }
+
+    #[test]
+    fn the_24_hour_clock_types_the_hour_whole_with_no_am_or_pm() {
+        // "15:07": 1, 5, 0, 7, SET; no AM or PM key among the keys.
+        let mut p = TimePad::clock(None, false);
+        assert_eq!(p.value(), 9 * 60);
+        assert!(p.keys().all(|k| !(10..=12).contains(&k.1)));
+        for d in [20, 24, 30, 26] {
+            tap(&mut p, d);
+        }
+        assert_eq!(tap(&mut p, 52), Answer::Set(Some(15 * 60 + 7)));
+        // 0 then 0: midnight's hour; 7 alone: 07, on to the minutes.
+        let mut p = TimePad::clock(Some(600), false);
+        tap(&mut p, 30);
+        tap(&mut p, 30);
+        assert_eq!(p.value(), 0);
+        let mut p = TimePad::clock(Some(600), false);
+        tap(&mut p, 26);
+        tap(&mut p, 23);
+        tap(&mut p, 30);
+        assert_eq!(p.value(), 7 * 60 + 40);
+        // 2 then 3 is 23; 2 then 5 is 02, the 5 the minutes' first digit.
+        let mut p = TimePad::clock(Some(600), false);
+        tap(&mut p, 21);
+        tap(&mut p, 22);
+        assert_eq!(p.value() / 60, 23);
+        let mut p = TimePad::clock(Some(600), false);
+        tap(&mut p, 21);
+        tap(&mut p, 24);
+        tap(&mut p, 30);
+        assert_eq!(p.value(), 2 * 60 + 50);
+        // The D-pad steps the hour round 0-23; DEL and CLEAR.
+        let mut p = TimePad::clock(Some(23 * 60 + 5), false);
+        p.event(Event::Key(Key::Up));
+        assert_eq!(p.value(), 5);
+        p.event(Event::Key(Key::Down));
+        p.event(Event::Key(Key::Down));
+        assert_eq!(p.value(), 22 * 60 + 5);
+        tap(&mut p, 31);
+        assert_eq!(p.value() / 60, 2, "22 less a digit: 2, waiting");
+        tap(&mut p, 20);
+        assert_eq!(p.value() / 60, 21);
+        tap(&mut p, 0);
+        tap(&mut p, 29);
+        assert_eq!(p.value() / 60, 0);
+        // The same moment on both clocks.
+        for m in [0u16, 59, 720, 779, 1439] {
+            assert_eq!(TimePad::clock(Some(m), true).value(), u32::from(m));
+            assert_eq!(TimePad::clock(Some(m), false).value(), u32::from(m));
+        }
     }
 
     #[test]

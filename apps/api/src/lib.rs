@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aurora;
+pub mod clock;
 pub mod kit;
 pub mod timepad;
 
@@ -98,6 +99,10 @@ pub struct Ctx<'a> {
     /// The region writes dates month first (the US) and starts the week on
     /// Sunday.
     pub us: bool,
+    /// The 12-hour clock with AM and PM, else the 24-hour one (the
+    /// settings' own switch, the region's by default): times are written
+    /// through [`clock`].
+    pub clock12: bool,
     /// The device's offset from UTC, minutes (a time kept in UTC, as an
     /// online calendar's, is moved by it).
     pub utc_offset: i32,

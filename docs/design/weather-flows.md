@@ -95,6 +95,11 @@ desktop widget (screen 8), Modern from the home page (screen 0).
   miles). **No country names as labels** (owner, 2026-10-30: "American"
   and "European" "feels a little exclusionary"): units are named for the
   system, formats come from the region.
+  Built 2026-11-23 (R373): the **Clock** row (12-hour / 24-hour) under
+  Look beside Units, the region's own until changed; the date order and
+  week start follow the region into every app and the Today card
+  ("MON JANUARY 1" in the US, "MON 1 JANUARY" elsewhere); times go through
+  one writer (`rp_app::clock`). Shots in docs/img/clock-24h/.
 
 ### Sources (proposed)
 

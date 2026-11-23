@@ -1572,7 +1572,8 @@ impl Shell {
             rp_weather::alerts::Severity::Minor => b"MINOR",
             rp_weather::alerts::Severity::Unknown => b"",
         };
-        // Until "2 NOVEMBER 11:00 AM", from the service's local ISO time
+        // Until "NOVEMBER 2 11:00 AM" (or "2 NOVEMBER 11:00", the region's
+        // order and clock), from the service's local ISO time
         // ("2026-11-02T11:00:00-07:00"); anything else as it came.
         let u = a.until.as_bytes();
         let num = |r: core::ops::Range<usize>| {
@@ -1582,11 +1583,13 @@ impl Shell {
         };
         let until = match (num(5..7), num(8..10), num(11..13), num(14..16)) {
             (Some(mo @ 1..=12), Some(d @ 1..=31), Some(h @ 0..=23), Some(mi @ 0..=59)) => {
-                Line::new()
-                    .num(i32::from(d))
-                    .push(b" ")
-                    .push(MONTHS[usize::from(mo - 1)])
-                    .push(b" ")
+                let month = MONTHS[usize::from(mo - 1)];
+                let date = if self.region.month_first {
+                    Line::new().push(month).push(b" ").num(i32::from(d))
+                } else {
+                    Line::new().num(i32::from(d)).push(b" ").push(month)
+                };
+                date.push(b" ")
                     .push(self.region.time(h, mi, true).as_bytes())
             }
             _ => Line::new().push(u.get(..16).unwrap_or(u)),
@@ -2838,7 +2841,10 @@ impl Shell {
             now: self.program_now(),
             pics: self.app_pics,
             forecast: &self.forecast[..usize::from(self.forecast_n)],
-            us: true,
+            // The region's date order and the clock chosen (R373: it was
+            // `true` whatever the settings said).
+            us: self.region.month_first,
+            clock12: self.region.clock12,
             utc_offset: self.utc_offset,
             shapes: &self.shapes,
             clip: &self.clip,
@@ -2895,7 +2901,10 @@ impl Shell {
                 now: self.program_now(),
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
-                us: true,
+                // The region's date order and the clock chosen (R373: it was
+                // `true` whatever the settings said).
+                us: self.region.month_first,
+                clock12: self.region.clock12,
                 utc_offset: self.utc_offset,
                 shapes: &self.shapes,
                 clip: &self.clip,
@@ -2922,7 +2931,10 @@ impl Shell {
                 now: self.program_now(),
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
-                us: true,
+                // The region's date order and the clock chosen (R373: it was
+                // `true` whatever the settings said).
+                us: self.region.month_first,
+                clock12: self.region.clock12,
                 utc_offset: self.utc_offset,
                 shapes: &self.shapes,
                 clip: &self.clip,
@@ -4197,8 +4209,9 @@ const MONTHS: [&[u8]; 12] = [
     b"DECEMBER",
 ];
 
-/// `MON 13 OCTOBER` into `buf` (spaced capitals are the label font's job).
-pub(crate) fn date_line(buf: &mut [u8; 32], t: Time) -> &[u8] {
+/// `MON OCTOBER 13` (`month_first`, the US's order) or `MON 13 OCTOBER`
+/// into `buf` (spaced capitals are the label font's job).
+pub(crate) fn date_line(buf: &mut [u8; 32], t: Time, month_first: bool) -> &[u8] {
     const DAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
     let day = DAYS[usize::from(t.weekday.min(6))];
     let month = MONTHS[usize::from(t.month.clamp(1, 12) - 1)];
@@ -4206,7 +4219,12 @@ pub(crate) fn date_line(buf: &mut [u8; 32], t: Time) -> &[u8] {
     let digits = [b'0' + d / 10, b'0' + d % 10];
     let dd: &[u8] = if d >= 10 { &digits } else { &digits[1..] };
     let mut n = 0;
-    for part in [day, b" ", dd, b" ", month] {
+    let (a, b) = if month_first {
+        (month, dd)
+    } else {
+        (dd, month)
+    };
+    for part in [day, b" ", a, b" ", b] {
         buf[n..n + part.len()].copy_from_slice(part);
         n += part.len();
     }

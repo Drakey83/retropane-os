@@ -21,8 +21,11 @@ pub struct RegionInfo {
     pub metric: bool,
     /// Wind under Metric (the UK keeps mph, the Nordics m/s).
     pub wind: Wind,
-    /// 12-hour clock with AM and PM.
+    /// 12-hour clock with AM and PM (its default: the clock is a setting
+    /// of its own, [`Settings::clock12`]).
     pub clock12: bool,
+    /// Dates month first and weeks from Sunday ([`Region::month_first`]).
+    pub month_first: bool,
 }
 
 /// The regions offered (a first set; each a row, so more cost nothing).
@@ -32,48 +35,56 @@ pub const REGIONS: [RegionInfo; 8] = [
         metric: false,
         wind: Wind::Kmh,
         clock12: true,
+        month_first: true,
     },
     RegionInfo {
         name: "Canada",
         metric: true,
         wind: Wind::Kmh,
         clock12: true,
+        month_first: true,
     },
     RegionInfo {
         name: "United Kingdom",
         metric: true,
         wind: Wind::Mph,
         clock12: false,
+        month_first: false,
     },
     RegionInfo {
         name: "Australia",
         metric: true,
         wind: Wind::Kmh,
         clock12: true,
+        month_first: false,
     },
     RegionInfo {
         name: "Germany",
         metric: true,
         wind: Wind::Kmh,
         clock12: false,
+        month_first: false,
     },
     RegionInfo {
         name: "Norway",
         metric: true,
         wind: Wind::Ms,
         clock12: false,
+        month_first: false,
     },
     RegionInfo {
         name: "Japan",
         metric: true,
         wind: Wind::Ms,
         clock12: false,
+        month_first: false,
     },
     RegionInfo {
         name: "India",
         metric: true,
         wind: Wind::Kmh,
         clock12: true,
+        month_first: false,
     },
 ];
 
@@ -341,6 +352,10 @@ pub struct Settings {
     pub region: u8,
     /// Metric rather than US customary.
     pub metric: bool,
+    /// The 12-hour clock with AM and PM rather than the 24-hour one: the
+    /// region's own until changed, as the units are (Android's and iOS's
+    /// "24-hour time" switch beside the region).
+    pub clock12: bool,
     /// The places, the first `n_places` of them used.
     pub places: [Place; PLACES_MAX],
     /// How many places.
@@ -378,6 +393,7 @@ impl Settings {
     pub const DEFAULT: Self = Self {
         region: 0,
         metric: false,
+        clock12: true,
         places: {
             let mut p = [Place::NONE; PLACES_MAX];
             p[0] = SEATTLE;
@@ -403,10 +419,11 @@ impl Settings {
         REGIONS[usize::from(self.region) % REGIONS.len()]
     }
 
-    /// Moves to the next region; its default units come with it.
+    /// Moves to the next region; its default units and clock come with it.
     pub fn next_region(&mut self) {
         self.region = (self.region + 1) % REGIONS.len() as u8;
         self.metric = self.region_info().metric;
+        self.clock12 = self.region_info().clock12;
     }
 
     /// How numbers and times are shown under these settings.
@@ -417,13 +434,15 @@ impl Settings {
             Region {
                 temp: Temp::C,
                 wind: r.wind,
-                clock12: r.clock12,
+                clock12: self.clock12,
+                month_first: r.month_first,
             }
         } else {
             Region {
                 temp: Temp::F,
                 wind: Wind::Mph,
-                clock12: r.clock12,
+                clock12: self.clock12,
+                month_first: r.month_first,
             }
         }
     }

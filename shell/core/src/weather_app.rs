@@ -1025,7 +1025,7 @@ impl Shell {
             }
         }
         let mut buf = [0u8; 32];
-        let date = super::date_line(&mut buf, self.time);
+        let date = super::date_line(&mut buf, self.time, self.region.month_first);
         Self::shadowed(
             f,
             sh,

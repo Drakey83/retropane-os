@@ -65,6 +65,7 @@ fn ctx(pim: &'static core::cell::RefCell<Option<Store<'static>>>) -> Ctx<'static
         pics: None,
         forecast: &[],
         us: true,
+        clock12: true,
         utc_offset: 0,
         shapes: Box::leak(Box::new(Shapes::new())),
         clip: Box::leak(Box::new(core::cell::RefCell::new(rp_app::Text::EMPTY))),
@@ -1076,4 +1077,63 @@ fn dates_are_written_in_the_regions_order() {
     let g = pim.borrow();
     let t = g.as_ref().unwrap().all(Kind::Task).next().unwrap();
     assert_eq!(t.text(tag::NOTE), b"From Calendar: Mon 1 Jan, 9:00 AM");
+}
+
+/// R373: on the 24-hour clock every time Calendar writes is "15:00", and
+/// the start's pad types the hour whole.
+#[test]
+fn the_24_hour_clock_reaches_every_time_calendar_writes() {
+    let pim = store();
+    let at = (date::start_of(19_723) + 15 * 60).to_le_bytes();
+    let id = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &at)],
+        )
+        .unwrap();
+    let cx = Ctx {
+        clock12: false,
+        ..ctx(pim)
+    };
+    let texts = |c: &mut Calendar| {
+        let mut f = Box::new(Frame::new());
+        c.draw(&mut f, &cx);
+        f.cmds()
+            .filter_map(|c| match *c {
+                rp_app::Cmd::Text { text, .. } => Some(f.text_of(text).to_vec()),
+                _ => None,
+            })
+            .collect::<std::vec::Vec<_>>()
+    };
+    let mut c = opened(19_723);
+    for v in [View::Agenda, View::Day] {
+        c.show(v);
+        let t = texts(&mut c);
+        let all = t.concat();
+        assert!(
+            all.windows(5).any(|w| w == b"15:00"),
+            "{v:?}: {:?}",
+            t.iter()
+                .map(|x| std::string::String::from_utf8_lossy(x))
+                .collect::<std::vec::Vec<_>>()
+        );
+        assert!(!all.windows(3).any(|w| w == b" PM" || w == b" AM"), "{v:?}");
+    }
+    c.open_edit(&cx, Some(id));
+    assert!(texts(&mut c).iter().any(|t| t == b"15:00"));
+    // Make a task: its note in the 24-hour clock.
+    c.event(
+        Event::PenUp {
+            x: 100,
+            y: E_DELETE + 20,
+        },
+        &cx,
+    );
+    let g = pim.borrow();
+    let t = g.as_ref().unwrap().all(Kind::Task).next().unwrap();
+    assert_eq!(t.text(tag::NOTE), b"From Calendar: Mon Jan 1, 15:00");
 }

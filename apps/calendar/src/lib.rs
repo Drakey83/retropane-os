@@ -430,32 +430,24 @@ impl<const N: usize> Buf<N> {
     }
 }
 
-/// "3:00 PM" (the US default: 12-hour).
-fn clock(m: u16) -> Buf<10> {
-    let (h, mm) = (m / 60, m % 60);
-    let h12 = match h % 12 {
-        0 => 12,
-        x => x,
-    };
-    let mut b = Buf::new();
-    b.num(u32::from(h12)).s(b":");
-    if mm < 10 {
-        b.s(b"0");
+/// ":00" to ":59", one after another (the gauge's minutes on the 24-hour
+/// clock, a slice each).
+static MINUTES: [u8; 180] = {
+    let mut b = [0u8; 180];
+    let mut i = 0;
+    while i < 60 {
+        b[i * 3] = b':';
+        b[i * 3 + 1] = b'0' + (i / 10) as u8;
+        b[i * 3 + 2] = b'0' + (i % 10) as u8;
+        i += 1;
     }
-    b.num(u32::from(mm)).s(if h < 12 { b" AM" } else { b" PM" });
     b
-}
+};
 
-/// "3 PM" for an hour line.
-fn hour(h: u16) -> Buf<6> {
-    let h12 = match h % 12 {
-        0 => 12,
-        x => x,
-    };
-    let mut b = Buf::new();
-    b.num(u32::from(h12))
-        .s(if h < 12 { b" AM" } else { b" PM" });
-    b
+/// A time of day in the clock chosen: "3:00 PM" or "15:00" (R373: the
+/// one writer every app shares).
+fn clock(m: u16, clock12: bool) -> rp_app::Text<8> {
+    rp_app::clock::time(m, clock12)
 }
 
 impl Calendar {
@@ -908,7 +900,7 @@ impl Calendar {
             .s(b" ")
             .date(due, cx.us);
         if !e.all_day {
-            note.s(b", ").s(clock(e.start).get());
+            note.s(b", ").s(clock(e.start, cx.clock12).get());
         }
         if e.place_n > 0 {
             note.s(b", ").s(&e.place[..e.place_n]);
@@ -1003,7 +995,7 @@ impl Calendar {
         if e.all_day {
             stepper(f, E_START, b"STARTS", b"All day");
         } else {
-            stepper(f, E_START, b"STARTS", clock(e.start).get());
+            stepper(f, E_START, b"STARTS", clock(e.start, cx.clock12).get());
         }
         let mut l = Buf::<16>::new();
         if e.len >= 60 && e.len % 60 == 0 {
@@ -1254,7 +1246,10 @@ impl Calendar {
             } else if x >= W - MARGIN - 56 {
                 e.start = (e.start + 5).min(23 * 60 + 59);
             } else {
-                self.pad = Some((0, rp_app::timepad::TimePad::clock(Some(e.start))));
+                self.pad = Some((
+                    0,
+                    rp_app::timepad::TimePad::clock(Some(e.start), cx.clock12),
+                ));
             }
         } else if hit(E_LEN, 40) {
             let step = if e.len >= 60 { 30 } else { 15 };
@@ -1680,7 +1675,7 @@ impl Calendar {
             (n, Some(a)) => sum
                 .num(n as u32)
                 .s(b" today \x80 next ")
-                .s(clock(a.start).get())
+                .s(clock(a.start, cx.clock12).get())
                 .s(b" ")
                 .s(a.title.get()),
             (n, None) => sum.num(n as u32).s(b" today \x80 nothing more"),
@@ -1812,8 +1807,12 @@ impl Calendar {
                 self.hits.add(Rect::new(r.x, 144, r.w, 30), Hit::Appt(a.id));
             }
         }
-        kit::text(f, 32, 188, label, DIM, b"6 AM");
-        kit::right(f, 448, 188, label, DIM, b"10 PM");
+        let (from, to) = (
+            rp_app::clock::hour(6, cx.clock12),
+            rp_app::clock::hour(22, cx.clock12),
+        );
+        kit::text(f, 32, 188, label, DIM, from.get());
+        kit::right(f, 448, 188, label, DIM, to.get());
         if self.day == today && (360..1320).contains(&cx.now.minute) {
             let x = at(cx.now.minute);
             f.push(rp_app::Cmd::Fill {
@@ -1848,15 +1847,20 @@ impl Calendar {
                 }
             }
             Some(a) => {
-                // Another day: the hour it starts, the ring the day so far.
+                // Another day: the hour it starts, the ring the day so far;
+                // under it AM or PM, or on the 24-hour clock its minutes
+                // ("15" over ":30").
                 let mut b = Buf::<4>::new();
-                let h = a.start / 60;
-                b.num(u32::from(if h % 12 == 0 { 12 } else { h % 12 }));
-                (
-                    (u32::from(a.start) * 256 / 1440) as u16,
-                    b,
-                    if h < 12 { b"AM" } else { b"PM" },
-                )
+                let h = a.start / 60 % 24;
+                let under: &[u8] = if cx.clock12 {
+                    b.num(u32::from((h + 11) % 12 + 1));
+                    if h < 12 { b"AM" } else { b"PM" }
+                } else {
+                    b.num(u32::from(h));
+                    let m = usize::from(a.start % 60);
+                    &MINUTES[m * 3..m * 3 + 3]
+                };
+                ((u32::from(a.start) * 256 / 1440) as u16, b, under)
             }
             None => (0, Buf::<4>::new(), b""),
         };
@@ -1897,7 +1901,7 @@ impl Calendar {
                 );
                 kit::fitted(f, 140, 264, cx.fonts.title, TEXT, a.title.get(), 310);
                 let mut when = Buf::<48>::new();
-                when.s(clock(a.start).get());
+                when.s(clock(a.start, cx.clock12).get());
                 if !a.place.get().is_empty() {
                     when.s(b" \x80 ").s(a.place.get());
                 }
@@ -1996,9 +2000,9 @@ impl Calendar {
             kit::panel(f, cx, r);
             kit::colour_bar(f, r, self.colour(a));
             let time = if a.len == 0 {
-                Buf::<10>::new()
+                rp_app::Text::EMPTY
             } else {
-                clock(a.start)
+                clock(a.start, cx.clock12)
             };
             kit::text(
                 f,
@@ -2101,7 +2105,7 @@ impl Calendar {
                             y + 22,
                             cx.fonts.ui,
                             TEXT,
-                            clock(a.start).get(),
+                            clock(a.start, cx.clock12).get(),
                         );
                         kit::text(
                             f,
@@ -2109,7 +2113,7 @@ impl Calendar {
                             y + 44,
                             cx.fonts.ui,
                             DIM,
-                            clock(a.start + a.len).get(),
+                            clock(a.start + a.len, cx.clock12).get(),
                         );
                     }
                     kit::fitted(
@@ -2182,7 +2186,7 @@ impl Calendar {
                 hy + 6,
                 cx.fonts.label,
                 DIM,
-                hour(first_h + h).get(),
+                rp_app::clock::hour(first_h + h, cx.clock12).get(),
             );
             f.push(rp_app::Cmd::Fill {
                 r: Rect::new(MARGIN + 52, hy, WIDE - 52, 1),
@@ -2239,9 +2243,11 @@ impl Calendar {
             );
             if bh > 48 {
                 let mut t = Buf::<24>::new();
-                t.s(clock(a.start).get())
-                    .s(b" - ")
-                    .s(clock(a.start + a.len).get());
+                t.s(clock(a.start, cx.clock12).get()).s(b" - ").s(clock(
+                    a.start + a.len,
+                    cx.clock12,
+                )
+                .get());
                 kit::fitted(f, r.x + 16, r.y + 42, cx.fonts.ui, DIM, t.get(), r.w - 22);
             }
         }
@@ -2392,7 +2398,7 @@ impl Calendar {
                         r.y + 35,
                         cx.fonts.label,
                         DIM,
-                        clock(a.start).get(),
+                        clock(a.start, cx.clock12).get(),
                         r.w.saturating_sub(18),
                     );
                 }
@@ -2483,9 +2489,9 @@ impl Calendar {
             kit::panel(f, cx, r);
             kit::colour_bar(f, r, self.colour(a));
             let t = if a.len == 0 {
-                Buf::<10>::new()
+                rp_app::Text::EMPTY
             } else {
-                clock(a.start)
+                clock(a.start, cx.clock12)
             };
             kit::text(
                 f,
@@ -2573,9 +2579,9 @@ impl Calendar {
         if let Some(t) = q.time {
             let len = q.minutes.unwrap_or(60);
             when.s(b"  ")
-                .s(clock(t).get())
+                .s(clock(t, cx.clock12).get())
                 .s(b" - ")
-                .s(clock(t + len).get());
+                .s(clock(t + len, cx.clock12).get());
         } else {
             when.s(b"  All day");
         }
@@ -3281,7 +3287,7 @@ impl Calendar {
                     row.y + 40,
                     label,
                     DIM,
-                    clock((start % date::DAY_MIN) as u16).get(),
+                    clock((start % date::DAY_MIN) as u16, cx.clock12).get(),
                 );
             }
             let (title, place) = (r.text(tag::TITLE), r.text(tag::PLACE));
