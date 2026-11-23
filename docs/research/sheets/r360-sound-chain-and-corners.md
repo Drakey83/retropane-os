@@ -403,3 +403,26 @@ packets the server's client data never equalled our prediction bit for
 bit (weapon data 40 times, the origin 402). Stop rule met: the
 prediction replay is not reopened without a way to save the client's
 weapon state.
+
+## Step 12: the temporary entities' bones in integers (built, measured, taken out)
+
+| | What it does |
+|---|---|
+| Xash / the SDK | the renderer's bones (`R_StudioSetupBones`, `R_StudioMergeBones`) in floats: `Matrix3x4_FromOriginQuat` and `Matrix3x4_ConcatTransforms`, the latter bit-exact fused dots since kit 115 |
+| Tried (the owner, 2026-11-23: "keep going: the temp entity bones next") | the client's kit 51 forms in the renderer only (4.28 / 2.30 / 16.16 fixed point, the floats made from their bits, out-of-range values in floats; `public/matrixlib.c` left alone, as it serves the server's hitbox bones); `-rpbonefloat` the old way, `-rpbonecheck` both with the largest difference logged |
+
+**Runs 353a-d (2026-11-23, one kit):** 17,272 / 17,270 ms, `-rpbonefloat`
+17,275, `-rpbonecheck` 17,273, and the check printed nothing: **the
+renderer's bone setup never runs in the fight.** The samples' return
+addresses (run 351a) name the float bones' callers: `SV_StudioSetupBones`
+and `Mod_StudioCalcRotations`, the server's hitbox bones that the
+fight's bullets trace (kit 115's count, made on another play, saw none).
+Those decide what a shot hits, so the game's physics: within 1e-6 there
+could move a hit by a hair and change the game (step 11's lesson), so
+they stay bit for bit. Taken out.
+
+**Where R360 stands:** the fight at 17,270-17,282 ms (28.9 fps) on the
+committed code, from 17,404 at run 342a. The exact levers sized on this
+fight are spent (steps 3-12). What is left is the owner's: the server's
+tick, simpler distant models, the clock past 624 MHz (the options table
+above), or a new measurement that finds a stage to remove.
