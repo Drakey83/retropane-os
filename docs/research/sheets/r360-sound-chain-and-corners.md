@@ -80,3 +80,44 @@ flat; two places were read down to the instruction:
 | Ours | the runner's event sampler (kit 88, `-rpsampleon <event>`): the PMU interrupts every 2,000 D-cache misses (or 200,000 stall cycles) and the sample keeps the instruction, so the misses and stalls land on the sort's own instructions (`pchist.py`-style histogram beside the disassembly), with nothing added to the code being measured |
 | Why it wins | a span says *how much* the sort waits; the samples say *on which load*, which is what a fix needs; no instrumentation to perturb a ~30-instruction loop |
 | Runs | one kit (HEAD), the fixed-seed fight: 342a cycles, 342b D-cache misses (0x0B), 342c data-stall cycles (0x02), 342d I-cache stall cycles (0x01) |
+
+**What runs 342a-d show** (the fight: 17,404 ms in 342a, the kit's
+repeat; 342b's sample room filled during the map's load, so its fight
+has no samples, only its totals): the fight's cycles wait on data 27.3%,
+on the I-cache 15.1%, on full write buffers 4%, ~8 D-cache misses a
+thousand cycles. `RP_StudioCmdSend` is 5.1% of the cycles but 2.6% of the
+data stalls and 1.8% of the I-cache stalls, so **~14% of its own cycles
+wait on data, ~5% on the I-cache, ~80% are its own instructions**
+(`RP_StudioCmdLit` the same: ~15%, ~3.5%). That is why lever 2's PLD did
+nothing. The cycle samples spread evenly over the state loop (sort's first
+pass): ~80 instructions a triangle, each corner's 1/z and x, y read by
+three triangles, the cross product in 64 bits (`SMULL` and a
+`SUBS`/`SBCS` compare), the screen's four edges tested on three corners,
+values spilled to the stack, then a call to `RP_LitFill` for each of a
+kept triangle's three corners (two of every three rejected by the mark),
+and a counter in memory a culled triangle. ~1.78 ms a frame for ~4,800
+model triangles: ~190 cycles a triangle.
+
+## Lever 3: the sort from corner codes (built)
+
+| | What it does |
+|---|---|
+| GL / ref_soft | clip with a code a vertex (Cohen-Sutherland outcodes); cull a triangle at a time in floats |
+| Ours before (kit 68) | each triangle's three corners tested one by one: three 1/z reads, a 64-bit cross product, twelve edge compares; three `RP_LitFill` calls a kept triangle |
+| **Ours now** | `rp_sort.h`: each vertex's code made where it is projected (`RP_CornerCode` in `RP_StudioVertSet`: behind the near plane, past each of the four edges, x and y within 2^14), a corner copies its vertex's byte (`rp_sccode`); `RP_SortStates`: a triangle is the AND and OR of three bytes, a loop each for strips, fans and no cull, its cross product in 32 bits when the three corners are within 2^14 (each difference under 2^15, each product under 2^30, their difference under 2^31: exact), else the old 64-bit one; `RP_SortNeed`: the corners a sent triangle uses, so each is filled once in corner order; the cull counters in registers |
+| Why it wins | the same state for every triangle and the same corners filled (host check, all four states, strips and fans, cull -1/0/1, random, edge and extreme corners: 12.1 million triangles, 0 differ; `-rpsort2` on the device counts any); roughly half the instructions a triangle |
+| Old way | `-rpsort0`; `-rpsort2` both, compared |
+| What overturns it | the fight not faster than `-rpsort0` in the same kit, or `-rpsort2` counting a difference |
+| The check | `ports/xash/ref_rp/check/sort_check.c` compiles `rp_sort.h` itself (gcc, `-fwrapv`) |
+
+**Runs 343a-d (the first build: the codes made in a pass over a command's
+corners, rolled through registers along the strip):** exact (`-rpsort2`:
+1,972,567 triangles, 0 differed, 0 commands filled other corners) but
+**slower**: 17,501 and 17,506 ms against 17,447 with `-rpsort0` in the
+same kit. The samples: the sort 418 (new) against 214 + 147 (old, the old
+states now their own function), `RP_LitFill` 47 against 62. The corner
+pass waited on each 1/z the corner builder had just written (the PXA270
+allocates on reads only: 38 samples on one load's use), and the rolled
+loop spilled ten words a triangle. Rebuilt as above (the codes with the
+vertex, no corner pass, a loop a kind); stop rule written before runs
+344a-d: not faster than `-rpsort0` in the same kit, and lever 3 comes out.
