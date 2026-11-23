@@ -380,3 +380,26 @@ is not faster than both its `-rpreplay0` run and the build before it
 a/b the lever, c `-rpreplay0`, d `-rpreplaycheck`. The kit is built and
 checked on the PC first (it builds, and the emulator's fight runs with
 `-rpreplaycheck` at 0 differences, if the emulator still runs the fight).
+
+**Built and run (kit 352, runs 352a-c, 2026-11-23): taken out.** The
+lever as designed (`rp_rk` keys, `-rpreplay0`, `-rpreplaycheck`):
+
+| Run | What | Fight (500 frames) |
+|---|---|---|
+| 352a | reuse on | 17,407 ms, **the gun did not fire** (the owner, watching): a different game |
+| 352b | `-rpreplay0`, the same kit | 17,282 ms (run 351a 17,276): the fight as before |
+| 352c | `-rpreplaycheck` (every command run) | 17,903 ms; 205 of 820 command runs reusable, **0 differed** (state, time and ground byte for byte) |
+
+What it means: a reused command's own result is exact, yet skipping
+its run changes the game, so the old loop's runs leave state outside the
+prediction slots that later runs read: the client DLL's (the weapons'
+objects and globals `HUD_WeaponsPostThink` keeps between calls). The
+engine can neither key nor check that state, so this lever can't be made
+provably the same game (Source can, because its prediction saves and
+restores every predicted field of its own entities). It would also have
+been small: one command run in four repeats here (the loopback server
+acknowledges quickly), so ~0.5% at most. Phase 2 is closed too: at 410
+packets the server's client data never equalled our prediction bit for
+bit (weapon data 40 times, the origin 402). Stop rule met: the
+prediction replay is not reopened without a way to save the client's
+weapon state.
