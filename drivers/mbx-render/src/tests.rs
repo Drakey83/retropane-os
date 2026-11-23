@@ -1681,3 +1681,54 @@ fn a_coverage_picture_draws_as_its_colour_through_four_bits_a_pixel() {
     });
     assert_eq!(cut_got, cut_want);
 }
+
+/// An opaque 16-bit picture (`Cmd::Pic16`) draws exactly as the same pixels
+/// would as a 32-bit opaque picture widened as the engine widens RGB565
+/// (each channel's top bits repeated), two pixels a word with the first in
+/// the low half, from half the bytes; cut at the top as `Pic` is.
+#[test]
+fn a_16_bit_picture_draws_as_its_widened_pixels_from_half_the_bytes() {
+    use rp_draw::pics::Pics;
+    let pics: &'static Pics<'static> = std::boxed::Box::leak(std::boxed::Box::new(Pics::new(
+        std::boxed::Box::leak(std::vec![0; 8 * 3 + 16 * 3].into_boxed_slice()),
+        &[(8, 3, 1), (16, 3, 1)],
+    )));
+    // Sixteen pixels a row, three rows, every channel's range walked.
+    let p565 = |x: usize, y: usize| {
+        ((x * 2 + y) as u16) << 11 | ((x * 4 + y * 7) as u16 & 0x3F) << 5 | (31 - x as u16)
+    };
+    let half = pics.alloc(8, 3).unwrap();
+    assert!(pics.write(half, |w| {
+        for (i, word) in w.iter_mut().enumerate() {
+            let (y, x) = (i / 8, (i % 8) * 2);
+            *word = u32::from(p565(x, y)) | u32::from(p565(x + 1, y)) << 16;
+        }
+    }));
+    let full = pics.alloc(16, 3).unwrap();
+    assert!(pics.write(full, |px| {
+        for (i, p) in px.iter_mut().enumerate() {
+            *p = rp_gfx::render::from565(p565(i % 16, i / 16));
+        }
+    }));
+    let draw = |c: Cmd| {
+        let (mut r, mem) = gpu();
+        r.set_pics(pics);
+        let mut f = Frame::new();
+        f.push(Cmd::Fill {
+            r: Rect::new(20, 70, 40, 20),
+            color: 0xFF20_6080,
+        });
+        f.push(c);
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(r.last.pics_missed.n, 0);
+        (shown(&mut r, &mem), r.last.image_bytes)
+    };
+    for (x, y) in [(30, 80), (0, -1), (470, 637)] {
+        let (want, big) = draw(Cmd::Pic { x, y, pic: full });
+        let (got, small) = draw(Cmd::Pic16 { x, y, pic: half });
+        assert_eq!(got, want, "at ({x}, {y})");
+        assert_eq!((small, big), (96, 192), "half the bytes uploaded");
+    }
+}

@@ -18,6 +18,8 @@ use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W
 use rp_pim::date;
 use rp_pim::store::{Kind, tag};
 
+pub mod motion;
+
 /// Appointments a view holds (a repeat's days count each).
 pub const MAX: usize = 96;
 /// The days a view's list covers, from a week before the chosen day.
@@ -302,7 +304,53 @@ pub struct Calendar {
     gauge: Option<(Pic, u16, bool)>,
     /// The view the quick-add sheet rose over (and goes back to).
     under: View,
+    /// Motion under way (motion.rs): the week strip settling, or a zoom
+    /// between month, week and day.
+    motion: Option<Motion>,
+    /// The week strip's offset while the pen drags it (px; 0 at rest).
+    slide: i16,
+    /// The pen on the week strip: where it went down, its last x, its
+    /// last step, and whether it has moved far enough to drag.
+    drag: Option<(u16, u16, i16, bool)>,
+    /// Where the week strip was last drawn (a pen landing on it may drag
+    /// it).
+    strip_at: Option<Rect>,
+    /// Today's ring as four 10 px slices, painted the first time the ring
+    /// is partly left of the screen in a sliding strip (motion.rs).
+    ring_slices: [Option<Pic>; 4],
+    /// Design variants under the owner's pick (the previews set them).
+    chip: bool,
+    dim: bool,
 }
+
+/// Motion the user started (design-language.md "Motion": started only by
+/// the user's own act, [`motion::FRAMES`] frames, each inside the 33 ms
+/// rule).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Motion {
+    /// The week strip from `from` px to `to` px (`to` a whole strip: the
+    /// week changes when it lands), frame `k`.
+    Slide { from: i16, to: i16, k: u8 },
+    /// A zoom from view `from` to view `to` (the view is `to` already),
+    /// growing out of or shrinking into the shallower view's `cell` (the
+    /// day's cell, the week's row, the day's column), frame `k`.
+    Zoom {
+        from: View,
+        to: View,
+        cell: Rect,
+        k: u8,
+    },
+}
+
+/// Where the tab views start under the large title (`title` + 6).
+const VIEW_TOP: u16 = 36 + kit::TITLE_BAND + 6;
+/// The month grid's first row (the month's name 28, the weekdays 20).
+const MONTH_GRID: u16 = VIEW_TOP + 48;
+/// A month cell's height.
+const MONTH_CH: u16 = 46;
+/// The week view: the hours' column's right edge, a slim day's width.
+const WEEK_X0: u16 = MARGIN + 36;
+const WEEK_SLIM: u16 = 40;
 
 /// The views along the foot, and their words.
 const TABS: [View; 5] = [View::Home, View::Agenda, View::Day, View::Week, View::Month];
@@ -471,6 +519,13 @@ impl Calendar {
             painted: false,
             gauge: None,
             under: View::Home,
+            motion: None,
+            slide: 0,
+            drag: None,
+            strip_at: None,
+            ring_slices: [None; 4],
+            chip: false,
+            dim: false,
         }
     }
 
@@ -1339,6 +1394,29 @@ impl Calendar {
         self.view = view;
     }
 
+    /// The previews' frame of a motion: the strip dragged `off` px, or
+    /// frame `k` of a zoom from `from` to the view shown (the owner's pick
+    /// of the looks is made from these, drawn by this code).
+    pub fn mock_motion(&mut self, off: i16, zoom: Option<(View, u8)>, us: bool) {
+        self.slide = off;
+        if let Some((from, k)) = zoom {
+            let to = self.view;
+            self.motion = Some(Motion::Zoom {
+                from,
+                to,
+                cell: self.zoom_cell(from, to, us),
+                k,
+            });
+        }
+    }
+
+    /// The previews' design variants: the week's dates on a chip while the
+    /// strip moves; the view under a zoom dimmed.
+    pub fn mock_variant(&mut self, chip: bool, dim: bool) {
+        self.chip = chip;
+        self.dim = dim;
+    }
+
     /// Chooses `day`.
     pub fn choose(&mut self, day: i32) {
         self.day = day;
@@ -1425,31 +1503,416 @@ impl Calendar {
     }
 
     /// The week strip: the chosen day's week, today ringed, the chosen day
-    /// filled, a colour tick per appointment (three at most).
+    /// filled, a colour tick per appointment (three at most). While the
+    /// pen drags it or it settles (motion.rs) the weeks either side slide
+    /// in, clipped to the strip's band: only the band is drawn again (the
+    /// draw-list difference), never the view under it.
     #[inline(never)]
     fn strip(&mut self, f: &mut Frame, cx: &Ctx, y: u16) {
+        let band = Rect::new(MARGIN, y, WIDE, 62);
+        self.strip_at = Some(band);
+        let off = self.strip_offset();
         let first = self.day - in_week(self.day, cx.us);
+        if off == 0 {
+            self.week_cells(f, cx, y, first, i32::from(MARGIN), true);
+            return;
+        }
+        let outer = f.clip_now();
+        f.push(rp_app::Cmd::Clip {
+            r: band.intersect(&outer),
+        });
+        let w = i32::from(motion::STRIP_W);
+        for k in -1i32..=1 {
+            let x0 = i32::from(MARGIN) + i32::from(off) + k * w;
+            if x0 + w <= i32::from(MARGIN) || x0 >= i32::from(W - MARGIN) {
+                continue;
+            }
+            self.week_cells(f, cx, y, first + 7 * k, x0, false);
+        }
+        f.push(rp_app::Cmd::Clip { r: outer });
+        if self.chip {
+            // The week nearest the middle: its dates on a glass chip over
+            // the weekday names.
+            let w = i32::from(motion::STRIP_W);
+            let shift = (-i32::from(off) + w / 2).div_euclid(w);
+            let a = date::date_of(first + 7 * shift);
+            let b = date::date_of(first + 7 * shift + 6);
+            let mut t = Buf::<24>::new();
+            t.s(&MONTHS[usize::from(a.month - 1)][..3])
+                .s(b" ")
+                .num(u32::from(a.day))
+                .s(b" - ");
+            if b.month != a.month {
+                t.s(&MONTHS[usize::from(b.month - 1)][..3]).s(b" ");
+            }
+            t.num(u32::from(b.day));
+            let tw = cx.fonts.label.width(t.get()) + 28;
+            let chip = Rect::new((W - tw) / 2, y - 6, tw, 24);
+            kit::key(f, cx, chip, kit::KeyState::On);
+            kit::centred(f, chip, chip.y + 17, cx.fonts.label, TEXT, t.get());
+        }
+    }
+
+    /// The strip's offset now: the pen's drag, or the settling motion's
+    /// frame.
+    fn strip_offset(&self) -> i16 {
+        match self.motion {
+            Some(Motion::Slide { from, to, k }) => motion::lerp(from.into(), to.into(), k) as i16,
+            _ => self.slide,
+        }
+    }
+
+    /// One week of the strip from `first`, its left edge at `x0` (left of
+    /// the screen while it slides out: every part placed by
+    /// [`motion::span`] and [`motion::on_screen`], so what shows is exactly
+    /// what a strip drawn further right would show there). The chosen
+    /// day's weekday is lit in every week shown, so nothing appears or
+    /// vanishes as a week lands.
+    #[inline(never)]
+    fn week_cells(&mut self, f: &mut Frame, cx: &Ctx, y: u16, first: i32, x0: i32, hits: bool) {
+        let lit = in_week(self.day, cx.us);
         for i in 0..7u16 {
             let d = first + i32::from(i);
-            let x = MARGIN + i * 64;
-            let cell = Rect::new(x, y, 64, 62);
-            self.hits.add(cell, Hit::Day(d));
-            kit::centred(f, cell, y + 14, cx.fonts.label, DIM, column_name(i, cx.us));
-            if d == self.day {
-                kit::key(f, cx, Rect::new(x + 10, y + 18, 44, 40), kit::KeyState::On);
+            let x = x0 + i32::from(i) * 64;
+            if x + 64 <= 0 || x >= i32::from(W) {
+                continue;
+            }
+            if hits && let Some((l, w)) = motion::span(x, 64) {
+                self.hits.add(Rect::new(l, y, w, 62), Hit::Day(d));
+            }
+            let name = column_name(i, cx.us);
+            let tx = x + i32::from(64u16.saturating_sub(cx.fonts.label.width(name)) / 2);
+            if let Some((px, from)) = motion::on_screen(cx.fonts.label, tx, name) {
+                kit::text(f, px, y + 14, cx.fonts.label, DIM, &name[from..]);
+            }
+            if i32::from(i) == lit {
+                if let Some((l, w)) = motion::span(x + 10, 44) {
+                    kit::key(f, cx, Rect::new(l, y + 18, w, 40), kit::KeyState::On);
+                }
             } else if d == cx.now.day {
-                kit::dot(f, self.ring, x + 12, y + 18);
+                self.ring_at(f, cx, x + 12, y + 18);
             }
             let mut b = Buf::<4>::new();
             b.num(u32::from(date::date_of(d).day));
-            kit::centred(f, cell, y + 45, cx.fonts.ui, TEXT, b.get());
+            let tx = x + i32::from(64u16.saturating_sub(cx.fonts.ui.width(b.get())) / 2);
+            if let Some((px, from)) = motion::on_screen(cx.fonts.ui, tx, b.get()) {
+                kit::text(f, px, y + 45, cx.fonts.ui, TEXT, &b.get()[from..]);
+            }
             let (list, n) = self.on(d);
             for (k, a) in list[..n.min(3)].iter().enumerate() {
-                f.push(rp_app::Cmd::Fill {
-                    r: Rect::new(x + 17 + k as u16 * 11, y + 59, 8, 3),
-                    color: self.colour(a),
-                });
+                if let Some((l, w)) = motion::span(x + 17 + k as i32 * 11, 8) {
+                    f.push(rp_app::Cmd::Fill {
+                        r: Rect::new(l, y + 59, w, 3),
+                        color: self.colour(a),
+                    });
+                }
             }
+        }
+    }
+
+    /// Today's ring at `x` (left of the screen while a strip slides: its
+    /// four 10 px slices, each placed whole or not at all; a slice left of
+    /// the screen lies inside the strip's clipped 16 px margin).
+    fn ring_at(&mut self, f: &mut Frame, cx: &Ctx, x: i32, y: u16) {
+        if let Ok(x) = u16::try_from(x) {
+            kit::dot(f, self.ring, x, y);
+            return;
+        }
+        if self.ring_slices[0].is_none()
+            && let (Some(p), Some(ring)) = (cx.pics, self.ring)
+        {
+            for (s, slot) in self.ring_slices.iter_mut().enumerate() {
+                let Some(pic) = p.alloc(10, 40) else { break };
+                let _ = p.read(ring, |src| {
+                    p.write(pic, |dst| {
+                        for row in 0..40 {
+                            let from = row * 40 + s * 10;
+                            dst[row * 10..row * 10 + 10].copy_from_slice(&src[from..from + 10]);
+                        }
+                    })
+                });
+                *slot = Some(pic);
+            }
+        }
+        for (s, pic) in self.ring_slices.iter().enumerate() {
+            if let Ok(sx) = u16::try_from(x + s as i32 * 10) {
+                kit::dot(f, *pic, sx, y);
+            }
+        }
+    }
+
+    /// The shallower view's cell a zoom between `a` and `b` grows from or
+    /// shrinks into, for the chosen day: its day's cell in the month, its
+    /// week's row in the month, or its column in the week (the same
+    /// geometry `month_view` and `week_view` draw, checked by a test).
+    fn zoom_cell(&self, a: View, b: View, us: bool) -> Rect {
+        let pair = |x: View, y: View| (a == x && b == y) || (a == y && b == x);
+        if pair(View::Week, View::Day) {
+            let lens = in_week(self.day, us) as u16;
+            let wide = WIDE - 36 - 6 * WEEK_SLIM;
+            return Rect::new(
+                WEEK_X0 + lens * WEEK_SLIM,
+                VIEW_TOP,
+                wide,
+                BOTTOM - VIEW_TOP,
+            );
+        }
+        let d = date::date_of(self.day);
+        let start = date::days_from(date::Date {
+            year: d.year,
+            month: d.month,
+            day: 1,
+        });
+        let at = (self.day - start + in_week(start, us)) as u16;
+        let (row, col) = (at / 7, at % 7);
+        let y = MONTH_GRID + row * MONTH_CH;
+        if pair(View::Month, View::Week) {
+            Rect::new(MARGIN, y, WIDE, MONTH_CH)
+        } else {
+            Rect::new(MARGIN + col * 64, y, 64, MONTH_CH)
+        }
+    }
+
+    /// The day before or after (the D-pad): into another week, the strip
+    /// slides it in from that side (the motion's whole frame list drawn,
+    /// as a drag's).
+    fn step_day(&mut self, by: i32, cx: &Ctx) -> Reply {
+        let week = |d: i32| d - in_week(d, cx.us);
+        let before = week(self.day);
+        self.day += by;
+        if week(self.day) == before || !matches!(self.view, View::Day | View::Agenda) {
+            return Reply::Redraw;
+        }
+        self.motion = Some(Motion::Slide {
+            from: if by < 0 {
+                -motion::STRIP_W
+            } else {
+                motion::STRIP_W
+            },
+            to: 0,
+            k: 1,
+        });
+        Reply::Animate
+    }
+
+    /// Goes to view `to`: between month, week and day as a zoom (motion.rs:
+    /// deeper grows out of the chosen day's cell, shallower shrinks back
+    /// into it), any other change at once.
+    fn go(&mut self, to: View, cx: &Ctx) -> Reply {
+        let from = self.view;
+        self.view = to;
+        self.focus.clear();
+        match (motion::level(from), motion::level(to)) {
+            (Some(a), Some(b)) if a != b => {
+                self.drag = None;
+                self.slide = 0;
+                self.motion = Some(Motion::Zoom {
+                    from,
+                    to,
+                    cell: self.zoom_cell(from, to, cx.us),
+                    k: 1,
+                });
+                Reply::Animate
+            }
+            _ => Reply::Redraw,
+        }
+    }
+
+    /// A zoom's frame: the shallower view whole, the deeper one inside the
+    /// card growing out of (or shrinking into) the chosen day's cell, its
+    /// area first cleared to the window (so the view under is not drawn
+    /// twice there), a glass rim round it while it moves. The card's last
+    /// frame is the whole page: the arriving view's own picture, so the
+    /// motion ends with no pop.
+    #[inline(never)]
+    fn zoom_frame(&mut self, f: &mut Frame, cx: &Ctx, from: View, to: View, cell: Rect, k: u8) {
+        let deeper = motion::level(to) > motion::level(from);
+        let (under, over) = if deeper { (from, to) } else { (to, from) };
+        let page = rp_app::CONTENT;
+        let r = if deeper {
+            motion::grow(cell, page, k)
+        } else {
+            motion::grow(page, cell, k)
+        };
+        // Only the arriving view's targets are kept (a key pressed mid-zoom
+        // lands it and walks the view it arrives at).
+        self.scene(f, cx, under);
+        if self.dim && deeper {
+            f.push(rp_app::Cmd::Fill {
+                r: page,
+                color: 0x6000_0000,
+            });
+        }
+        let n = if under == to { self.hits.len() } else { 0 };
+        let outer = f.clip_now();
+        f.push(rp_app::Cmd::Clip {
+            r: r.intersect(&outer),
+        });
+        f.push(rp_app::Cmd::Fill { r, color: 0 });
+        if under == to {
+            self.scene(f, cx, over);
+            self.hits.keep(n);
+        } else {
+            self.hits.clear();
+            self.scene(f, cx, over);
+        }
+        f.push(rp_app::Cmd::Clip { r: outer });
+        if r != page {
+            f.push(rp_app::Cmd::Outline {
+                r,
+                color: kit::alpha(0xFFFF_FFFF, 0x90),
+            });
+            f.push(rp_app::Cmd::Outline {
+                r: Rect::new(
+                    r.x.saturating_sub(1),
+                    r.y.saturating_sub(1),
+                    r.w + 2,
+                    r.h + 2,
+                ),
+                color: kit::alpha(0xFF00_0000, 0x50),
+            });
+        }
+    }
+
+    /// A motion's next frame, or its landing.
+    fn step_motion(&mut self) -> Reply {
+        match self.motion {
+            Some(Motion::Slide { from, to, k }) if k < motion::FRAMES => {
+                self.motion = Some(Motion::Slide { from, to, k: k + 1 });
+                Reply::Animate
+            }
+            Some(Motion::Zoom { from, to, cell, k }) if k < motion::FRAMES => {
+                self.motion = Some(Motion::Zoom {
+                    from,
+                    to,
+                    cell,
+                    k: k + 1,
+                });
+                Reply::Animate
+            }
+            Some(_) => {
+                self.land();
+                Reply::Redraw
+            }
+            None => Reply::Nothing,
+        }
+    }
+
+    /// A motion under way put at its end (its last frame, or any input
+    /// while it moves: the pen never waits for a motion).
+    fn land(&mut self) {
+        if let Some(Motion::Slide { to, .. }) = self.motion.take() {
+            self.day += 7 * motion::weeks(to);
+        }
+        self.slide = 0;
+    }
+
+    /// The pen and the ticks for motion, before anything else sees them:
+    /// `Some` when they were the motion's.
+    fn motion_event(&mut self, e: Event) -> Option<Reply> {
+        if e == Event::Tick {
+            return self.motion.map(|_| self.step_motion());
+        }
+        if self.motion.is_some() {
+            self.land();
+            if !matches!(e, Event::PenDown { .. }) {
+                return None;
+            }
+        }
+        let on_strip = |x: u16, y: u16| {
+            matches!(self.view, View::Day | View::Agenda)
+                && self.strip_at.is_some_and(|r| r.contains_point(x, y))
+        };
+        match e {
+            Event::PenDown { x, y } => {
+                self.drag = on_strip(x, y).then_some((x, x, 0, false));
+                None
+            }
+            Event::PenMove { x, .. } => {
+                let (x0, last, _, moving) = self.drag?;
+                let dx = i32::from(x) - i32::from(x0);
+                let moving = moving || dx.unsigned_abs() >= u32::from(motion::DRAG_START);
+                let step = (i32::from(x) - i32::from(last)) as i16;
+                self.drag = Some((x0, x, step, moving));
+                if !moving {
+                    return Some(Reply::Nothing);
+                }
+                let w = i32::from(motion::STRIP_W);
+                self.slide = dx.clamp(-w, w) as i16;
+                Some(Reply::Redraw)
+            }
+            Event::PenUp { x, .. } => {
+                let (x0, last, step, moving) = self.drag.take()?;
+                if !moving {
+                    return None;
+                }
+                let w = i32::from(motion::STRIP_W);
+                let dx = (i32::from(x) - i32::from(x0)).clamp(-w, w) as i16;
+                let step = if x == last {
+                    step
+                } else {
+                    (i32::from(x) - i32::from(last)) as i16
+                };
+                self.slide = 0;
+                self.motion = Some(Motion::Slide {
+                    from: dx,
+                    to: motion::settle(dx, step),
+                    k: 1,
+                });
+                Some(Reply::Animate)
+            }
+            _ => None,
+        }
+    }
+
+    /// A tab view whole: its title (or the day's board), the view, the
+    /// views along the foot.
+    #[inline(never)]
+    fn scene(&mut self, f: &mut Frame, cx: &Ctx, shown: View) {
+        if shown == View::Home {
+            self.home(f, cx);
+        } else {
+            let under = self.title(f, cx);
+            kit::key(f, cx, CALENDARS_KEY, kit::KeyState::Rest);
+            kit::centred(
+                f,
+                CALENDARS_KEY,
+                CALENDARS_KEY.y + 21,
+                cx.fonts.label,
+                TEXT,
+                b"CALENDARS",
+            );
+            let y = under + 6;
+            match shown {
+                View::Day => {
+                    self.strip(f, cx, y);
+                    self.day_view(f, cx, y + 70);
+                }
+                View::Week => self.week_view(f, cx, y),
+                View::Month => self.month_view(f, cx, y),
+                _ => {
+                    self.strip(f, cx, y);
+                    // The way into the search: a field over the agenda.
+                    let field = Rect::new(MARGIN, y + 68, WIDE, 34);
+                    kit::panel(f, cx, field);
+                    kit::text(
+                        f,
+                        field.x + 14,
+                        field.y + 23,
+                        cx.fonts.ui,
+                        DIM,
+                        b"Search every appointment",
+                    );
+                    self.hits.add(field, Hit::Find);
+                    self.agenda(f, cx, y + 108);
+                }
+            }
+        }
+        // The views along the foot (as Weather's tabs), each a target.
+        let chosen = TABS.iter().position(|v| *v == shown).unwrap_or(0);
+        kit::foot_tabs(f, cx, &LABELS, chosen, tint::CALENDAR);
+        for (k, v) in TABS.into_iter().enumerate() {
+            self.hits.add(kit::foot_tab(TABS.len(), k), Hit::View(v));
         }
     }
 
@@ -2403,50 +2866,10 @@ impl Program for Calendar {
         } else {
             self.view
         };
-        if shown == View::Home {
-            self.home(f, cx);
+        if let Some(Motion::Zoom { from, to, cell, k }) = self.motion {
+            self.zoom_frame(f, cx, from, to, cell, k);
         } else {
-            let under = self.title(f, cx);
-            kit::key(f, cx, CALENDARS_KEY, kit::KeyState::Rest);
-            kit::centred(
-                f,
-                CALENDARS_KEY,
-                CALENDARS_KEY.y + 21,
-                cx.fonts.label,
-                TEXT,
-                b"CALENDARS",
-            );
-            let y = under + 6;
-            match shown {
-                View::Day => {
-                    self.strip(f, cx, y);
-                    self.day_view(f, cx, y + 70);
-                }
-                View::Week => self.week_view(f, cx, y),
-                View::Month => self.month_view(f, cx, y),
-                _ => {
-                    self.strip(f, cx, y);
-                    // The way into the search: a field over the agenda.
-                    let field = Rect::new(MARGIN, y + 68, WIDE, 34);
-                    kit::panel(f, cx, field);
-                    kit::text(
-                        f,
-                        field.x + 14,
-                        field.y + 23,
-                        cx.fonts.ui,
-                        DIM,
-                        b"Search every appointment",
-                    );
-                    self.hits.add(field, Hit::Find);
-                    self.agenda(f, cx, y + 108);
-                }
-            }
-        }
-        // The views along the foot (as Weather's tabs), each a target.
-        let chosen = TABS.iter().position(|v| *v == shown).unwrap_or(0);
-        kit::foot_tabs(f, cx, &LABELS, chosen, tint::CALENDAR);
-        for (k, v) in TABS.into_iter().enumerate() {
-            self.hits.add(kit::foot_tab(TABS.len(), k), Hit::View(v));
+            self.scene(f, cx, shown);
         }
         if self.view == View::New {
             self.new_sheet(f, cx);
@@ -2483,6 +2906,10 @@ impl Program for Calendar {
                 }
                 Answer::Nothing => Reply::Nothing,
             };
+        }
+        // The week strip's drag and the motions' frames (motion.rs).
+        if let Some(r) = self.motion_event(e) {
+            return r;
         }
         // The stylus takes over from the D-pad (the centre key's tap is
         // a lift only).
@@ -2562,11 +2989,16 @@ impl Program for Calendar {
             && let Some(h) = self.hits.at(x, y)
         {
             match h {
-                Hit::View(v) => self.view = v,
+                Hit::View(v) => return self.go(v, cx),
+                // The chosen day tapped again in the month zooms into it
+                // (calendar-rule0.md "The design": Month).
+                Hit::Day(d) if self.view == View::Month && d == self.day => {
+                    return self.go(View::Day, cx);
+                }
                 Hit::Day(d) => self.day = d,
                 Hit::OpenDay(d) => {
                     self.day = d;
-                    self.view = View::Day;
+                    return self.go(View::Day, cx);
                 }
                 Hit::Appt(id) => self.open_edit(cx, Some(id)),
                 Hit::New => {
@@ -2596,9 +3028,7 @@ impl Program for Calendar {
         // views (Windows Mobile's does; ours from any of its screens).
         if e == Event::Key(Key::App) {
             let i = TABS.iter().position(|v| *v == self.view);
-            self.view = TABS[i.map_or(0, |i| (i + 1) % TABS.len())];
-            self.focus.clear();
-            return Reply::Redraw;
+            return self.go(TABS[i.map_or(0, |i| (i + 1) % TABS.len())], cx);
         }
         if self.view == View::Find {
             let page = self.find_rows.len() as u16;
@@ -2691,7 +3121,12 @@ impl Program for Calendar {
                 self.focus = focus;
                 if moved {
                     match self.focus.point().and_then(|(x, y)| self.hits.at(x, y)) {
-                        Some(Hit::View(v)) => self.view = v,
+                        Some(Hit::View(v)) => {
+                            let focus = self.focus;
+                            let r = self.go(v, cx);
+                            self.focus = focus;
+                            return r;
+                        }
                         Some(Hit::Day(d)) => self.day = d,
                         _ => {}
                     }
@@ -2797,14 +3232,8 @@ impl Program for Calendar {
                 self.line_n -= 1;
                 Reply::Redraw
             }
-            Event::Key(Key::Left) if tabs => {
-                self.day -= 1;
-                Reply::Redraw
-            }
-            Event::Key(Key::Right) if tabs => {
-                self.day += 1;
-                Reply::Redraw
-            }
+            Event::Key(Key::Left) if tabs => self.step_day(-1, cx),
+            Event::Key(Key::Right) if tabs => self.step_day(1, cx),
             _ => Reply::Nothing,
         }
     }
@@ -2873,10 +3302,7 @@ impl Program for Calendar {
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
         let asked = core::mem::replace(&mut self.asked, Asked::Nothing);
         if asked == Asked::Place {
-            let mut found = [rp_pim::net::Place {
-                street: rp_pim::net::Short::default(),
-                city: rp_pim::net::Short::default(),
-            }; 3];
+            let mut found = [rp_pim::net::Place::EMPTY; 3];
             let n = if ok {
                 rp_pim::net::photon(body, &mut found)
             } else {

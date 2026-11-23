@@ -145,6 +145,16 @@ on the engine, not the CPU, and only where something changed.
      command (pixel-checked against the reference); the Start menu over
      Today no longer draws Today's commands under its glass (run
      today-0140, frame 191: 38.6 ms, 610 blits).
+   - `Pic16` *(added 2026-11-23, group E: a program's map)*: an opaque
+     picture at 16 bits (RGB565, two pixels a word, the first in the low
+     half) from the RAM store, uploaded to the image cache as its words
+     and copied into the work picture with no blend (the engine widens
+     each channel, as it does the wallpaper's). Half a 32-bit picture's
+     bytes in the store, the upload and the cache (ADR-0034 C2: opaque
+     pictures at 16 bits): a 448 x 336 map is 301 KB, where at 32 bits it
+     was 602 KB, past the 384 KiB cache, and never drawn. Checked against
+     the reference (rule 6): the same pixels widened, as a 32-bit `Pic`,
+     in both renderers.
    Nothing in today's shell needs the CPU to draw pixels; the trait's
    "which commands did you take" (ADR-0022) stays for later commands.
 4. **2700G memory layout** (a table in docs/memory-budget.md): two

@@ -260,6 +260,22 @@ pub enum Cmd {
         /// is the alpha).
         color: Argb,
     },
+    /// An opaque picture at 16 bits from the RAM store, over what's there:
+    /// RGB565, two pixels a word, the first in the word's low half (its
+    /// first two bytes in memory). `pic.w` words a row: `2 * pic.w` pixels
+    /// wide, `pic.h` tall. Half a 32-bit picture's bytes in the store, the
+    /// upload and the 2D engine's picture cache, at the screen's own depth
+    /// (ADR-0034 C2: opaque pictures at 16 bits). A program's map is one: at
+    /// 32 bits it was 602 KB, past the engine's 384 KiB cache, and never
+    /// drawn (2026-11-23).
+    Pic16 {
+        /// Left edge.
+        x: u16,
+        /// Top edge (negative: its rows above the top are cut).
+        y: i16,
+        /// The picture: its words the pixel pairs.
+        pic: pics::Pic,
+    },
     /// A run of text.
     Text {
         /// The pen's starting position.
@@ -445,6 +461,15 @@ impl Cmd {
                     pic.h.saturating_sub(cut),
                 )
             }
+            Cmd::Pic16 { x, y, pic } => {
+                let cut = y.min(0).unsigned_abs();
+                Rect::new(
+                    x,
+                    y.max(0).cast_unsigned(),
+                    pic.w.saturating_mul(2),
+                    pic.h.saturating_sub(cut),
+                )
+            }
             // The line box and where the glyphs' masks fall (a cloud of the
             // living sky lies wholly left of its pen: bounded by its line
             // box alone, it was skipped once its pen passed the sky's right
@@ -589,6 +614,7 @@ impl Frame {
                 // (Ink keeps its colour in every look, as paper does.)
                 Cmd::Image { .. }
                 | Cmd::Pic { .. }
+                | Cmd::Pic16 { .. }
                 | Cmd::Cover { .. }
                 | Cmd::Clip { .. }
                 | Cmd::Panel { .. } => {}
@@ -692,6 +718,21 @@ impl Frame {
         self.push(Cmd::Clip {
             r: r.unwrap_or(NO_CLIP),
         });
+    }
+
+    /// The clip later commands are drawn in: the last `Clip` pushed
+    /// ([`NO_CLIP`] when none). A program clipping part of its area
+    /// intersects with it and puts it back after, so the clip the shell
+    /// set round the program's window holds (a nested clip).
+    #[must_use]
+    pub fn clip_now(&self) -> Rect {
+        self.cmds()
+            .filter_map(|c| match *c {
+                Cmd::Clip { r } => Some(r),
+                _ => None,
+            })
+            .last()
+            .unwrap_or(NO_CLIP)
     }
 
     /// The drawing commands in order, each with the clip it is drawn in

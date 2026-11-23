@@ -159,6 +159,13 @@ pub mod tag {
     pub const HIDDEN: u8 = 37;
     /// Note: its paper (0 ruled, 1 plain, 2 grid).
     pub const PAPER: u8 = 38;
+
+    // Group E's (70-72; group A owns 50-59, group D 60-64).
+    /// Contact: where its address is, latitude then longitude, millionths
+    /// of a degree, each four bytes little-endian (signed). Kept with the
+    /// address so its map's pin shows with no connection; dropped when
+    /// the address changes (contacts-rule0.md "Where they are").
+    pub const GEO: u8 = 70;
 }
 
 /// A record as stored: read-only.

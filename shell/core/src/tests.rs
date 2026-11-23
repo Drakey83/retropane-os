@@ -4441,3 +4441,168 @@ fn a_reminder_made_after_its_time_shows_at_once_and_once() {
     assert!(s.reminder_shown());
     assert!(s.take_chime());
 }
+
+#[test]
+fn a_clear_stays_a_clear_in_every_look() {
+    // A program's fill of nothing means "the window here" (rp_draw::CLEAR):
+    // the light look's pass made it glass, and Calendar's zoom card showed
+    // the month through the day (2026-11-23, its preview).
+    for style in [
+        LightStyle::Grey,
+        LightStyle::Frosted,
+        LightStyle::Tonal,
+        LightStyle::Washed,
+        LightStyle::Window,
+    ] {
+        assert_eq!(look_color(rp_draw::CLEAR, false, style), rp_draw::CLEAR);
+        assert_eq!(look_color(rp_draw::CLEAR, true, style), rp_draw::CLEAR);
+    }
+}
+
+/// A program that wants a map (Contacts' address), and what it was lent.
+struct Mapper {
+    ask: Option<rp_app::MapAsk>,
+    got: std::rc::Rc<core::cell::Cell<Option<Option<Pic>>>>,
+}
+
+impl rp_app::Program for Mapper {
+    fn title(&self) -> &'static str {
+        "Mapper"
+    }
+    fn softkeys(&self) -> (&'static str, &'static str) {
+        ("", "")
+    }
+    fn draw(&mut self, _f: &mut Frame, _cx: &rp_app::Ctx) {}
+    fn event(&mut self, _e: rp_app::Event, _cx: &rp_app::Ctx) -> rp_app::Reply {
+        rp_app::Reply::Nothing
+    }
+    fn map_ask(&self) -> Option<rp_app::MapAsk> {
+        self.ask
+    }
+    fn map_answer(
+        &mut self,
+        _ask: rp_app::MapAsk,
+        map: Option<Pic>,
+        _cx: &rp_app::Ctx,
+    ) -> rp_app::Reply {
+        self.got.set(Some(map));
+        rp_app::Reply::Redraw
+    }
+}
+
+#[test]
+fn a_programs_map_is_the_radars_coloured_into_its_picture() {
+    // contacts-rule0.md "Where they are" (group E): the program names a
+    // place; the shell asks the device (its RAM, its card), else the relay
+    // for the radar's layers there; the layers come back coloured in the
+    // look shown into the program's 16-bit picture, the place at its middle.
+    const CLASSES: [(u16, u16, u8); 1] = [(rp_app::kit::MAP_PIC.0 / 2, rp_app::kit::MAP_PIC.1, 1)];
+    let pics: &'static rp_draw::pics::Pics<'static> =
+        Box::leak(Box::new(rp_draw::pics::Pics::new(
+            Box::leak(vec![0; rp_draw::pics::Pics::words(&CLASSES)].into_boxed_slice()),
+            &CLASSES,
+        )));
+    let mut s = shell(true);
+    s.give_pics(pics);
+    let got = std::rc::Rc::new(core::cell::Cell::new(None));
+    let ask = rp_app::MapAsk {
+        lat: 38_887_100,
+        lon: -77_094_700,
+        zoom: 10,
+    };
+    s.open_program(Box::leak(Box::new(Mapper {
+        ask: Some(ask),
+        got: got.clone(),
+    })));
+    // The device is asked once, by the radar's key (thousandths, rounded).
+    let key = rp_weather::mapcard::Key {
+        lat: 38_887,
+        lon: -77_095,
+        zoom: 10,
+    };
+    assert_eq!(s.prog_map_wanted(), Some(key));
+    assert_eq!(s.prog_map_key(), Some(key));
+    // Not on its card: the relay is asked for the radar's layers there.
+    s.prog_map_card(None);
+    assert_eq!(s.prog_map_wanted(), None, "asked once");
+    let q = loop {
+        let q = s.next_ask().expect("the map asked");
+        if q.ask == crate::weather_net::Ask::ProgMap {
+            break q;
+        }
+        s.net_answer(false, b"");
+    };
+    assert_eq!(q.line(), b"RPNET LAYERS 38.887 -77.095 10\n");
+    assert!(q.tile.is_some_and(|t| t.0.is_none()), "taken as a map");
+    assert!(s.layers_for_program());
+    assert_eq!(s.layers_key(), key);
+    // The layers: land everywhere, a road across the middle row.
+    let (w, h) = (rp_weather::maplayers::W, rp_weather::maplayers::H);
+    let mut layers = vec![0u8; rp_weather::maplayers::BYTES];
+    layers[..w * h].fill(255);
+    let road = rp_weather::maplayers::Layer::Road as usize;
+    layers[road * w * h + (h / 2) * w..road * w * h + (h / 2 + 1) * w].fill(255);
+    s.prog_map_layers(key, &layers);
+    s.net_answer(true, b"");
+    let pic = got.get().flatten().expect("a picture lent");
+    assert_eq!(
+        (pic.w, pic.h),
+        (rp_app::kit::MAP_PIC.0 / 2, rp_app::kit::MAP_PIC.1)
+    );
+    // Each pixel the radar's own colour for its layers there (the dark
+    // look: Night), at 16 bits on the device's dither.
+    let look = rp_weather::maplayers::Look::Night;
+    let mut row = vec![0u32; w];
+    pics.read(pic, |px| {
+        let pw = usize::from(pic.w);
+        for y in [0usize, 167, 168, 335] {
+            rp_weather::maplayers::colour_row(&layers, y + (h - 336) / 2, look, &mut row);
+            for x in [0usize, 1, 223, 447] {
+                let pair = px[y * pw + x / 2];
+                let got = if x % 2 == 0 {
+                    pair as u16
+                } else {
+                    (pair >> 16) as u16
+                };
+                let want = crate::prog_map::dither565(row[x + (w - 448) / 2], x, y);
+                assert_eq!(got, want, "({x}, {y})");
+            }
+        }
+    })
+    .expect("readable");
+    // A look change colours it again, from the device's RAM or card.
+    s.set_appearance(rp_weather::settings::Appearance::Light);
+    assert_eq!(s.prog_map_wanted(), Some(key));
+    s.prog_map_layers(key, &layers);
+    assert!(
+        got.get().flatten().is_some(),
+        "coloured again, the old one given back"
+    );
+    // A zoom the relay can't draw is never asked.
+    let mut s = shell(true);
+    s.give_pics(pics);
+    s.open_program(Box::leak(Box::new(Mapper {
+        ask: Some(rp_app::MapAsk { zoom: 11, ..ask }),
+        got: got.clone(),
+    })));
+    assert_eq!(s.prog_map_wanted(), None);
+    // No connection and none kept: the program is told none can be had.
+    got.set(None);
+    s.open_program(Box::leak(Box::new(Mapper {
+        ask: Some(ask),
+        got: got.clone(),
+    })));
+    s.prog_map_wanted();
+    s.prog_map_card(None);
+    while let Some(q) = s.next_ask() {
+        let map = q.ask == crate::weather_net::Ask::ProgMap;
+        s.net_answer(false, b"");
+        if map {
+            break;
+        }
+    }
+    assert_eq!(got.get(), Some(None), "told: no map");
+    // Back to Today: forgotten (its picture went with its others).
+    s.input(Input::Key(Key::Home));
+    assert_eq!(s.prog_map_key(), None);
+}

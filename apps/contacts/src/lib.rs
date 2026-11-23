@@ -19,6 +19,7 @@ use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W
 use rp_pim::phone;
 use rp_pim::store::{Kind, tag};
 
+pub mod map;
 pub mod photo;
 
 /// People a view holds.
@@ -33,6 +34,8 @@ const PICKS: usize = 8;
 const PHOTO_PAGES: usize = 6;
 /// The card's targets past what it copies: the avatar (the chooser).
 const PICTURE: u8 = 9;
+/// The card's Map key (group E: the address on the radar's map).
+const MAP_KEY: u8 = 6;
 /// The chooser's keys past its rows.
 const MORE: u8 = 100;
 const REMOVE: u8 = 101;
@@ -47,6 +50,8 @@ enum Want {
     List(u8),
     /// The PC's picture of this number.
     Photo(u8),
+    /// The place of the address on the map page (Photon's first answer).
+    Geo,
 }
 
 /// One person as the views show them (copied from the store's record).
@@ -109,6 +114,8 @@ pub enum View {
     Edit(EditField),
     /// One person's picture being chosen.
     Photo(u8),
+    /// One person's address on the map (map.rs).
+    Map(u8),
 }
 
 /// The editor's rows, in the form's order: nine typed fields, then the
@@ -230,6 +237,9 @@ pub struct Place {
     pub street: Text<48>,
     /// City, state and postal code.
     pub city: Text<48>,
+    /// Where it is, when the service said (millionths of a degree): kept
+    /// with the address when it is picked (map.rs).
+    pub at: Option<(i32, i32)>,
 }
 
 /// Where suggestion `k` lies under the street field (the form folded
@@ -241,6 +251,15 @@ const fn suggestion_row(k: u16) -> Rect {
 
 /// The Contacts program.
 pub struct Contacts {
+    /// The map page while it is up (map.rs), and its layout variant
+    /// under the owner's pick (B: the address in the title).
+    map: Option<map::MapPage>,
+    map_b: bool,
+    /// The place of the suggestion picked in the editor, with the street
+    /// and city it came with (kept only if the address saved is that one),
+    /// and the address the editor opened with.
+    geo_pick: Option<((i32, i32), Text<48>, Text<48>)>,
+    addr_was: (Text<48>, Text<48>),
     people: [Option<Person>; MAX],
     /// The store's change count the people were copied at.
     seen: Option<u32>,
@@ -355,6 +374,10 @@ impl Contacts {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            map: None,
+            map_b: false,
+            geo_pick: None,
+            addr_was: (Text::EMPTY, Text::EMPTY),
             people: [None; MAX],
             seen: None,
             view: View::List,
@@ -624,6 +647,8 @@ impl Contacts {
         self.editing = None;
         self.fav = false;
         self.places = [None; 5];
+        self.addr_was = (Text::EMPTY, Text::EMPTY);
+        self.geo_pick = None;
         self.go(View::Edit(EditField::First));
     }
 
@@ -642,6 +667,8 @@ impl Contacts {
         self.put(E::Email, p.email.get());
         self.put(E::Street, p.address[0].get());
         self.put(E::City, p.address[1].get());
+        self.addr_was = (Text::of(p.address[0].get()), Text::of(p.address[1].get()));
+        self.geo_pick = None;
         self.editing = Some(p.id);
         self.fav = p.favourite;
         self.places = [None; 5];
@@ -700,16 +727,134 @@ impl Contacts {
         let Some(store) = guard.as_mut() else {
             return false;
         };
-        let ok = match self.editing {
-            Some(id) => store.change(id, &fields).is_ok(),
-            None => store.put(Kind::Contact, None, &fields).is_ok(),
+        let kept = match self.editing {
+            Some(id) => store.change(id, &fields).ok().map(|_| id),
+            None => store.put(Kind::Contact, None, &fields).ok(),
         };
+        if let Some(id) = kept {
+            self.keep_geo(store, id);
+        }
+        let ok = kept.is_some();
         if ok {
             self.seen = None;
             self.form_n = [0; 9];
             self.editing = None;
         }
         ok
+    }
+
+    /// The address's place with the person (map.rs): the suggestion's when
+    /// the address saved is the one picked; taken off when the address
+    /// changed any other way (a stale pin is worse than none: the map page
+    /// asks again); left as it is when the address didn't change.
+    fn keep_geo(&mut self, store: &mut rp_pim::store::Store<'static>, id: u32) {
+        use EditField as E;
+        let (st, ci) = (self.val(E::Street), self.val(E::City));
+        let same = |a: &Text<48>, b: &[u8]| a.get() == &b[..b.len().min(48)];
+        let bytes;
+        let geo: &[u8] = match self.geo_pick {
+            Some((at, pst, pci)) if same(&pst, st) && same(&pci, ci) => {
+                bytes = map::geo_bytes(at);
+                &bytes
+            }
+            _ if same(&self.addr_was.0, st) && same(&self.addr_was.1, ci) => return,
+            _ => &[],
+        };
+        let _ = store.change(id, &[(tag::GEO, geo)]);
+        self.geo_pick = None;
+    }
+
+    /// The map page for person `i`: their kept place, or the address asked
+    /// about once (map.rs).
+    fn open_map(&mut self, i: u8, cx: &Ctx) {
+        let Some(p) = self.people.get(usize::from(i)).copied().flatten() else {
+            return;
+        };
+        let at = cx.pim.and_then(|c| c.try_borrow().ok()).and_then(|g| {
+            g.as_ref()
+                .and_then(|s| s.get(p.id).and_then(|r| map::geo_of(r.text(tag::GEO))))
+        });
+        self.map = Some(map::MapPage::new(p.id, at));
+        self.go(View::Map(i));
+    }
+
+    /// The place found for the map page's address (Photon's first answer
+    /// with one), kept on the record.
+    fn geo_found(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        let Some(page) = self.map.as_mut() else {
+            return Reply::Nothing;
+        };
+        if !ok {
+            page.status = map::Status::Offline;
+            return Reply::Redraw;
+        }
+        let mut found = [rp_pim::net::Place::EMPTY; 5];
+        let n = rp_pim::net::photon(body, &mut found);
+        let Some(at) = found[..n].iter().find_map(|p| p.at) else {
+            page.status = map::Status::NotFound;
+            return Reply::Redraw;
+        };
+        page.at = Some(at);
+        page.status = map::Status::Drawing;
+        let id = page.id;
+        if let Some(cell) = cx.pim
+            && let Ok(mut g) = cell.try_borrow_mut()
+            && let Some(store) = g.as_mut()
+        {
+            let _ = store.change(id, &[(tag::GEO, &map::geo_bytes(at))]);
+            self.seen = None;
+        }
+        Reply::Redraw
+    }
+
+    /// The previews' map page: person `i`, the picture lent, its layout.
+    pub fn mock_map(&mut self, i: u8, at: (i32, i32), pic: Option<Pic>, b: bool) {
+        let id = self
+            .people
+            .get(usize::from(i))
+            .copied()
+            .flatten()
+            .map_or(0, |p| p.id);
+        let mut page = map::MapPage::new(id, Some(at));
+        if let Some(pic) = pic {
+            page.pic = Some((pic, page.zoom));
+            page.status = map::Status::Shown;
+        }
+        self.map = Some(page);
+        self.map_b = b;
+        self.view = View::Map(i);
+    }
+
+    /// The map page's taps and keys: zoom, copy, back.
+    fn map_event(&mut self, e: Event, i: u8, cx: &Ctx) -> Reply {
+        let b = self.map_b;
+        let Some(page) = self.map.as_mut() else {
+            return Reply::Nothing;
+        };
+        let [plus, minus] = map::zoom_keys(b);
+        let by = match e {
+            Event::PenUp { x, y } if plus.contains_point(x, y) => 1,
+            Event::PenUp { x, y } if minus.contains_point(x, y) => -1,
+            Event::Key(Key::Up) => 1,
+            Event::Key(Key::Down) => -1,
+            Event::PenUp { x, y } if b && map::COPY_KEY.contains_point(x, y) => {
+                if let Some(p) = self.people.get(usize::from(i)).copied().flatten() {
+                    *cx.clip.borrow_mut() = Text::of(Self::card_text(&p, 4).get());
+                }
+                return Reply::Redraw;
+            }
+            Event::Key(Key::SoftLeft) => {
+                self.map = None;
+                self.go(View::Card(i));
+                return Reply::Redraw;
+            }
+            _ => return Reply::Nothing,
+        };
+        if page.zoom_by(by) {
+            Reply::Redraw
+        } else {
+            Reply::Nothing
+        }
     }
 
     /// The person being changed taken out of the store.
@@ -838,16 +983,14 @@ impl Contacts {
     /// Suggestions read from an address service's answer (Photon's
     /// GeoJSON): the network's answer, and the previews' canned one.
     pub fn set_places_from(&mut self, answer: &[u8]) {
-        let mut found = [rp_pim::net::Place {
-            street: rp_pim::net::Short::default(),
-            city: rp_pim::net::Short::default(),
-        }; 5];
+        let mut found = [rp_pim::net::Place::EMPTY; 5];
         let n = rp_pim::net::photon(answer, &mut found);
         self.places = [None; 5];
         for (slot, p) in self.places.iter_mut().zip(&found[..n]) {
             *slot = Some(Place {
                 street: Text::of(p.street.get()),
                 city: Text::of(p.city.get()),
+                at: p.at,
             });
         }
         self.offline = false;
@@ -873,6 +1016,7 @@ impl Contacts {
                 self.places[k] = Some(Place {
                     street: Text::of(st),
                     city: Text::of(ci),
+                    at: map::geo_of(r.text(tag::GEO)),
                 });
                 k += 1;
             }
@@ -886,6 +1030,7 @@ impl Contacts {
         };
         self.put(EditField::Street, p.street.get());
         self.put(EditField::City, p.city.get());
+        self.geo_pick = p.at.map(|at| (at, p.street, p.city));
         self.places = [None; 5];
         self.asked = Text::of(p.street.get());
     }
@@ -1325,18 +1470,20 @@ impl Contacts {
             }
         };
         let copied = self.copied.map(|c| c.0);
-        // The action row. Copy works; E-mail, Map and To PC wait for the
-        // mail and map programs and the PC's side, and are drawn dim
-        // until then (a key that looks live and does nothing is worse
-        // than one that says it is not there yet).
+        // The action row. Copy and Map work (Map: the address on the
+        // radar's map, map.rs); E-mail and To PC wait for the mail program
+        // and the PC's side, and are drawn dim until then (a key that looks
+        // live and does nothing is worse than one that says it is not
+        // there yet).
         let mut y = 246;
         let has_number = p.phones.iter().any(|ph| !ph.1.is_empty());
+        let has_address = !p.address[0].is_empty() || !p.address[1].is_empty();
         for (k, word) in [&b"E-mail"[..], b"Map", b"Copy", b"To PC"]
             .iter()
             .enumerate()
         {
             let r = Rect::new(MARGIN + k as u16 * 112, y, 104, 64);
-            let live = k == 2 && has_number;
+            let live = (k == 2 && has_number) || (k == 1 && has_address);
             kit::key(
                 f,
                 cx,
@@ -1347,14 +1494,14 @@ impl Contacts {
                     kit::KeyState::Rest
                 },
             );
-            let (word, col): (&[u8], _) = match (live, copied == Some(5)) {
+            let (word, col): (&[u8], _) = match (live, k == 2 && copied == Some(5)) {
                 (true, true) => (b"Copied", TEXT),
                 (true, false) => (word, TEXT),
                 _ => (word, kit::alpha(DIM, 0x70)),
             };
             kit::centred(f, r, r.y + 40, cx.fonts.ui, col, word);
             if live {
-                hit(r, 5);
+                hit(r, if k == 1 { MAP_KEY } else { 5 });
             }
         }
         y += 76;
@@ -1578,7 +1725,7 @@ impl Program for Contacts {
             View::List => ("Back", "New"),
             View::Card(_) => ("Back", "Edit"),
             View::Edit(_) => ("Cancel", "Done"),
-            View::Photo(_) => ("Back", ""),
+            View::Photo(_) | View::Map(_) => ("Back", ""),
         }
     }
 
@@ -1599,6 +1746,25 @@ impl Program for Contacts {
                 self.chooser(f, cx, i);
                 self.focus.ring(f, self.targets());
             }
+            View::Map(i) => {
+                let Some(p) = self.people.get(usize::from(i)).copied().flatten() else {
+                    return;
+                };
+                let mut nm = [0u8; 64];
+                let nn = name(&p, &mut nm);
+                let b = self.map_b;
+                if let Some(page) = self.map.as_mut() {
+                    map::draw(
+                        f,
+                        cx,
+                        page,
+                        &nm[..nn],
+                        p.address[0].get(),
+                        p.address[1].get(),
+                        b,
+                    );
+                }
+            }
         }
     }
 
@@ -1607,6 +1773,11 @@ impl Program for Contacts {
         // a lift only).
         if matches!(e, Event::PenDown { .. }) {
             self.focus.clear();
+        }
+        if let View::Map(i) = self.view
+            && e != Event::Key(Key::App)
+        {
+            return self.map_event(e, i, cx);
         }
         // The D-pad (R203) on every screen. The list and a card: the
         // arrows walk what a stylus can tap (the search, the people; a
@@ -1677,6 +1848,10 @@ impl Program for Contacts {
                     .map(|t| t.1);
                 if hit == Some(PICTURE) {
                     self.open_photo(i);
+                    return Reply::Redraw;
+                }
+                if hit == Some(MAP_KEY) {
+                    self.open_map(i, cx);
                     return Reply::Redraw;
                 }
                 if let Some(kind) = hit
@@ -1942,7 +2117,57 @@ impl Program for Contacts {
     /// The street typed, once it has three characters and differs from
     /// the last one asked: Photon is asked over whatever connection there
     /// is; the answer's round trip paces the asking.
+    fn map_ask(&self) -> Option<rp_app::MapAsk> {
+        match self.view {
+            View::Map(_) => self.map.as_ref().and_then(map::MapPage::ask),
+            _ => None,
+        }
+    }
+
+    fn map_answer(&mut self, ask: rp_app::MapAsk, map: Option<Pic>, _cx: &Ctx) -> Reply {
+        let Some(page) = self.map.as_mut().filter(|p| p.ask() == Some(ask)) else {
+            return Reply::Nothing;
+        };
+        page.pic = map.map(|m| (m, ask.zoom));
+        page.status = if map.is_some() {
+            map::Status::Shown
+        } else {
+            map::Status::NoMap
+        };
+        Reply::Redraw
+    }
+
     fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        // The map page's address, asked once when its place isn't kept.
+        if let (View::Map(i), Some(page)) = (self.view, self.map.as_mut())
+            && page.status == map::Status::Finding
+            && !page.asked
+        {
+            page.asked = true;
+            let p = self.people.get(usize::from(i)).copied().flatten()?;
+            let mut q = [0u8; 64];
+            let mut n = 0;
+            for &c in p.address[0]
+                .get()
+                .iter()
+                .chain(if p.address[1].is_empty() {
+                    &b""[..]
+                } else {
+                    b", "
+                })
+                .chain(p.address[1].get())
+            {
+                if n < q.len() {
+                    q[n] = c;
+                    n += 1;
+                }
+            }
+            self.asked_for = Want::Geo;
+            return Some(rp_app::NetAsk {
+                what: b"ADDR",
+                arg: Text::of(&q[..n]),
+            });
+        }
         // The chooser's questions: the PC's pictures, or one of them.
         if let View::Photo(_) = self.view {
             let want = core::mem::replace(&mut self.want, Want::Nothing);
@@ -1977,6 +2202,7 @@ impl Program for Contacts {
 
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
         match core::mem::replace(&mut self.asked_for, Want::Nothing) {
+            Want::Geo => return self.geo_found(ok, body, cx),
             Want::List(from) => {
                 if !ok {
                     self.photo_note = b"No connection (Wi-Fi or the dock)";

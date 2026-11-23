@@ -813,10 +813,61 @@ mod image {
                 }
             }
         }
+        // The open program's map (Contacts' address: prog_map.rs) the same
+        // way: the layers still in RAM coloured at once, else its file on
+        // the card read a piece a pass, else the relay's.
+        if let Some(key) = shell.prog_map_wanted() {
+            if kept.ram == Some(key) {
+                shell.prog_map_layers(key, map_layers);
+                let _ = writeln!(RunLog, "program map: its layers still in RAM, coloured");
+            } else {
+                if !*card_tried {
+                    *card_tried = true;
+                    *card = take_card();
+                }
+                let t0 = rt::ticks();
+                let got = match card.as_mut() {
+                    Some((c, start)) => map_head(c, *start, key, map_file),
+                    None => Err("no SD card"),
+                };
+                kept.asked_ms = now_ms;
+                kept.read_us = us(t0);
+                kept.unpack_us = 0;
+                match got {
+                    Ok((h, run)) => {
+                        shell.prog_map_card(Some(h.crc));
+                        kept.ram = None;
+                        kept.key = None;
+                        *layers_of = None;
+                        *coloured = None;
+                        kept.step = MapStep::Read {
+                            key,
+                            head: h,
+                            run,
+                            got: if run.is_some() { 0 } else { HEAD },
+                        };
+                        let _ = writeln!(
+                            RunLog,
+                            "program map: on the card ({} bytes): reading it",
+                            h.len
+                        );
+                    }
+                    Err(why) => {
+                        shell.prog_map_card(None);
+                        let _ =
+                            writeln!(RunLog, "program map: not on the card ({why}): the dock's");
+                    }
+                }
+            }
+        }
         // A step under way for a place no longer shown stops.
-        let current = shell.radar_key();
+        let current = shell.prog_map_key().unwrap_or_else(|| shell.radar_key());
         let fail = |shell: &mut rp_shell::Shell, kept: &mut KeptMap, why: &str| {
-            shell.radar_map_card(None);
+            if shell.layers_for_program() {
+                shell.prog_map_card_failed();
+            } else {
+                shell.radar_map_card(None);
+            }
             kept.key = None;
             kept.ram = None;
             kept.step = MapStep::Idle;
@@ -885,6 +936,20 @@ mod image {
                             key,
                             layer: layer + 1,
                         };
+                    }
+                    Ok(()) if shell.layers_for_program() => {
+                        // The program's map: coloured into its picture (the
+                        // radar's layers are another place's now).
+                        kept.ram = Some(key);
+                        kept.step = MapStep::Idle;
+                        *layers_of = None;
+                        *coloured = None;
+                        shell.prog_map_layers(key, map_layers);
+                        let _ = writeln!(
+                            RunLog,
+                            "program map: from the card, {} bytes: read in {} us, unpacked in {} us",
+                            kept.len, kept.read_us, kept.unpack_us
+                        );
                     }
                     Ok(()) => {
                         kept.ram = Some(key);
@@ -3409,8 +3474,10 @@ mod image {
                             // The place's map: its layers in one answer (R184),
                             // the first for the place or the relay's newer one
                             // (a card read under way stops), kept to write to
-                            // the card in a later pass.
-                            let key = shell.radar_key();
+                            // the card in a later pass. Or the open program's
+                            // map (prog_map.rs), kept the same way.
+                            let prog = shell.layers_for_program();
+                            let key = shell.layers_key();
                             let t0 = rt::ticks();
                             let got = match map_file.get_mut(HEAD..HEAD + l) {
                                 Some(f) => {
@@ -3424,7 +3491,7 @@ mod image {
                                 "radar map: the place's layers, {l} bytes, unpacked {got:?} in {} us",
                                 rt::ticks().wrapping_sub(t0) / 13 * 4
                             );
-                            layers_of = got.is_ok().then_some(MapOf::Place);
+                            layers_of = (got.is_ok() && !prog).then_some(MapOf::Place);
                             coloured = None;
                             if got.is_ok() {
                                 kept.key = Some(key);
@@ -3437,8 +3504,11 @@ mod image {
                                 kept.ram = None;
                                 kept.step = MapStep::Idle;
                             }
+                            if prog && got.is_ok() {
+                                shell.prog_map_layers(key, map_layers);
+                            }
                             shell.net_answer(got.is_ok(), &[]);
-                            if got.is_ok() {
+                            if got.is_ok() && !prog {
                                 shell.radar_map_in();
                             }
                         }

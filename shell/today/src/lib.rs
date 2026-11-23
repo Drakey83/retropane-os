@@ -45,7 +45,7 @@ pub const SHELL_PIC_CLASSES: usize = 6;
 const _: () = assert!(PIC_CLASSES.len() == SHELL_PIC_CLASSES + rp_app::kit::PIC_CLASSES.len());
 
 /// The picture store's classes (see above).
-pub const PIC_CLASSES: [(u16, u16, u8); 12] = [
+pub const PIC_CLASSES: [(u16, u16, u8); 13] = [
     (rp_shell::Size::Hero.side(), rp_shell::HERO_PIC_H, 2),
     (rp_shell::Size::Mid.side(), rp_shell::Size::Mid.side(), 6),
     (rp_shell::Size::Card.side(), rp_shell::Size::Card.side(), 8),
@@ -69,10 +69,22 @@ pub const PIC_CLASSES: [(u16, u16, u8); 12] = [
     rp_app::kit::PIC_CLASSES[3],
     rp_app::kit::PIC_CLASSES[4],
     rp_app::kit::PIC_CLASSES[5],
+    rp_app::kit::PIC_CLASSES[6],
 ];
 // Every size the app programs may ask for (a size added to the kit's
 // list and not here fails the build).
-const _: () = assert!(rp_app::kit::PIC_CLASSES.len() == 6);
+const _: () = assert!(rp_app::kit::PIC_CLASSES.len() == 7);
+// Every slot asked for is made (past `SLOTS` the store leaves the rest out
+// in silence).
+const _: () = assert!({
+    let mut n = 0;
+    let mut i = 0;
+    while i < PIC_CLASSES.len() {
+        n += PIC_CLASSES[i].2 as usize;
+        i += 1;
+    }
+    n <= 160
+});
 
 pub mod clock;
 pub mod fonts;
@@ -1095,6 +1107,12 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
                 mix(pic.key());
                 mix(u32::from(pic.w) | u32::from(pic.h) << 16);
                 mix(color);
+            }
+            Cmd::Pic16 { x, y, pic } => {
+                mix(10);
+                mix(u32::from(x) | u32::from(y.cast_unsigned()) << 16);
+                mix(pic.key());
+                mix(u32::from(pic.w) | u32::from(pic.h) << 16);
             }
             Cmd::Text {
                 x,

@@ -25,7 +25,7 @@ pub struct Mock {
 /// The previews' today: Monday 1 January 2024 (their clock reads noon).
 const TODAY: i32 = 19_723;
 
-static CALS: [Cal; 4] = [
+pub(crate) static CALS: [Cal; 4] = [
     Cal {
         name: b"Personal",
         colour: IDENTITY[0],
@@ -208,6 +208,29 @@ pub fn sample_people(s: &mut rp_shell::Shell) {
             .expect("the sample people fit");
     }
     s.pim_loaded();
+}
+
+/// Grace's map page: the shell asked for her place's map (as the image's
+/// loop asks), then given the relay's layers from `RP_PREVIEW_MAP`.
+fn map_page(s: &mut rp_shell::Shell, b: bool) {
+    sample_people(s);
+    let mut c = contacts(rp_app_contacts::View::List);
+    // 2100 Clarendon Blvd, Arlington: where Photon puts it.
+    c.mock_map(0, (38_887_100, -77_094_700), None, b);
+    open(s, c);
+    let Some(key) = s.prog_map_wanted() else {
+        return;
+    };
+    let Some(file) = std::env::var("RP_PREVIEW_MAP")
+        .ok()
+        .and_then(|p| std::fs::read(p).ok())
+    else {
+        return;
+    };
+    let mut layers = vec![0u8; rp_weather::maplayers::BYTES];
+    if rp_weather::maplayers::unpack(&file, &mut layers).is_ok() {
+        s.prog_map_layers(key, &layers);
+    }
 }
 
 fn contacts(view: rp_app_contacts::View) -> Contacts {
@@ -547,6 +570,9 @@ pub fn mocks() -> Vec<Mock> {
                 name: Box::leak(format!("{}{suffix}", m.name).into_boxed_str()),
                 what: m.what,
                 prepare: Box::new(move |s| {
+                    // (The look first too: what a program is lent while it
+                    // is prepared, a map's colours, follows it.)
+                    s.set_appearance(look);
                     prepare(s);
                     s.set_appearance(look);
                     // Light behind the glass (design-language.md version 3).
@@ -682,6 +708,111 @@ fn base() -> Vec<Mock> {
                 open(s, calendar(View::Month, b""));
             }),
         },
+        // Group E's motion (calendar-rule0.md): frames of the real code
+        // for the owner's pick of the looks.
+        Mock {
+            name: "e-strip-a-drag",
+            what: "Week strip A: dragged left, the next week following the pen (nothing else redrawn)",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Day, b"");
+                c.mock_motion(-170, None, true);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "e-strip-b-drag",
+            what: "Week strip B: as A, with the week's dates on a glass chip while it moves",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Day, b"");
+                c.mock_variant(true, false);
+                c.mock_motion(-170, None, true);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "e-strip-b-back",
+            what: "Week strip B: dragged right into last year's last week, the chip naming both months",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Agenda, b"");
+                c.mock_variant(true, false);
+                c.mock_motion(250, None, true);
+                open(s, c);
+            }),
+        },
+    ]
+    .into_iter()
+    .chain((1..=4u8).map(|k| Mock {
+        name: Box::leak(format!("e-zoom-a-in-{k}").into_boxed_str()),
+        what: "Zoom A: Month into Day, the day's card growing out of its cell (frame k of 6)",
+        prepare: Box::new(move |s| {
+            sample_week(s);
+            let mut c = calendar(View::Day, b"");
+            c.mock_motion(0, Some((View::Month, k)), true);
+            open(s, c);
+        }),
+    }))
+    .chain((1..=3u8).map(|k| Mock {
+        name: Box::leak(format!("e-zoom-c-in-{k}").into_boxed_str()),
+        what: "Zoom C: as A, the month dimmed under the growing card (frame k of 6)",
+        prepare: Box::new(move |s| {
+            sample_week(s);
+            let mut c = calendar(View::Day, b"");
+            c.mock_variant(false, true);
+            c.mock_motion(0, Some((View::Month, k)), true);
+            open(s, c);
+        }),
+    }))
+    .chain([
+        Mock {
+            name: "e-zoom-a-out-3",
+            what: "Zoom A out: Day shrinking back into its cell in the month (frame 3 of 6)",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Month, b"");
+                c.mock_motion(0, Some((View::Day, 3)), true);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "e-zoom-a-week-2",
+            what: "Zoom A: Week into Day, the day growing out of its column (frame 2 of 6)",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Day, b"");
+                c.mock_motion(0, Some((View::Week, 2)), true);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "e-zoom-a-month-week-2",
+            what: "Zoom A: Month into Week, the week growing out of its row (frame 2 of 6)",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Week, b"");
+                c.mock_motion(0, Some((View::Month, 2)), true);
+                open(s, c);
+            }),
+        },
+    ])
+    // The map page (contacts-rule0.md "Where they are"): Grace's address
+    // on a map the relay's drawer made (`RP_PREVIEW_MAP=<file.rpml>`,
+    // tools/maps/radar_layers.py at her place, zoom 10), coloured by the
+    // shell's own path (prog_map.rs); without the file, the page waiting.
+    .chain(
+        [("e-map-a", false), ("e-map-b", true)].map(|(name, b)| Mock {
+            name,
+            what: if b {
+                "Map B: the address in the title, the map, then the zoom keys and Copy under it"
+            } else {
+                "Map A: the map with the pin and the zoom keys over it, the address on glass under it"
+            },
+            prepare: Box::new(move |s| map_page(s, b)),
+        }),
+    )
+    .chain(vec![
         Mock {
             name: "v2-calendar-new",
             what: "Calendar: quick add, the understood words in the tint, the preview card",
@@ -896,5 +1027,6 @@ fn base() -> Vec<Mock> {
                 })
             }),
         },
-    ]
+    ])
+    .collect()
 }

@@ -77,6 +77,20 @@ fn draw(c: &mut Calendar, cx: &Ctx) {
     c.draw(&mut f, cx);
 }
 
+/// A motion's frames drawn to its landing (the shell's ticks), then the
+/// still frame after: how many frames moved.
+fn land(c: &mut Calendar, cx: &Ctx) -> u8 {
+    let mut n = 0;
+    draw(c, cx);
+    while c.event(Event::Tick, cx) == Reply::Animate {
+        n += 1;
+        draw(c, cx);
+        assert!(n < 20, "a motion that never lands");
+    }
+    draw(c, cx);
+    n
+}
+
 #[test]
 fn the_us_week_starts_on_sunday_and_others_on_monday() {
     // 7 January 2024 was a Sunday, 8 a Monday.
@@ -270,10 +284,17 @@ fn every_tab_day_and_column_answers_the_stylus() {
             &cx,
         )
     };
-    for v in [View::Day, View::Week, View::Month, View::Agenda] {
-        assert_eq!(tap(&mut c, Hit::View(v)), Reply::Redraw);
+    // (Between day, week and month the change is a zoom: its frames run
+    // to the end before the next tap.)
+    for (v, want) in [
+        (View::Day, Reply::Redraw),
+        (View::Week, Reply::Animate),
+        (View::Month, Reply::Animate),
+        (View::Agenda, Reply::Redraw),
+    ] {
+        assert_eq!(tap(&mut c, Hit::View(v)), want);
         assert_eq!(c.view, v);
-        draw(&mut c, &cx);
+        land(&mut c, &cx);
     }
     // A day in the week strip.
     tap(&mut c, Hit::Day(19_725));
@@ -287,8 +308,9 @@ fn every_tab_day_and_column_answers_the_stylus() {
     draw(&mut c, &cx);
     let lens = c.hits.find(Hit::OpenDay(19_724)).expect("the lens");
     assert!(lens.w > 150, "{lens:?}");
-    tap(&mut c, Hit::OpenDay(19_724));
+    assert_eq!(tap(&mut c, Hit::OpenDay(19_724)), Reply::Animate);
     assert_eq!((c.view, c.day), (View::Day, 19_724));
+    land(&mut c, &cx);
     // A day in Month.
     c.view = View::Month;
     draw(&mut c, &cx);
@@ -539,9 +561,16 @@ fn the_dpad_works_the_editor_the_calendars_and_the_quick_add_sheet() {
 fn the_calendar_button_steps_through_the_views() {
     let cx = ctx(store());
     let mut c = opened(19_723);
-    for want in [View::Agenda, View::Day, View::Week, View::Month, View::Home] {
-        assert_eq!(c.event(Event::Key(Key::App), &cx), Reply::Redraw);
+    for (want, reply) in [
+        (View::Agenda, Reply::Redraw),
+        (View::Day, Reply::Redraw),
+        (View::Week, Reply::Animate),
+        (View::Month, Reply::Animate),
+        (View::Home, Reply::Redraw),
+    ] {
+        assert_eq!(c.event(Event::Key(Key::App), &cx), reply);
         assert_eq!(c.view, want);
+        land(&mut c, &cx);
     }
     // From a screen that is no view: the first.
     c.view = View::Calendars;
@@ -744,4 +773,185 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
     );
     let e = c.edit.unwrap();
     assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
+}
+
+#[test]
+fn a_zoom_grows_out_of_the_very_cell_drawn() {
+    // The cell each zoom starts from is where the view drew that day (one
+    // geometry: a moved grid would zoom out of the wrong place).
+    let cx = ctx(store());
+    let mut c = opened(19_723);
+    for day in [19_723, 19_740, 19_752, 19_754] {
+        c.day = day;
+        c.view = View::Month;
+        draw(&mut c, &cx);
+        let cell = c.hits.find(Hit::Day(day)).expect("the day drawn");
+        assert_eq!(c.zoom_cell(View::Month, View::Day, true), cell, "{day}");
+        let row = c.zoom_cell(View::Week, View::Month, true);
+        assert_eq!((row.y, row.h, row.w), (cell.y, cell.h, WIDE));
+        c.view = View::Week;
+        draw(&mut c, &cx);
+        let lens = c.hits.find(Hit::OpenDay(day)).expect("the lens");
+        assert_eq!(c.zoom_cell(View::Day, View::Week, true), lens, "{day}");
+    }
+}
+
+#[test]
+fn zooms_run_their_frames_and_land_on_the_view() {
+    let cx = ctx(store());
+    let mut c = opened(19_723);
+    c.view = View::Month;
+    draw(&mut c, &cx);
+    // The chosen day tapped again zooms into Day: six frames, the card
+    // growing each frame, clipped, the page cleared under it.
+    let cell = c.hits.find(Hit::Day(19_723)).unwrap();
+    let tap = Event::PenUp {
+        x: cell.x + 5,
+        y: cell.y + 5,
+    };
+    assert_eq!(c.event(tap, &cx), Reply::Animate);
+    assert_eq!(c.view, View::Day);
+    let mut last = cell;
+    for k in 1..=motion::FRAMES {
+        let mut f = Box::new(Frame::new());
+        c.draw(&mut f, &cx);
+        let clip = f
+            .cmds()
+            .find_map(|m| match m {
+                rp_app::Cmd::Clip { r } if r.w < u16::MAX => Some(*r),
+                _ => None,
+            })
+            .expect("a zoom frame clips its card");
+        assert!(clip.intersect(&last) == last, "frame {k} shrank");
+        last = clip;
+        let want = if k < motion::FRAMES {
+            Reply::Animate
+        } else {
+            Reply::Redraw
+        };
+        assert_eq!(c.event(Event::Tick, &cx), want, "frame {k}");
+    }
+    assert_eq!(last, rp_app::CONTENT, "the last frame is the whole page");
+    assert_eq!(c.motion, None);
+    // And out again: Month's tab shrinks the day back into its cell.
+    draw(&mut c, &cx);
+    let r = c.hits.find(Hit::View(View::Month)).unwrap();
+    assert_eq!(
+        c.event(
+            Event::PenUp {
+                x: r.x + 4,
+                y: r.y + 4
+            },
+            &cx
+        ),
+        Reply::Animate
+    );
+    assert_eq!(land(&mut c, &cx), motion::FRAMES - 1);
+    assert_eq!(c.view, View::Month);
+    // A tap mid-zoom lands it at once (the pen never waits).
+    c.view = View::Day;
+    c.event(Event::Key(Key::App), &cx);
+    assert!(c.motion.is_some());
+    draw(&mut c, &cx);
+    c.event(Event::PenDown { x: 10, y: 300 }, &cx);
+    assert_eq!(c.motion, None);
+}
+
+#[test]
+fn the_strip_follows_the_pen_and_pages_a_week() {
+    let cx = ctx(store());
+    let mut c = opened(19_723);
+    c.view = View::Day;
+    draw(&mut c, &cx);
+    let band = c.strip_at.expect("the strip drawn");
+    let y = band.y + 30;
+    // A drag left past a quarter: the strip follows by the pixel, then
+    // settles on the next week, the chosen weekday kept.
+    c.event(Event::PenDown { x: 300, y }, &cx);
+    assert_eq!(c.event(Event::PenMove { x: 296, y }, &cx), Reply::Nothing);
+    assert_eq!(c.event(Event::PenMove { x: 250, y }, &cx), Reply::Redraw);
+    assert_eq!(c.slide, -50);
+    draw(&mut c, &cx);
+    c.event(Event::PenMove { x: 160, y }, &cx);
+    assert_eq!(c.event(Event::PenUp { x: 160, y }, &cx), Reply::Animate);
+    assert_eq!(land(&mut c, &cx), motion::FRAMES - 1);
+    assert_eq!(c.day, 19_730);
+    // A short slow drag goes back.
+    c.event(Event::PenDown { x: 100, y }, &cx);
+    c.event(Event::PenMove { x: 120, y }, &cx);
+    c.event(Event::PenMove { x: 140, y }, &cx);
+    c.event(Event::PenUp { x: 141, y }, &cx);
+    land(&mut c, &cx);
+    assert_eq!(c.day, 19_730);
+    // A flick right, short as it is, goes back a week.
+    c.event(Event::PenDown { x: 100, y }, &cx);
+    c.event(Event::PenMove { x: 110, y }, &cx);
+    c.event(Event::PenMove { x: 130, y }, &cx);
+    c.event(Event::PenUp { x: 150, y }, &cx);
+    land(&mut c, &cx);
+    assert_eq!(c.day, 19_723);
+    // A tap is still a tap: the day under it chosen.
+    draw(&mut c, &cx);
+    let cell = c.hits.find(Hit::Day(19_725)).unwrap();
+    c.event(Event::PenDown { x: cell.x + 30, y }, &cx);
+    c.event(Event::PenMove { x: cell.x + 33, y }, &cx);
+    c.event(Event::PenUp { x: cell.x + 33, y }, &cx);
+    assert_eq!((c.day, c.motion), (19_725, None));
+}
+
+#[test]
+fn a_sliding_strip_draws_nothing_off_screen_and_nothing_wrong() {
+    // Every frame of a slide: each command's rectangle inside the screen
+    // (u16 can't hold a negative edge: a part left of the screen is cut
+    // or left out, never wrapped to the right), the band clipped and the
+    // clip ended.
+    let cx = ctx(store());
+    let mut c = opened(19_723);
+    c.view = View::Agenda;
+    draw(&mut c, &cx);
+    let band = c.strip_at.unwrap();
+    for dx in [-448i16, -301, -40, -1, 1, 13, 200, 447, 448] {
+        c.slide = dx;
+        // (As the shell draws it: inside its window's clip, which the strip
+        // must put back, never end.)
+        let window = Rect::new(0, 36, W, 564);
+        let mut f = Box::new(Frame::new());
+        f.clip(Some(window));
+        c.draw(&mut f, &cx);
+        assert_eq!(f.clip_now(), window, "{dx}: the window's clip put back");
+        let mut clipped = false;
+        for m in f.cmds() {
+            match m {
+                rp_app::Cmd::Clip { r } if *r == band => clipped = true,
+                rp_app::Cmd::Clip { .. } => clipped = false,
+                rp_app::Cmd::Fill { r, .. } | rp_app::Cmd::Panel { r, .. } if clipped => {
+                    assert!(r.x < W && r.right() <= W + 64, "{dx}: {r:?}");
+                }
+                _ => {}
+            }
+        }
+        assert!(!clipped, "{dx}: the band's clip left on");
+    }
+}
+
+#[test]
+fn the_dpad_across_a_week_slides_the_strip_in_from_its_side() {
+    let cx = ctx(store());
+    let mut c = opened(19_723);
+    c.view = View::Day;
+    // 19 723 is a Monday: Saturday is five days on, then Sunday starts
+    // the next (US) week.
+    for _ in 0..5 {
+        assert_eq!(c.event(Event::Key(Key::Right), &cx), Reply::Redraw);
+    }
+    assert_eq!(c.event(Event::Key(Key::Right), &cx), Reply::Animate);
+    assert_eq!(c.day, 19_729);
+    assert_eq!(c.strip_offset(), {
+        let k = 1;
+        motion::lerp(i32::from(motion::STRIP_W), 0, k) as i16
+    });
+    land(&mut c, &cx);
+    assert_eq!(c.day, 19_729);
+    assert_eq!(c.event(Event::Key(Key::Left), &cx), Reply::Animate);
+    assert!(c.strip_offset() < 0);
 }

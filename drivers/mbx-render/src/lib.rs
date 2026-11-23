@@ -1763,7 +1763,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 // The frame's pictures too: an upload early in the frame
                 // never evicts one it draws later.
                 Cmd::Image { img, .. } => self.mark_image(img.px.as_ptr() as usize),
-                Cmd::Pic { pic, .. } | Cmd::Cover { pic, .. } => {
+                Cmd::Pic { pic, .. } | Cmd::Cover { pic, .. } | Cmd::Pic16 { pic, .. } => {
                     self.mark_image((pic.key() as usize) << 2 | 1);
                 }
                 _ => {}
@@ -1824,6 +1824,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 ],
                 Cmd::Pic { x, y, pic } => [
                     7,
+                    u32::from(x) << 16 | u32::from(y.cast_unsigned()),
+                    pic.key(),
+                    u32::from(pic.w) << 16 | u32::from(pic.h),
+                    0,
+                ],
+                Cmd::Pic16 { x, y, pic } => [
+                    10,
                     u32::from(x) << 16 | u32::from(y.cast_unsigned()),
                     pic.key(),
                     u32::from(pic.w) << 16 | u32::from(pic.h),
@@ -2027,6 +2034,35 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 };
                 match self.pic(pic) {
                     Ok(at) => self.blend_from(dst, to, (at, usize::from(pic.w) * 4), sx, sy),
+                    Err(why) => self.last.pics_missed.note(pic, why),
+                }
+            }
+            // An opaque 16-bit picture: its words uploaded as they are and
+            // copied in as RGB565 (the engine widens each channel on the
+            // way into the work picture, as it does the wallpaper's).
+            Cmd::Pic16 { x, y, pic } => {
+                let Some((to, sx, sy)) = place(pic.w * 2, pic.h, i32::from(x), i32::from(y), clip)
+                else {
+                    return;
+                };
+                match self.pic(pic) {
+                    Ok(at) => {
+                        self.last.px_copy += u32::from(to.w) * u32::from(to.h);
+                        self.last.blits += 1;
+                        if let Some((w, n)) = cmd::blit(
+                            wide(dst),
+                            (Format::RGB565, at, i32::from(pic.w) * 4),
+                            (sx, sy),
+                            Self::coords(to),
+                            ROP_SRCCOPY,
+                            0,
+                            0,
+                        ) {
+                            self.submit(&w[..n]);
+                        } else {
+                            self.refused += 1;
+                        }
+                    }
                     Err(why) => self.last.pics_missed.note(pic, why),
                 }
             }

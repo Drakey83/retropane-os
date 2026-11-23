@@ -49,6 +49,9 @@ pub enum Ask {
     Pack,
     /// The open app program's question ([`rp_app::NetAsk`]).
     Program,
+    /// The open program's map (prog_map.rs): the radar's `LAYERS` for its
+    /// place, after the program's own questions' turn.
+    ProgMap,
 }
 
 /// The device's copy of the place's radar map (R184 step 3, sheet
@@ -67,7 +70,7 @@ pub(crate) enum CardMap {
     Absent,
 }
 
-const ORDER: [Ask; 12] = [
+const ORDER: [Ask; 13] = [
     Ask::Load,
     Ask::Save,
     Ask::Find,
@@ -80,6 +83,7 @@ const ORDER: [Ask; 12] = [
     Ask::Alerts,
     Ask::Frames,
     Ask::Tile,
+    Ask::ProgMap,
 ];
 
 const fn bit(a: Ask) -> u16 {
@@ -135,7 +139,7 @@ impl Question {
 }
 
 /// `v` thousandths of a degree as `-89.861`.
-fn degrees(v: i32) -> Line {
+pub(crate) fn degrees(v: i32) -> Line {
     let a = v.unsigned_abs();
     let frac = a % 1000;
     let l = Line::new()
@@ -235,6 +239,13 @@ impl Shell {
             }
             Ask::Here => q.push(b"HERE"),
             Ask::Clip => q.push(b"CLIP"),
+            // The program's map: the radar's layers for its place (the
+            // device takes the answer as it takes the radar's map).
+            Ask::ProgMap => {
+                let line = self.prog_map_line()?;
+                q.push(line.as_bytes());
+                q.tile = Some((None, 0, self.radar_view()));
+            }
             // Asked above, never wanted by a bit.
             Ask::Program => {}
             Ask::Pack => {
@@ -414,6 +425,7 @@ impl Shell {
                     self.dirty(super::weather_app::HEAD);
                 }
                 Ask::Tile => self.tile_failed(),
+                Ask::ProgMap => self.prog_map_failed(),
                 // A program's answer never reaches here (`program_net`).
                 Ask::Pack | Ask::History | Ask::Program => {}
             }
@@ -427,7 +439,9 @@ impl Shell {
                 self.want(Ask::Forecast);
                 self.dirty(Rect::new(0, 0, W, super::H));
             }
-            Ask::Save | Ask::Pack | Ask::Program => {}
+            // The device unpacked the program's map and gave it to
+            // `prog_map_layers` before it answered.
+            Ask::Save | Ask::Pack | Ask::Program | Ask::ProgMap => {}
             Ask::Find | Ask::Here => {
                 // Straight into the list kept (a copy on the stack was most
                 // of a 4.5 KB frame, the P6 stack rule).

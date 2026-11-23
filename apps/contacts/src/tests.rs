@@ -381,18 +381,32 @@ fn a_card_shows_every_line_and_each_copies_by_tap_or_dpad() {
     // Three numbers, the e-mail, the address and the Copy key, all on the
     // card (the address was dropped when the rest filled it).
     let kinds: std::vec::Vec<u8> = c.card_at[..c.n_card].iter().map(|t| t.1).collect();
-    assert_eq!(kinds, [PICTURE, 5, 0, 1, 2, 3, 4]);
+    assert_eq!(kinds, [PICTURE, MAP_KEY, 5, 0, 1, 2, 3, 4]);
     // (Past the avatar, which opens the picture chooser.)
     c.event(Event::Key(Key::Down), &cx);
     assert!(c.card_at[..c.n_card].iter().all(|(r, _)| r.bottom() <= 596));
     // The D-pad reaches each, the centre copies it; the mark shows, then
     // goes.
     let mut seen = std::vec::Vec::new();
-    for _ in 0..8 {
+    let mut mapped = false;
+    for _ in 0..9 {
         c.event(Event::Key(Key::Down), &cx);
-        assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Animate);
+        let focus = c.focus;
+        let r = c.event(Event::Key(Key::Enter), &cx);
+        if let View::Map(i) = c.view {
+            // The Map key opens the address's map; Back returns to the card
+            // with the D-pad where it was.
+            mapped = true;
+            c.event(Event::Key(Key::SoftLeft), &cx);
+            assert_eq!(c.view, View::Card(i));
+            draw(&mut c, &cx);
+            c.focus = focus;
+            continue;
+        }
+        assert_eq!(r, Reply::Animate, "{:?} {seen:?}", c.focus.rect());
         seen.push(std::string::String::from_utf8_lossy(cx.clip.borrow().get()).into_owned());
     }
+    assert!(mapped, "the Map key reached by the D-pad");
     for want in [
         "(703) 555-0107",
         "(703) 555-0108",

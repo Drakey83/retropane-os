@@ -142,6 +142,12 @@ fn key(f: &Frame, c: &Cmd, clip: Rect) -> Option<[u32; KEY_WORDS]> {
                 h.u32(pic.key());
                 h.u32(u32::from(pic.w) | u32::from(pic.h) << 16);
             }
+            Cmd::Pic16 { x, y, pic } => {
+                h.u32(10);
+                h.u32(u32::from(x) | u32::from(y.cast_unsigned()) << 16);
+                h.u32(pic.key());
+                h.u32(u32::from(pic.w) | u32::from(pic.h) << 16);
+            }
             Cmd::Cover { x, y, pic, color } => {
                 h.u32(9);
                 h.u32(u32::from(x) | u32::from(y.cast_unsigned()) << 16);
