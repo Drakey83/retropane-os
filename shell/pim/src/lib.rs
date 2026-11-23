@@ -15,3 +15,4 @@ pub mod phone;
 pub mod quick;
 pub mod repeat;
 pub mod store;
+pub mod vcard;

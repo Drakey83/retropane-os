@@ -33,10 +33,13 @@ impl<const N: usize> Default for Short<N> {
 }
 
 impl<const N: usize> Short<N> {
-    const fn new() -> Self {
+    /// No text.
+    #[must_use]
+    pub const fn new() -> Self {
         Self { b: [0; N], n: 0 }
     }
-    fn push(&mut self, s: &[u8]) {
+    /// `s` added, as much as fits.
+    pub fn push(&mut self, s: &[u8]) {
         for &c in s {
             if self.n < N {
                 self.b[self.n] = c;
@@ -48,6 +51,20 @@ impl<const N: usize> Short<N> {
     #[must_use]
     pub fn get(&self) -> &[u8] {
         &self.b[..self.n]
+    }
+    /// Whether it holds nothing.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+    /// Emptied.
+    pub const fn clear(&mut self) {
+        self.n = 0;
+    }
+    /// Whether it is full (a longer text was cut).
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        self.n == N
     }
 }
 
