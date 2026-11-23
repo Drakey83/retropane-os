@@ -653,8 +653,52 @@ pub fn mocks() -> Vec<Mock> {
     all
 }
 
+/// A reminder due at 12:15 on the previews' Monday, the banner
+/// (docs/design/notifications.md: the owner's pick, look A), over
+/// Calendar's agenda (Lunch with Sam, 12:30, 15 minutes before) or over
+/// Tasks (a task at 12:15).
+fn banner(s: &mut rp_shell::Shell, task: bool) {
+    use rp_pim::store::{Kind, tag};
+    if task {
+        sample_tasks(s);
+        let at = (rp_pim::date::start_of(TODAY) + 12 * 60 + 15).to_le_bytes();
+        if let Some(p) = s.pim() {
+            let _ = p.put(
+                Kind::Task,
+                None,
+                &[
+                    (tag::TITLE, b"Call the bank about the card"),
+                    (tag::REMIND_AT, &at),
+                ],
+            );
+        }
+        open(s, tasks(rp_app_tasks::View::Home, b""));
+    } else {
+        sample_week(s);
+        open(s, calendar(View::Agenda, b""));
+    }
+    s.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 15,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+}
+
 fn base() -> Vec<Mock> {
     vec![
+        // The reminder banner (docs/design/notifications.md).
+        Mock {
+            name: "notify-banner",
+            what: "The reminder banner: a glass card under the title bar, what and when over four keys (5 MIN, 15 MIN, DISMISS, OPEN), over Calendar",
+            prepare: Box::new(|s| banner(s, false)),
+        },
+        Mock {
+            name: "notify-banner-task",
+            what: "The reminder banner over Tasks: a task due now",
+            prepare: Box::new(|s| banner(s, true)),
+        },
         // Half-Life's two screens for the owner's pick (hl_mockups.rs).
         Mock {
             name: "hl-files-steps",

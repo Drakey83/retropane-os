@@ -701,7 +701,7 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
     c.event(Event::Char(b'7'), &cx);
     c.event(Event::Key(Key::SoftRight), &cx);
     let e = c.edit.unwrap();
-    assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
+    assert_eq!((e.alerts, e.alert_other), (1 << 5, 7));
     draw(&mut c, &cx);
     // A lead that is a quick one lights its own chip.
     c.event(
@@ -714,7 +714,7 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
     c.event(Event::Char(b'1'), &cx);
     c.event(Event::Char(b'5'), &cx);
     c.event(Event::Key(Key::SoftRight), &cx);
-    assert_eq!(c.edit.unwrap().alert, 2);
+    assert_eq!(c.edit.unwrap().alerts, 1 << 2);
     c.event(
         Event::PenUp {
             x: W - MARGIN - 20,
@@ -730,7 +730,9 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
         let g = pim.borrow();
         let s = g.as_ref().unwrap();
         let r = s.all(Kind::Appointment).next().unwrap();
-        assert_eq!(r.num(tag::REMIND), Some(7));
+        // Both alerts kept (several per appointment), latest first.
+        let leads: std::vec::Vec<u32> = rp_pim::remind::leads(&r).collect();
+        assert_eq!(leads, [15, 7]);
         assert_eq!(r.num(tag::START).unwrap() % 60, 7);
     }
     draw(&mut c, &cx);
@@ -743,7 +745,98 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
         &cx,
     );
     let e = c.edit.unwrap();
-    assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
+    assert_eq!((e.alerts, e.alert_other), (1 << 2 | 1 << 5, 7));
+}
+
+#[test]
+fn several_alerts_are_chips_turned_on_and_off_and_kept() {
+    // calendar-rule0.md: "Reminders as a banner over any screen, several
+    // per appointment". The alert row's chips turn on and off (NONE takes
+    // all off); the D-pad walks the chips and the centre presses one; an
+    // imported appointment's leads the chips can't show are kept when
+    // its alerts aren't touched.
+    let pim = store();
+    let leads_of = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        let g = pim.borrow();
+        let r = g.as_ref().unwrap().all(Kind::Appointment).next().unwrap();
+        rp_pim::remind::leads(&r).collect::<std::vec::Vec<u32>>()
+    };
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = (date::start_of(19_723) + 15 * 60).to_le_bytes();
+        let mut b = [0u8; 4 * rp_pim::remind::LEADS_MAX];
+        let n = rp_pim::remind::pack(&[7, 2880], &mut b);
+        s.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Dentist"),
+                (tag::START, &at),
+                (tag::REMIND, &b[..n]),
+            ],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    c.show(View::Agenda);
+    draw(&mut c, &cx);
+    let open = |c: &mut Calendar| {
+        let (r, _, _) = c.rows_at[0];
+        c.event(
+            Event::PenUp {
+                x: r.x + 100,
+                y: r.y + 20,
+            },
+            &cx,
+        );
+        draw(c, &cx);
+    };
+    // Untouched: both own leads kept (the chips show one).
+    open(&mut c);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert_eq!(leads_of(pim), [2880, 7]);
+    draw(&mut c, &cx);
+    open(&mut c);
+    let row = Rect::new(MARGIN, E_ALERT + 14, WIDE, 30);
+    let tap = |c: &mut Calendar, k: usize| {
+        let r = kit::chip(row, 6, k);
+        c.event(
+            Event::PenUp {
+                x: r.x + r.w / 2,
+                y: r.y + 10,
+            },
+            &cx,
+        );
+        draw(c, &cx);
+    };
+    // NONE, then AT START, 1 HOUR and 1 DAY on, 1 HOUR off again.
+    tap(&mut c, 0);
+    assert_eq!(c.edit.unwrap().alerts, 0);
+    for k in [1, 3, 4, 3] {
+        tap(&mut c, k);
+    }
+    assert_eq!(c.edit.unwrap().alerts, 1 << 1 | 1 << 4);
+    // The D-pad: down to the alert row, right to 15 MIN, the centre.
+    for _ in 0..7 {
+        c.event(Event::Key(Key::Down), &cx);
+        if c.edit.unwrap().row == Some(6) {
+            break;
+        }
+    }
+    assert_eq!(c.edit.unwrap().row, Some(6));
+    c.event(Event::Key(Key::Left), &cx);
+    c.event(Event::Key(Key::Left), &cx);
+    c.event(Event::Key(Key::Left), &cx);
+    c.event(Event::Key(Key::Left), &cx);
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Right), &cx);
+    assert_eq!(c.edit.unwrap().alert_at, 2);
+    c.event(Event::Key(Key::Enter), &cx);
+    assert_eq!(c.edit.unwrap().alerts, 1 << 1 | 1 << 2 | 1 << 4);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    assert_eq!(leads_of(pim), [1440, 15, 0]);
 }
 
 const FILE: &[u8] = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nDTSTART;TZID=America/New_York:20240101T150000\r\nDTEND;TZID=America/New_York:20240101T160000\r\nSUMMARY:Call New York\r\nDESCRIPTION:Bring the numbers\r\nBEGIN:VALARM\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20240102\r\nSUMMARY:Holiday\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";

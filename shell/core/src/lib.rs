@@ -2935,6 +2935,7 @@ impl Shell {
             }
         };
         self.program_keyboard();
+        self.reminders_follow();
         match reply {
             rp_app::Reply::Nothing => Action::Nothing,
             rp_app::Reply::Redraw => {
@@ -3143,6 +3144,14 @@ impl Shell {
             };
             return Action::OpenProgram(n);
         }
+        // The reminder banner over any screen, before what lies under it
+        // (an app program's area took its touches: its keys were dead over
+        // an open app). The Start menu lies over the banner.
+        if !self.menu_open
+            && let Some(a) = self.banner_input(e)
+        {
+            return a;
+        }
         let before = self.damaged;
         if let Some(a) = self.chart_input(e) {
             return match a {
@@ -3152,12 +3161,6 @@ impl Shell {
         }
         // An app program's area, its keyboard and its keys.
         if let Some(a) = self.program_input(e) {
-            return a;
-        }
-        // The reminder banner's buttons, over any screen.
-        if let Input::PenUp { x, y } = e
-            && let Some(a) = self.banner_tap(x, y)
-        {
             return a;
         }
         let act = match e {

@@ -243,10 +243,10 @@ mod image {
         }
     }
 
-    /// The reminder's chime: its notes (Hz, ms), its level (0-100) and
-    /// the bytes of its DMA ring.
-    const CHIME: [(u32, u32); 2] = [(880, 150), (1175, 230)];
+    /// The reminder's chime ([`rp_audio::chime::REMINDER`]): its level
+    /// (0-100), each note's amplitude and the bytes of its DMA ring.
     const CHIME_LEVEL: u32 = 70;
+    const CHIME_AMPLITUDE: u16 = 12_000;
     const CHIME_RING: usize = 8192;
 
     /// The wallpaper, packed by the build (sheet today-image-room.md: 460
@@ -2869,31 +2869,31 @@ mod image {
                     look_seen[0], look_seen[1]
                 );
             }
-            // A reminder has come up: its chime, once (two rising notes,
-            // under half a second; the loop waits for it, the watchdog
-            // fed). Windows Mobile plays a wave file through its mixer;
-            // ours makes the two notes as they go out, no file and no
-            // mixer.
+            // A reminder has come up: its chime, once (two rising notes
+            // that ring like a small bell, 0.68 s; the loop waits for it,
+            // the watchdog fed). Windows Mobile plays a wave file through
+            // its mixer; ours makes the notes as they go out, in the
+            // speaker's loudest band, no file and no mixer
+            // (rp_audio::chime).
             if shell.take_chime()
                 && let Some((a, dma)) = audio.as_mut()
             {
                 let rate = rp_audio::LINK_RATE.hz();
                 let t0 = rt::ticks();
-                let mut played = true;
-                for (hz, ms) in CHIME {
-                    let mut tone = rp_drv_pxa_i2s::Tone::new(hz, rate, 12_000);
-                    played &= a
-                        .play(
-                            dma,
-                            ring,
-                            &mut tone,
-                            rate * ms / 1000,
-                            &mut rt::ticks,
-                            3_250_000 / 5,
-                            &mut rt::check_in,
-                        )
-                        .is_ok();
-                }
+                let mut chime =
+                    rp_audio::chime::Chime::new(&rp_audio::chime::REMINDER, rate, CHIME_AMPLITUDE);
+                let frames = chime.frames();
+                let played = a
+                    .play(
+                        dma,
+                        ring,
+                        &mut chime,
+                        frames,
+                        &mut rt::ticks,
+                        3_250_000 / 5,
+                        &mut rt::check_in,
+                    )
+                    .is_ok();
                 let _ = writeln!(
                     RunLog,
                     "sound: a reminder's chime {} at {now_ms} ms, {} us in all",

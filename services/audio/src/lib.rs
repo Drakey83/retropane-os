@@ -40,6 +40,7 @@
 #![forbid(unsafe_code)]
 
 pub mod chain;
+pub mod chime;
 pub mod mixer;
 pub mod resample;
 pub mod role;

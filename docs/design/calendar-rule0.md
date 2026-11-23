@@ -42,7 +42,7 @@ not.
 | Week | WM's week view; Google's 7-column week | Portrait 7-column week with tinted blocks and the times on the left; tap a block opens it, tap a day's header zooms into it |
 | Adding | Fantastical's highlighted parse; Palm's tap-an-hour | One line ("Dentist tue 3pm 1h every 6 months") with **the understood words highlighted in the tint** as you type and a preview card; tapping an empty time in Day or Week starts the line at that time. Parsed on the device, offline |
 | Details | iOS's grouped form | Grouped cards: what/where (Where uses **address suggestions**), when (steppers, all-day switch, time zone), repeat, alerts (several), calendar (colour chips), notes; field-aware keyboard (capitals at each word in a title) |
-| Reminders | WM's modal box | A banner over whatever is up (the notification centre), **with a sound** through the audio service's notification volume and **Snooze 5 / 15 min**; never steals the keys |
+| Reminders | WM's modal box | A banner over whatever is up (the notification centre, [notifications.md](notifications.md)), **with a sound** through the audio service's notification volume and **Snooze 5 / 15 min**; never steals the keys |
 | Same calendar everywhere | ActiveSync's Outlook sync; vdirsyncer | §7's order: **an iCal link** (read; Google, Outlook, iCloud and Nextcloud all give one), **CalDAV** (read and write; iCloud, Fastmail, Nextcloud, Google), **Google sign-in** by a code shown on the device (OAuth device flow, read and write). Synced on a timer and on opening, over **any connection** (Wi-Fi, or the dock's PC relay now); the local copy always opens instantly; offline changes queue with a "not yet synced" mark |
 | The PDA's own touches | WM's Calendar button; paper diaries | The **Calendar button** cycles Agenda, Day, Week, Month as on WM; days turn like pages with the pen (ui.md) |
 
@@ -86,8 +86,8 @@ not.
 | Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Repeating appointments (daily, weekly on days, monthly by date or weekday, yearly; every N; until or N times; one occurrence changed or skipped) | apps-and-packs: repeating appointments | built | shell/pim/src/repeat.rs, apps/calendar/src/lib.rs |
-| Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | pending | |
-| Reminder sound and snooze | apps-and-packs: reminder sound and snooze | pending | |
+| Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | built | shell/pim/src/remind.rs, shell/core/src/apps/mod.rs, shell/core/src/lib.rs, apps/calendar/src/lib.rs, apps/calendar/src/tests.rs, shell/core/src/tests.rs |
+| Reminder sound and snooze | apps-and-packs: reminder sound and snooze | built | services/audio/src/chime.rs, shell/today/src/main.rs, shell/core/src/apps/mod.rs |
 | Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against (the iCal link, read only, is built) | |
 | Birthdays from Contacts as a calendar | apps-and-packs: birthdays from Contacts | pending | |
 | Tasks on their due days in the agenda | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
