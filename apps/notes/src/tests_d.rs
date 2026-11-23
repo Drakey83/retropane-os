@@ -671,26 +671,35 @@ fn the_app_exports_through_the_shell_a_piece_at_a_time() {
     n.show(View::Note(0));
     draw(&mut n, &cx);
     n.export(&cx, id, export::Format::Svg);
-    let Some(rp_app::FileAsk::Write { dir, name, len }) = n.file_ask() else {
-        panic!("a write asked");
-    };
-    assert_eq!((dir, name.get()), (&b"Notes"[..], &b"Trip-1.svg"[..]));
+    // Group A's card service: `CARDPUT "<length> <name>"`, the body
+    // taken a piece at a time (rp_today::cardfiles::put_from).
+    let ask = n.card_ask().expect("a write asked");
+    assert_eq!(ask.what, b"CARDPUT");
+    let arg_b = ask.arg;
+    let arg = std::str::from_utf8(arg_b.get()).unwrap();
+    let (len, name) = arg.split_once(' ').unwrap();
+    assert_eq!(name, "Trip-1.svg");
+    let len: usize = len.parse().unwrap();
     let mut file = Vec::new();
-    while file.len() < len as usize {
+    while file.len() < len {
         let mut buf = [0u8; 512];
-        let k = n.file_piece(file.len() as u32, &mut buf, &cx);
+        let k = n.net_body(file.len(), &mut buf, &cx);
         assert!(k > 0);
         file.extend_from_slice(&buf[..k]);
     }
     assert_eq!(file, exported(pim, id, export::Format::Svg, 0));
-    n.file_answer(rp_app::FileAnswer::Wrote, &cx);
-    assert!(n.file_ask().is_none(), "one ink block: one file");
-    assert_eq!(n.said, b"SAVED IN RETROPANE\\NOTES");
-    // A card that refuses: said, not dropped.
+    n.net_answer(true, &[], &cx);
+    assert!(n.card_ask().is_none(), "one ink block: one file");
+    assert_eq!(n.said, b"SAVED IN RETROPANE ON THE CARD");
+    // A card that refuses: its reason said, not dropped.
     n.export(&cx, id, export::Format::Markdown);
-    assert!(n.file_ask().is_some());
-    n.file_answer(rp_app::FileAnswer::Failed("NOT SAVED: NO CARD"), &cx);
+    assert_eq!(n.card_ask().map(|a| a.what), Some(&b"CARDPUT"[..]));
+    n.net_answer(false, b"no card", &cx);
     assert_eq!(n.said, b"NOT SAVED: NO CARD");
+    n.export(&cx, id, export::Format::Text);
+    assert!(n.card_ask().is_some());
+    n.net_answer(false, b"the card is full", &cx);
+    assert_eq!(n.said, b"NOT SAVED: THE CARD IS FULL");
 }
 
 // ---- Import: outside input --------------------------------------------
@@ -801,70 +810,93 @@ fn the_app_imports_into_the_note_and_takes_a_damaged_file_back_out() {
         },
         &cx,
     );
-    assert!(matches!(
-        n.file_ask(),
-        Some(rp_app::FileAsk::List { dir: b"Notes" })
-    ));
-    n.file_answer(
-        rp_app::FileAnswer::Listed(b"photo.jpg\nplan.TXT\nreadme.md"),
-        &cx,
-    );
+    let ask = n.card_ask().expect("a list asked");
+    assert_eq!((ask.what, ask.arg.get()), (&b"CARDFILES"[..], &b"txt"[..]));
+    // The card's text files by number (a name never asked for by path);
+    // a damaged line skipped.
+    n.net_answer(true, b"0|plan.TXT\nbad line\n3|readme.md\n", &cx);
     assert_eq!(n.n_files, 2);
-    n.event(Event::PenUp { x: 100, y: 170 }, &cx);
-    let Some(rp_app::FileAsk::Read { name, .. }) = n.file_ask() else {
-        panic!("a read asked");
-    };
-    assert_eq!(name.get(), b"plan.TXT");
+    n.event(Event::PenUp { x: 100, y: 210 }, &cx);
+    let ask = n.card_ask().expect("a read asked");
+    assert_eq!(
+        (ask.what, ask.arg.get()),
+        (&b"CARDFILE"[..], &b"3 txt 0"[..])
+    );
+    // Each answer: the file's size, then its bytes from the offset asked.
     let file = b"Pack\n- [ ] Charger\nShoes";
-    n.file_answer(
-        rp_app::FileAnswer::Piece {
-            off: 0,
-            total: 24,
-            bytes: &file[..10],
-        },
-        &cx,
-    );
-    n.file_answer(
-        rp_app::FileAnswer::Piece {
-            off: 10,
-            total: 24,
-            bytes: &file[10..],
-        },
-        &cx,
-    );
+    let piece = |at: usize, k: usize| {
+        let mut b = 24u32.to_le_bytes().to_vec();
+        b.extend_from_slice(&file[at..at + k]);
+        b
+    };
+    n.net_answer(true, &piece(0, 10), &cx);
+    let ask = n.card_ask().expect("the next piece asked");
+    assert_eq!(ask.arg.get(), b"3 txt 10");
+    n.net_answer(true, &piece(10, 14), &cx);
+    assert!(n.card_ask().is_none());
     assert_eq!(
         lines(pim, id),
         [&b"Kept"[..], b"Pack", b"[ ] Charger", b"Shoes"]
     );
     assert_eq!(n.said, b"IMPORTED");
     // A damaged one: what it put in goes back out; the note is as it was.
-    n.job = Job::Read { id, put: 0 };
+    n.job = Job::Read {
+        id,
+        put: 0,
+        file: 0,
+        at: 0,
+    };
     let bad = b"one\ntwo\nthr\xffee";
-    n.file_answer(
-        rp_app::FileAnswer::Piece {
-            off: 0,
-            total: bad.len() as u32,
-            bytes: bad,
-        },
-        &cx,
-    );
+    let mut body = (bad.len() as u32).to_le_bytes().to_vec();
+    body.extend_from_slice(bad);
+    n.net_answer(true, &body, &cx);
     assert_eq!(
         lines(pim, id),
         [&b"Kept"[..], b"Pack", b"[ ] Charger", b"Shoes"]
     );
     assert_eq!(n.said, b"NOT IMPORTED: NOT UTF-8 TEXT");
     // Too big: refused before a byte is read.
-    n.job = Job::Read { id, put: 0 };
-    n.file_answer(
-        rp_app::FileAnswer::Piece {
-            off: 0,
-            total: 300_000,
-            bytes: b"a",
-        },
-        &cx,
-    );
+    n.job = Job::Read {
+        id,
+        put: 0,
+        file: 0,
+        at: 0,
+    };
+    let mut body = 300_000u32.to_le_bytes().to_vec();
+    body.push(b'a');
+    n.net_answer(true, &body, &cx);
     assert_eq!(n.said, b"NOT IMPORTED: OVER 256 KB");
     assert_eq!(lines(pim, id).len(), 4);
+    // A file cut short under the read, and a card that fails mid-file:
+    // what came in taken back out.
+    for fail in [None, Some(&b"not readable"[..])] {
+        n.job = Job::Read {
+            id,
+            put: 0,
+            file: 0,
+            at: 0,
+        };
+        let mut body = 20u32.to_le_bytes().to_vec();
+        body.extend_from_slice(b"one\ntwo\n");
+        n.net_answer(true, &body, &cx);
+        assert_eq!(lines(pim, id).len(), 6, "two lines in so far");
+        assert!(n.card_ask().is_some());
+        match fail {
+            None => n.net_answer(true, &20u32.to_le_bytes(), &cx),
+            Some(why) => n.net_answer(false, why, &cx),
+        };
+        assert_eq!(n.said, b"NOT IMPORTED: UNREADABLE");
+        assert_eq!(lines(pim, id).len(), 4);
+    }
+    // Short or empty answers never panic.
+    n.job = Job::Read {
+        id,
+        put: 0,
+        file: 0,
+        at: 0,
+    };
+    n.net_answer(true, b"ab", &cx);
+    assert_eq!(n.said, b"NOT IMPORTED: UNREADABLE");
 }
 
 // ---- Words -------------------------------------------------------------
@@ -943,4 +975,50 @@ fn typing_in_the_app_offers_words_and_capitals() {
         n.event(Event::Char(c), &cx);
     }
     assert_eq!(n.caps(), Some(true));
+}
+
+#[test]
+fn every_tray_message_fits_between_color_and_the_tray_edge() {
+    use import::Damage;
+    let pim = store();
+    let label = ctx(pim).fonts.label;
+    let room = 456 - (24 + label.width(b"COLOR") + 12);
+    let mut all: Vec<&[u8]> = [
+        &b"NO INK TO EXPORT"[..],
+        b"SAVING...",
+        b"IMPORTING...",
+        b"IMPORTED",
+        b"SAVED IN RETROPANE ON THE CARD",
+        b"NOT IMPORTED: NO CARD",
+        b"NOT IMPORTED: UNREADABLE",
+        b"THIS NOTE'S TEXT IS FULL",
+        b"THIS NOTE'S INK IS FULL",
+    ]
+    .to_vec();
+    for why in [
+        &b"no card"[..],
+        b"the card is full",
+        b"too big to write",
+        b"the app's file was short",
+        b"anything else",
+    ] {
+        all.push(super::not_saved(why));
+    }
+    for d in [
+        Damage::TooBig(0),
+        Damage::Control(0),
+        Damage::NotUtf8(0),
+        Damage::Truncated(0),
+        Damage::NoRoom,
+    ] {
+        all.push(d.says());
+    }
+    for m in all {
+        assert!(
+            label.width(m) <= room,
+            "{}: {} px of {room}",
+            std::string::String::from_utf8_lossy(m),
+            label.width(m)
+        );
+    }
 }

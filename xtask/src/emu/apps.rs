@@ -253,14 +253,14 @@ fn notes_exported(sd: &Path) -> Result<(), String> {
         .map_err(|e| format!("notes export: {name} on the card: {}", e.name()))?;
         Ok(out)
     };
-    let md = read("RetroPane/Notes/Note.md")?;
+    let md = read("RetroPane/Note.md")?;
     if md != b"![Ink 1](Note-1.svg)\n" {
         return Err(format!(
             "notes export: Note.md is {:?}",
             String::from_utf8_lossy(&md)
         ));
     }
-    let svg = String::from_utf8(read("RetroPane/Notes/Note-1.svg")?).map_err(|e| e.to_string())?;
+    let svg = String::from_utf8(read("RetroPane/Note-1.svg")?).map_err(|e| e.to_string())?;
     if !(svg.starts_with("<?xml") && svg.contains("<path") && svg.trim_end().ends_with("</svg>")) {
         return Err(format!("notes export: Note-1.svg is {svg}"));
     }
@@ -320,7 +320,7 @@ pub fn apps(root: &Path) -> Result<(), String> {
     at.push(("notes-ink".into(), steps.len()));
     // Group D (notes-rule0.md, Export): the note written as Markdown,
     // then its ink as SVG, through the image's own file step on the card
-    // (rp_today::appfiles); the files are read off the card after the run.
+    // (rp_today::cardfiles, CARDPUT); the files are read off the card after the run.
     let menu = rp_draw::Rect::new(rp_today::W as u16 - 160, rp_today::H as u16 - 40, 160, 40);
     for format in [1, 2] {
         steps.extend(tap(menu));

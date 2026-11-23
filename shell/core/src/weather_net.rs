@@ -98,6 +98,9 @@ pub struct Question {
     /// A tile's place: the rain frame (`None`: the map), the tile's index
     /// in the view's 3 x 3 grid, and the view.
     pub tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
+    /// The bytes of the open program's body that follow the line (a
+    /// `PUT`), sent a piece at a time from [`Shell::program_body`].
+    pub stream: usize,
 }
 
 impl Question {
@@ -174,6 +177,18 @@ impl Shell {
                 n: 0,
                 body: None,
                 tile: None,
+                // `PUT <length> <name>`: the program's body follows the
+                // line ([`Shell::program_body`]).
+                stream: if ask.what == b"PUT" {
+                    ask.arg
+                        .get()
+                        .split(|&c| c == b' ')
+                        .next()
+                        .and_then(|w| core::str::from_utf8(w).ok()?.parse().ok())
+                        .unwrap_or(0)
+                } else {
+                    0
+                },
             };
             q.push(b"RPNET ");
             // Its name and argument as the relay checks them: letters,
@@ -214,6 +229,7 @@ impl Shell {
             n: 0,
             body: None,
             tile: None,
+            stream: 0,
         };
         q.push(b"RPNET ");
         match a {
@@ -1003,6 +1019,7 @@ mod tests {
             n: 0,
             body: None,
             tile: None,
+            stream: 0,
         };
         let mut q = q0(Ask::Tempest);
         q.push(b"RPNET TEMPEST abcd-1234\n");

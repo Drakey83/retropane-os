@@ -61,10 +61,10 @@ Catch a thought in a second, by stylus or keyboard, and find it again.
 | A note as blocks: text, ink and checklists in any order | sheet | built | apps/notes/src/doc.rs, apps/notes/src/lib.rs, apps/notes/src/tests_d.rs, xtask/src/app_mockups.rs |
 | Checklists with the round tick | apps-and-packs: checklists | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
 | Search over typed text and titles with the match highlighted | apps-and-packs: search typed notes | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
-| Export as text or Markdown, ink as SVG or PNG; import text files | apps-and-packs: export | built | apps/notes/src/export.rs, apps/notes/src/import.rs, apps/api/src/lib.rs, shell/core/src/app_files.rs, shell/today/src/appfiles.rs, xtask/src/emu/apps.rs |
+| Export as text or Markdown, ink as SVG or PNG; import text files | apps-and-packs: export | built | apps/notes/src/export.rs, apps/notes/src/import.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/emu/apps.rs |
 | Notes of any length | sheet | built | apps/notes/src/doc.rs, shell/pim/src/store.rs, apps/notes/src/tests_d.rs |
 | Undo and redo for typing and strokes | sheet | built | apps/notes/src/lib.rs, apps/notes/src/tests.rs |
-| Sentence capitals and word suggestions in text blocks | sheet | built | apps/notes/src/words.rs, apps/notes/words/en-US.txt, apps/notes/build.rs, shell/core/src/app_files.rs |
+| Sentence capitals and word suggestions in text blocks | sheet | built | apps/notes/src/words.rs, apps/notes/words/en-US.txt, apps/notes/build.rs, shell/core/src/caps.rs |
 | The Today screen's Note button opens a new ink note | sheet | built | shell/core/src/lib.rs, apps/notes/src/lib.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
@@ -128,13 +128,20 @@ measured.
   brush's own Catmull-Rom as exact Beziers, a path per run of one width)
   and PNG (indexed colour, deflate with matches one byte and one row back:
   **5.6 KB for a 448 x 224 block, 100 KB raw**, decoded back to the brush's
-  coverage in a host test). Files go to `RetroPane\Notes` on the card
-  through the new app file service (`rp_app::FileAsk`; the image checks
-  every name again and stages each write whole), where the PC sees them
-  over MTP; `emu-apps` exports a note on the image and reads both files off
-  the emulator's card. Import reads `.txt` and `.md` from the same folder
-  into the open note, refusing damaged files by offset (security.md,
-  2026-11-23). Group A built a second file service at the same time: R374.
+  coverage in a host test). Files go to the card's `RetroPane` folder
+  through group A's card file service (`Program::card_ask`: `CARDPUT`,
+  `CARDFILES`, `CARDFILE`; `rp_today::cardfiles`), one service for every
+  app (R374), where the PC sees them over MTP. Notes brought it two things:
+  a write streams from the app a piece at a time into a staged run linked
+  whole at the end (`put_from`: no file need fit the image's 256 KB pool,
+  and a pulled card or a note changed mid-write leaves the old file), and
+  text files (`.txt`, `.md`) read a piece at a time, like pictures. The
+  image checks every name again (`.vcf .ics .txt .md .svg .png` only, no
+  path, no `..`) and passes a refusal's reason back for the tray.
+  `emu-apps` exports a note on the image and reads both files off the
+  emulator's card. Import lists the card's text files by number (root and
+  `RetroPane`) and reads one into the open note, refusing damaged files by
+  offset (security.md, 2026-11-23).
 - **Sentence capitals and word suggestions.** WM's completion list never
   learned; Android's LatinIME carries 1-2 MB a language. Ours: a ranked US
   English list front-coded at build time (**1,029 words in 6.3 KB**, read

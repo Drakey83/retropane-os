@@ -886,11 +886,14 @@ pub struct Notes {
     /// The menu's second rows: 1 the export formats, 2 the files to
     /// import.
     menu_row: u8,
-    /// A file step waiting for the shell, and the one under way.
-    asking: Option<rp_app::FileAsk>,
+    /// A card question waiting for the shell (rp_today::cardfiles:
+    /// `CARDFILES`, `CARDFILE`, `CARDPUT`), and the step under way.
+    asking: Option<rp_app::NetAsk>,
     job: Job,
-    /// The files offered for import.
+    /// The files offered for import, and each one's number in the card's
+    /// list (a file is asked for by number, never by path).
     files: [Text<64>; 8],
+    file_no: [u8; 8],
     n_files: usize,
     /// What the tray says after a file step.
     said: &'static [u8],
@@ -940,10 +943,13 @@ enum Job {
     },
     /// The folder listed for import.
     List,
-    /// A file read into note `id`: its lines put in so far.
+    /// File `file` of the card's text files read into note `id`: its
+    /// lines put in so far, and the bytes read.
     Read {
         id: u32,
         put: u32,
+        file: u8,
+        at: u32,
     },
 }
 
@@ -1350,6 +1356,7 @@ impl Notes {
             asking: None,
             job: Job::None,
             files: [Text::EMPTY; 8],
+            file_no: [0; 8],
             n_files: 0,
             said: b"",
             reader: import::Reader::new(),
@@ -2320,7 +2327,7 @@ impl Notes {
                 list.y + 26,
                 cx.fonts.label,
                 DIM,
-                b"IMPORT A TEXT FILE FROM RETROPANE\\NOTES",
+                b"IMPORT A TEXT FILE FROM THE CARD",
             );
             if self.n_files == 0 {
                 kit::text(
@@ -2332,7 +2339,7 @@ impl Notes {
                     if matches!(self.job, Job::List) {
                         b"Looking..."
                     } else {
-                        b"No .txt or .md files there"
+                        b"No .txt or .md files on the card"
                     },
                 );
             }
@@ -3087,18 +3094,14 @@ impl Notes {
             block,
             left: left & !(1u128 << block),
         };
-        self.asking = Some(rp_app::FileAsk::Write {
-            dir: b"Notes",
-            name: Text::of(&name[..n]),
-            len: count.0 as u32,
-        });
+        self.asking = Some(card_q(b"CARDPUT", count.0 as u32, &[&name[..n]]));
         self.said = b"SAVING...";
     }
 
     /// An import's piece: its lines put at the note's end as they come; a
     /// damaged file taken back out whole and named.
     fn import_piece(&mut self, cx: &Ctx, off: u32, total: u32, bytes: &[u8]) -> Reply {
-        let Job::Read { id, put } = self.job else {
+        let Job::Read { id, put, file, .. } = self.job else {
             return Reply::Nothing;
         };
         let mut put = put;
@@ -3138,7 +3141,16 @@ impl Notes {
                 self.follow = true;
                 self.cursor = None;
             }
-            Ok(()) => self.job = Job::Read { id, put },
+            Ok(()) => {
+                // The next piece, from where this one ended.
+                let at = off + bytes.len() as u32;
+                self.job = Job::Read { id, put, file, at };
+                self.asking = Some(card_q(
+                    b"CARDFILE",
+                    u32::from(file),
+                    &[b"txt", &Digits::of(at)],
+                ));
+            }
         }
         Reply::Redraw
     }
@@ -3358,11 +3370,11 @@ impl Program for Notes {
         (self.typing && matches!(self.view, View::Note(_))).then_some(self.caps_next)
     }
 
-    fn file_ask(&mut self) -> Option<rp_app::FileAsk> {
+    fn card_ask(&mut self) -> Option<rp_app::NetAsk> {
         self.asking.take()
     }
 
-    fn file_piece(&mut self, off: u32, out: &mut [u8], cx: &Ctx) -> usize {
+    fn net_body(&mut self, at: usize, out: &mut [u8], cx: &Ctx) -> usize {
         let Job::Write { id, fmt, block, .. } = self.job else {
             return 0;
         };
@@ -3370,7 +3382,7 @@ impl Program for Notes {
             return 0;
         };
         let Some(store) = g.as_ref() else { return 0 };
-        let mut w = export::Window::new(off as usize, out);
+        let mut w = export::Window::new(at, out);
         let mut title = [0u8; 64];
         let tn = store.get(id).map_or(0, |r| {
             let t = r.text(tag::TITLE);
@@ -3386,41 +3398,131 @@ impl Program for Notes {
         w.got
     }
 
-    fn file_answer(&mut self, a: rp_app::FileAnswer<'_>, cx: &Ctx) -> Reply {
-        match (a, self.job) {
-            (rp_app::FileAnswer::Failed(why), _) => {
+    fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        match (ok, self.job) {
+            (false, Job::Write { .. }) => {
                 self.job = Job::None;
-                self.said = why.as_bytes();
+                self.said = not_saved(body);
                 Reply::Redraw
             }
-            (rp_app::FileAnswer::Wrote, Job::Write { id, fmt, left, .. }) => {
-                if left != 0 {
-                    self.next_file(cx, id, fmt, left);
-                } else {
-                    self.job = Job::None;
-                    self.said = b"SAVED IN RETROPANE\\NOTES";
+            (false, Job::Read { id, put, at, .. }) => {
+                // What was put in so far taken back out.
+                for _ in 0..put {
+                    let _ = text_op(cx, id, &doc::Edit::DropLast);
                 }
+                self.job = Job::None;
+                self.said = if at == 0 && body == b"no card" {
+                    b"NOT IMPORTED: NO CARD"
+                } else {
+                    b"NOT IMPORTED: UNREADABLE"
+                };
                 Reply::Redraw
             }
-            (rp_app::FileAnswer::Listed(names), Job::List) => {
+            (_, Job::List) => {
                 self.n_files = 0;
-                for n in names.split(|&c| c == b'\n') {
-                    let low = |e: &[u8]| {
-                        n.len() > e.len() && n[n.len() - e.len()..].eq_ignore_ascii_case(e)
+                // "n|name" lines (none if the card isn't there).
+                for l in body.split(|&c| c == b'\n').filter(|_| ok) {
+                    let Some(bar) = l.iter().position(|&c| c == b'|') else {
+                        continue;
                     };
-                    if (low(b".txt") || low(b".md")) && self.n_files < self.files.len() {
-                        self.files[self.n_files] = Text::of(n);
+                    let no = core::str::from_utf8(&l[..bar])
+                        .ok()
+                        .and_then(|t| t.parse::<u8>().ok());
+                    if let Some(no) = no
+                        && self.n_files < self.files.len()
+                    {
+                        self.files[self.n_files] = Text::of(&l[bar + 1..]);
+                        self.file_no[self.n_files] = no;
                         self.n_files += 1;
                     }
                 }
                 self.job = Job::None;
                 Reply::Redraw
             }
-            (rp_app::FileAnswer::Piece { off, total, bytes }, Job::Read { .. }) => {
-                self.import_piece(cx, off, total, bytes)
+            (true, Job::Write { id, fmt, left, .. }) => {
+                if left != 0 {
+                    self.next_file(cx, id, fmt, left);
+                } else {
+                    self.job = Job::None;
+                    self.said = b"SAVED IN RETROPANE ON THE CARD";
+                }
+                Reply::Redraw
+            }
+            (true, Job::Read { at, .. }) => {
+                // The file's size, then its bytes from `at`.
+                let Some((size, bytes)) = body.split_first_chunk::<4>() else {
+                    return self.net_answer(false, b"", cx);
+                };
+                let total = u32::from_le_bytes(*size);
+                if bytes.is_empty() && at < total {
+                    // The file shrank under the read: said, not waited on.
+                    return self.net_answer(false, b"", cx);
+                }
+                self.import_piece(cx, at, total, bytes)
             }
             _ => Reply::Nothing,
         }
+    }
+}
+
+/// A card question: `what`, then `n` and the words after it.
+fn card_q(what: &'static [u8], n: u32, rest: &[&[u8]]) -> rp_app::NetAsk {
+    let mut b = [0u8; 64];
+    let d = Digits::of(n);
+    let mut k = d.len();
+    b[..k].copy_from_slice(&d);
+    for w in rest {
+        let w = &w[..w.len().min(b.len().saturating_sub(k + 1))];
+        if k < b.len() {
+            b[k] = b' ';
+            b[k + 1..k + 1 + w.len()].copy_from_slice(w);
+            k += 1 + w.len();
+        }
+    }
+    rp_app::NetAsk {
+        what,
+        arg: Text::of(&b[..k]),
+    }
+}
+
+/// What the tray says when the card refused a save (its reason, from
+/// `rp_today::cardfiles`).
+fn not_saved(why: &[u8]) -> &'static [u8] {
+    match why {
+        b"no card" | b"the card not readable" => b"NOT SAVED: NO CARD",
+        b"the card is full" => b"NOT SAVED: THE CARD IS FULL",
+        b"too big to write" => b"NOT SAVED: TOO LARGE",
+        b"the app's file was short" => b"NOT SAVED: THE NOTE CHANGED",
+        _ => b"NOT SAVED: THE CARD REFUSED IT",
+    }
+}
+
+/// A number's decimal digits, without a heap.
+struct Digits {
+    b: [u8; 10],
+    n: usize,
+}
+
+impl Digits {
+    fn of(mut v: u32) -> Self {
+        let mut b = [0u8; 10];
+        let mut n = 0;
+        loop {
+            b[9 - n] = b'0' + (v % 10) as u8;
+            n += 1;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        Self { b, n }
+    }
+}
+
+impl core::ops::Deref for Digits {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.b[10 - self.n..]
     }
 }
 
@@ -3460,11 +3562,14 @@ impl Notes {
             {
                 let k = usize::from((y - 160) / 40);
                 if let (Some(id), true) = (id, k < self.n_files) {
-                    self.job = Job::Read { id, put: 0 };
-                    self.asking = Some(rp_app::FileAsk::Read {
-                        dir: b"Notes",
-                        name: self.files[k],
-                    });
+                    let file = self.file_no[k];
+                    self.job = Job::Read {
+                        id,
+                        put: 0,
+                        file,
+                        at: 0,
+                    };
+                    self.asking = Some(card_q(b"CARDFILE", u32::from(file), &[b"txt", b"0"]));
                     self.said = b"IMPORTING...";
                     self.menu = false;
                     self.menu_row = 0;
@@ -3509,7 +3614,10 @@ impl Notes {
                         self.menu_row = 2;
                         self.n_files = 0;
                         self.job = Job::List;
-                        self.asking = Some(rp_app::FileAsk::List { dir: b"Notes" });
+                        self.asking = Some(rp_app::NetAsk {
+                            what: b"CARDFILES",
+                            arg: Text::of(b"txt"),
+                        });
                     }
                     _ if self.confirm_delete => {
                         self.delete_note(cx, row.id);
