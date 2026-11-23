@@ -20,11 +20,16 @@ use rp_hal_api::RegisterBus;
 use rp_hal_pxa27x::{Mmio, rt};
 use rp_port::gfx::bus_timed_out;
 
-/// Words read: `0x000`-`0x7FC`, then the TA block `0x804`-`0x85C`.
+/// Words read: `0x000`-`0x7FC`, then the TA block `0x804`-`0x85C`
+/// (`-rpprobe`); or the block past it, `0x860`-`0xFFC` (`-rpprobe2`, run
+/// 357a having found no progress counter below: unknown on the chip, so
+/// the time-out's guard matters most here).
 const LOW_WORDS: usize = 512;
 const TA_AT: usize = 0x804;
 const TA_WORDS: usize = 23;
-pub const WORDS: usize = LOW_WORDS + TA_WORDS;
+const HIGH_AT: usize = 0x860;
+const HIGH_WORDS: usize = (0x1000 - HIGH_AT) / 4;
+pub const WORDS: usize = LOW_WORDS + TA_WORDS; // the larger of the two (high: 488)
 /// A snapshot: render number, microseconds since its start, 1 when the
 /// render was seen done, reads that timed out so far; then the words.
 const HEAD_WORDS: usize = 4;
@@ -34,6 +39,7 @@ pub const RENDERS: usize = 24;
 const PER_RENDER: usize = 7;
 const SNAPS: usize = RENDERS * PER_RENDER;
 const MAGIC: &[u8; 8] = b"RPPROBE1";
+const MAGIC_HIGH: &[u8; 8] = b"RPPROBE2";
 const HEAD: usize = 16;
 pub const ROOM: usize = HEAD + SNAPS * SNAP_WORDS * 4;
 pub const FILE: &str = "gfx-probe.bin";
@@ -48,18 +54,26 @@ const LIMIT_US: u32 = 80_000;
 pub struct RegProbe {
     mem: &'static mut [u8],
     pub on: bool,
+    /// `-rpprobe2`: `0x860`-`0xFFC`.
+    pub high: bool,
     renders: usize,
     snaps: usize,
     slow: u32,
     skip: [u32; WORDS.div_ceil(32)],
 }
 
-fn offset(i: usize) -> usize {
-    if i < LOW_WORDS {
+fn offset(high: bool, i: usize) -> Option<usize> {
+    if high {
+        return (i < HIGH_WORDS).then_some(HIGH_AT + 4 * i);
+    }
+    if i >= LOW_WORDS + TA_WORDS {
+        return None;
+    }
+    Some(if i < LOW_WORDS {
         4 * i
     } else {
         TA_AT + 4 * (i - LOW_WORDS)
-    }
+    })
 }
 
 impl RegProbe {
@@ -77,6 +91,7 @@ impl RegProbe {
         Some(Self {
             mem,
             on: false,
+            high: false,
             renders: 0,
             snaps: 0,
             slow: 0,
@@ -94,11 +109,12 @@ impl RegProbe {
             return;
         }
         for i in 0..WORDS {
-            let v = if self.skip[i / 32] & (1 << (i % 32)) != 0 || self.slow >= 3 {
+            let off = offset(self.high, i);
+            let v = if off.is_none() || self.skip[i / 32] & (1 << (i % 32)) != 0 || self.slow >= 3 {
                 0xDEAD_BEEF
             } else {
                 let t0 = rt::ticks();
-                let v = regs.read32(MBX + offset(i));
+                let v = regs.read32(MBX + off.unwrap_or(0));
                 if bus_timed_out(rt::ticks().wrapping_sub(t0)) {
                     self.skip[i / 32] |= 1 << (i % 32);
                     self.slow += 1;
@@ -112,6 +128,14 @@ impl RegProbe {
         self.put(2, done);
         self.put(3, self.slow);
         self.snaps += 1;
+    }
+
+    /// `-rpprobe2`: the block past the TA's read instead (no word there
+    /// left alone: every one unknown).
+    pub fn set_high(&mut self) {
+        self.high = true;
+        self.skip = [0; WORDS.div_ceil(32)];
+        self.mem[..8].copy_from_slice(MAGIC_HIGH);
     }
 
     /// Whether frame `frame`'s render (just started) is one to probe.

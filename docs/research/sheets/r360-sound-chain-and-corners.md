@@ -518,3 +518,11 @@ bit 9, it answers it: the scene ended early (`0xF0000000` into the TA,
 `0x85C` bit 7), the TA's done waited for, `0x834` = 1, bits 6 and 7
 waited for, then the render. If no register counts the render, that
 answer under overlap is the certain path to test.
+
+**Run 358a (2026-11-23, `-rpprobe2`, the fight, hands-free):** the rest
+of the block, `0x860`-`0xFFC`, read through 24 renders the same way: 0
+reads timed out, no hang. Every word reads 0 except the two identity
+words (`0xF00` = 0x1020000, `0xF10` = 0x10000), and none moves. **The
+2700G's core block `0x000`-`0xFFC` holds no register that counts a
+render's progress** (and reading all of it is safe on this unit). The
+certain overlap is left to the vendor's way: answering bit 9 (batch 359).
