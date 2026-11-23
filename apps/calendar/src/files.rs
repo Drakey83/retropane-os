@@ -73,10 +73,10 @@ const ROWS: usize = 10;
 /// The zone picker's rows.
 const ZONE_ROWS: usize = 9;
 /// The time zone's row on the calendars' screen.
-pub const ZONE_ROW: Rect = Rect::new(MARGIN, 388, WIDE, 44);
+pub const ZONE_ROW: Rect = Rect::new(MARGIN, 436, WIDE, 40);
 /// The import and export keys there.
-pub const IMPORT_KEY: Rect = Rect::new(MARGIN, 440, WIDE / 2 - 4, 44);
-pub const EXPORT_KEY: Rect = Rect::new(MARGIN + WIDE / 2 + 4, 440, WIDE / 2 - 4, 44);
+pub const IMPORT_KEY: Rect = Rect::new(MARGIN, 480, WIDE / 2 - 4, 40);
+pub const EXPORT_KEY: Rect = Rect::new(MARGIN + WIDE / 2 + 4, 480, WIDE / 2 - 4, 40);
 /// The pickers' search field.
 const FIELD: Rect = Rect::new(MARGIN, 36 + kit::TITLE_BAND + 4, WIDE, 38);
 /// The export's two keys.
@@ -253,7 +253,7 @@ impl Calendar {
         kit::text(
             f,
             ZONE_ROW.x + 14,
-            ZONE_ROW.y + 28,
+            ZONE_ROW.y + 26,
             cx.fonts.label,
             DIM,
             b"TIME ZONE",
@@ -266,7 +266,7 @@ impl Calendar {
                 kit::fitted(
                     f,
                     ZONE_ROW.x + 120,
-                    ZONE_ROW.y + 28,
+                    ZONE_ROW.y + 26,
                     cx.fonts.ui,
                     TEXT,
                     l.get(),
@@ -276,7 +276,7 @@ impl Calendar {
             None => kit::text(
                 f,
                 ZONE_ROW.x + 120,
-                ZONE_ROW.y + 28,
+                ZONE_ROW.y + 26,
                 cx.fonts.ui,
                 DIM,
                 b"Not known yet",
@@ -285,7 +285,7 @@ impl Calendar {
         kit::right(
             f,
             ZONE_ROW.right() - 14,
-            ZONE_ROW.y + 28,
+            ZONE_ROW.y + 26,
             cx.fonts.label,
             if self.io.guessed { DIM } else { tint::CALENDAR },
             if self.io.guessed {
@@ -299,7 +299,7 @@ impl Calendar {
             (EXPORT_KEY, b"Export .ics"),
         ] {
             kit::key(f, cx, r, kit::KeyState::Rest);
-            kit::centred(f, r, r.y + 29, cx.fonts.ui, TEXT, word);
+            kit::centred(f, r, r.y + 27, cx.fonts.ui, TEXT, word);
         }
     }
 

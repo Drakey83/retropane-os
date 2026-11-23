@@ -1210,7 +1210,7 @@ impl Calendar {
         let store = guard.as_ref().and_then(|g| g.as_ref());
         for c in &self.cals[..self.n_cals] {
             // (The time zone's row and the file keys under the list.)
-            if y + 56 > files::ZONE_ROW.y - 4 {
+            if y + 56 > files::ZONE_ROW.y {
                 break;
             }
             let r = Rect::new(MARGIN, y, WIDE, 52);
@@ -1264,7 +1264,7 @@ impl Calendar {
             kit::text(
                 f,
                 MARGIN + 6,
-                GET_KEY.y - 12,
+                GET_KEY.y - 5,
                 cx.fonts.ui,
                 kit::FOCUS,
                 status,
