@@ -193,12 +193,6 @@ static int      rp_lit_on, rp_lit_cap, rp_lit_capn;
 static uint32_t rp_lit_corners, rp_lit_differ;
 /* kit 68's guard: corners sent that RP_LitFill had not filled (must be 0) */
 static uint32_t rp_lit_unfilled;
-/* R360 step 3: the sort's triangle states from corner codes (1), the old
-   way (0, -rpsort0), or both and compared (2, -rpsort2: the triangles
-   compared, their states that differed, the commands whose filled
-   corners differed) */
-static int      rp_sort_on = 1;
-static uint32_t rp_sort_tris, rp_sort_differ, rp_sort_fill_differ;
 /* kit 72: normals recorded for lighting when read, and lit (a report's) */
 static uint32_t rp_nm_lazy, rp_nm_made;
 /* rp_lit 2 also checks kit 61's one-call meshes and parts against the call a
@@ -277,10 +271,6 @@ void RP_EmitInit( void )
 		rp_cook_on = 0; /* kit 103's control: kit 102's walk, no cooked map */
 	if( gEngfuncs.Sys_CheckParm( "-rpnofacecull" ))
 		rp_facecull = 0; /* kit 104's control: off-screen faces sent as kit 103 did */
-	if( gEngfuncs.Sys_CheckParm( "-rpsort0" ))
-		rp_sort_on = 0; /* R360 step 3's control: each triangle's corners tested one by one */
-	if( gEngfuncs.Sys_CheckParm( "-rpsort2" ))
-		rp_sort_on = 2; /* R360 step 3's check: both ways, compared */
 	rp_lit = gEngfuncs.Cvar_Get( "rp_lit", "1", 0, "ref_rp: 1 a lit part's corners in one pass (kit 53); 0 staged a corner at a time; 2 both, every corner's words compared (a check: the staged words sent)" );
 	rp_lm = gEngfuncs.Cvar_Get( "rp_lm", "1", 0, "ref_rp: 1 the world as its textures and lightmaps, two passes on the 2700G (R297 option B); 0 each face's lit surface (choice 2 A)" );
 	rp_decal = gEngfuncs.Cvar_Get( "rp_decal", "0", 0, "ref_rp: R352: 1 draws decals as polygons over their faces from now on" );
@@ -357,9 +347,6 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: kit 68's lazy corners: %u sent unfilled (must be 0); kit 72's normals: %u a frame recorded, %u of them lit\n",
 			rp_lit_unfilled, rp_nm_lazy / f, rp_nm_made / f );
-	if( rp_emit_on == 2 && rp_sort_on == 2 )
-		fprintf( stderr, "rp-emit: R360 step 3 (-rpsort2): %u model triangles sorted both ways, %u states differed, %u commands filled other corners (both must be 0)\n",
-			rp_sort_tris, rp_sort_differ, rp_sort_fill_differ );
 	if( rp_emit_on == 2 && rp_lit_on >= 2 )
 		fprintf( stderr, "rp-emit: rp_lit 2 (kit 61's check): %u normals and vertices made both ways (one call a mesh, one a normal), %u differed\n",
 			rp_b61_items, rp_b61_differ );
@@ -4871,17 +4858,13 @@ lighting's own colour, where the software renderer kept a grey in 32 steps.
    vertex, not twice a corner: RP_FixBits was ~11% of RP_StudioCmd) and
    the view-space point moved to rp_mq, read only by a command with a
    corner behind the near plane. */
-#include "rp_sort.h"
-
 typedef struct
 {
 	int      serial;
 	uint32_t zi;    /* 1/z's float bits, 0 behind the near plane */
 	uint32_t f[2];  /* the TA's x, y float words */
 	int32_t  xy[2]; /* the TA's x, y as 28.4: the culling reads them */
-	uint8_t  code;  /* R360 step 3: the sort's corner code (rp_sort.h) */
-	uint8_t  pad8[3];
-	int32_t  pad;
+	int32_t  pad[2];
 } __attribute__(( aligned( 32 ))) rp_mvert_t;
 
 static rp_mvert_t rp_mv[RP_STUDIO_VERTS];
@@ -4933,10 +4916,7 @@ static inline void RP_StudioVertSet( int idx, rp_mvert_t *mv, const int32_t q[3]
 	rp_mq[idx][1] = q[1];
 	rp_mq[idx][2] = q[2];
 	if( q[2] < rp_near16 )
-	{
 		mv->zi = 0;
-		mv->code = RP_CornerCode( 0, 0, 0 );
-	}
 	else
 	{
 		uint32_t w[3];
@@ -4945,8 +4925,6 @@ static inline void RP_StudioVertSet( int idx, rp_mvert_t *mv, const int32_t q[3]
 		mv->f[0] = w[0];
 		mv->f[1] = w[1];
 		mv->zi = w[2];
-		/* 1/z's word 0 only behind the near plane: the old sort's test */
-		mv->code = RP_CornerCode( mv->xy[0], mv->xy[1], w[2] != 0 );
 	}
 	rp_count.mverts++;
 }
@@ -5722,8 +5700,25 @@ corners, its header and end (16 words), a triangle in it 7. `rp_cull` 0
 sends them all (the check), -1 the other winding; off while the view
 model is mirrored (GL turns culling off then).
 */
-/* R360 step 3: each corner's sort code (RP_CornerCode), beside rp_sc */
-static uint8_t rp_sccode[RP_STUDIO_CMD + 4];
+#define RP_TRI_KEEP 0
+#define RP_TRI_BACK 1
+#define RP_TRI_CUT  2
+#define RP_TRI_GONE 3
+
+static inline int RP_Facing( const int32_t a[2], const int32_t b[2], const int32_t c[2] )
+{
+	int64_t x = (int64_t)( b[0] - a[0] ) * ( c[1] - a[1] ) - (int64_t)( b[1] - a[1] ) * ( c[0] - a[0] );
+
+	return x > 0 ? 1 : x < 0 ? -1 : 0;
+}
+
+static inline int RP_OffScreen( const int32_t a[2], const int32_t b[2], const int32_t c[2] )
+{
+	const int32_t w = 480 << 4, h = 640 << 4;
+
+	return ( a[0] < 0 && b[0] < 0 && c[0] < 0 ) || ( a[0] > w && b[0] > w && c[0] > w )
+		|| ( a[1] < 0 && b[1] < 0 && c[1] < 0 ) || ( a[1] > h && b[1] > h && c[1] > h );
+}
 
 /*
 Kit 68 (run 65: ~2,150 of a frame's ~3,500 model triangles dropped, about
@@ -5807,21 +5802,31 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 	const int32_t ( *cq )[3], const int32_t ( *cst )[2], int32_t ( *cxy )[2] )
 {
 	static uint16_t idx[RP_STUDIO_CMD + 1];
-	static uint8_t  state[RP_STUDIO_CMD], state2[RP_STUDIO_CMD];
-	int      run = -1, tris = n - 2, cull = tr.fFlipViewModel ? 0 : rp_cull_on;
-	uint32_t culled = 0, gone = 0;
+	static uint8_t  state[RP_STUDIO_CMD];
+	int run = -1, tris = n - 2, cull = tr.fFlipViewModel ? 0 : rp_cull_on;
 
 	/* each triangle's state */
-	if( rp_sort_on )
-		RP_SortStates( fan, n, rp_sccode, (const int32_t( * )[2] )cxy, cull, state );
-	else
-		RP_SortStatesOld( fan, n, (const uint32_t( * )[RP_VERTEX_WORDS] )c, (const int32_t( * )[2] )cxy, cull, state );
-	if( rp_sort_on == 2 )
+	for( int i = 0; i < tris; i++ )
 	{
-		RP_SortStatesOld( fan, n, (const uint32_t( * )[RP_VERTEX_WORDS] )c, (const int32_t( * )[2] )cxy, cull, state2 );
-		for( int i = 0; i < tris; i++ )
-			rp_sort_differ += state[i] != state2[i];
-		rp_sort_tris += (uint32_t)tris;
+		int t0 = fan ? 0 : i, t1 = i + 1, t2 = i + 2;
+		/* in front: 1/z's word made (0 behind the near plane, both paths) */
+		int ins = ( c[t0][2] != 0 ) + ( c[t1][2] != 0 ) + ( c[t2][2] != 0 );
+
+		if( ins == 0 )
+			state[i] = RP_TRI_GONE;
+		else if( ins < 3 )
+			state[i] = RP_TRI_CUT;
+		else if( !cull )
+			state[i] = RP_TRI_KEEP;
+		else
+		{
+			/* GL's strip order: an odd triangle's first two corners swap */
+			int f = RP_Facing( cxy[t0], cxy[t1], cxy[t2] );
+
+			if( !fan && ( i & 1 ))
+				f = -f;
+			state[i] = f * cull > 0 && !RP_OffScreen( cxy[t0], cxy[t1], cxy[t2] ) ? RP_TRI_KEEP : RP_TRI_BACK;
+		}
 	}
 	/* a gap of one or two dropped triangles between kept ones is sent */
 	for( int i = 1; i < tris; i++ )
@@ -5838,37 +5843,13 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 
 	if( rp_lz.on )
 	{
-		static uint8_t need[RP_STUDIO_CMD];
-
-		if( rp_sort_on )
-			RP_SortNeed( fan, n, state, need );
-		if( rp_sort_on == 1 )
-		{
-			/* R360 step 3: each corner a sent triangle uses filled once,
-			   in corner order (the same words: a corner's fill reads
-			   only its own command entry and normal) */
-			for( int k = 0; k < n; k++ )
-				if( need[k] )
-					RP_LitFill( k, c, (int32_t( * )[2] )cst );
-		}
-		else
-		{
-			for( int i = 0; i < tris; i++ )
-				if( state[i] == RP_TRI_KEEP || state[i] == RP_TRI_CUT )
-				{
-					RP_LitFill( fan ? 0 : i, c, (int32_t( * )[2] )cst );
-					RP_LitFill( i + 1, c, (int32_t( * )[2] )cst );
-					RP_LitFill( i + 2, c, (int32_t( * )[2] )cst );
-				}
-			if( rp_sort_on == 2 )
+		for( int i = 0; i < tris; i++ )
+			if( state[i] == RP_TRI_KEEP || state[i] == RP_TRI_CUT )
 			{
-				int d = 0;
-
-				for( int k = 0; k < n; k++ )
-					d |= need[k] != ( rp_lit_filled[k] == rp_lz.gen );
-				rp_sort_fill_differ += (uint32_t)d;
+				RP_LitFill( fan ? 0 : i, c, (int32_t( * )[2] )cst );
+				RP_LitFill( i + 1, c, (int32_t( * )[2] )cst );
+				RP_LitFill( i + 2, c, (int32_t( * )[2] )cst );
 			}
-		}
 		rp_lz.on = 0;
 	}
 
@@ -5898,9 +5879,9 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 			run = -1;
 		}
 		if( st == RP_TRI_BACK )
-			culled++;
+			rp_count.culled++;
 		else if( st == RP_TRI_GONE )
-			gone++;
+			rp_count.near_gone++;
 		else if( st == RP_TRI_CUT )
 		{
 			/* the triangle cut: its polygon in order (corners in front
@@ -5932,7 +5913,7 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 				f = -f;
 			if( cull && f * cull <= 0 )
 			{
-				culled++;
+				rp_count.culled++;
 				continue;
 			}
 			sidx[0] = poly[0];
@@ -5947,8 +5928,6 @@ static void RP_StudioClipCmd( int fan, int n, uint32_t ( *c )[RP_VERTEX_WORDS],
 			rp_count.near_cut++;
 		}
 	}
-	rp_count.culled += culled;
-	rp_count.near_gone += gone;
 	rp_count.tris += n - 2;
 	rp_count.verts += n;
 }
@@ -6049,7 +6028,6 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 				rp_count.mreuse++;
 			cxy[k][0] = mv->xy[0];
 			cxy[k][1] = mv->xy[1];
-			rp_sccode[k] = mv->code;
 			if( !mv->zi )
 				behind++;
 			c[k][0] = mv->f[0];
@@ -6072,7 +6050,6 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 				/* behind the near plane: its words come from the clip */
 				behind++;
 				c[k][2] = 0;
-				rp_sccode[k] = RP_CornerCode( 0, 0, 0 );
 				goto texels;
 			}
 			zi = 1.0f / t[2];
@@ -6084,7 +6061,6 @@ void RP_StudioCmd( int fan, int n, const rp_svert_t *v )
 			c[k][3] = RP_Bits( zi );
 			cxy[k][0] = RP_Fix16( sy ) >> 12;
 			cxy[k][1] = RP_Fix16( (float)RP_GAME_W - sx ) >> 12;
-			rp_sccode[k] = RP_CornerCode( cxy[k][0], cxy[k][1], c[k][2] != 0 );
 		}
 texels:
 		/* a skin's texels past its edges wrap (counted: ref-rp.md "What
@@ -6307,7 +6283,6 @@ int RP_StudioCmdLit( int fan, int n, const short *cmd, const byte ( *ncol )[3], 
 		rp_scvi[k] = (uint16_t)vi;
 		cxy[k][0] = mv->xy[0];
 		cxy[k][1] = mv->xy[1];
-		rp_sccode[k] = mv->code;
 		if( !mv->zi )
 			behind++;
 		c[k][0] = mv->f[0];
