@@ -38,6 +38,8 @@ rp-kernel-pe = { path = "../kernel/pe" }
 rp-kernel-trace = { path = "../kernel/trace" }
 rp-hal-pxa27x = { path = "../hal/pxa27x" }
 rp-port = { path = "../ports/sys" }
+rp-lz4 = { path = "../kernel/lz4" }
+rp-kernel-mm = { path = "../kernel/mm" }
 
 [lints]
 workspace = true

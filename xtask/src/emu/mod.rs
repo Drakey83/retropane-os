@@ -131,6 +131,8 @@ pub(crate) use radar::*;
 mod look;
 #[allow(unused_imports)]
 pub(crate) use look::*;
+mod gamemode;
+pub use gamemode::heap_ratio;
 pub use mtp::boot_loader_mtp;
 
 /// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
@@ -577,6 +579,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "VM compressed RAM OK",
     "VM reclaim OK",
     "VM pinned OK",
+    "VM freeze OK",
     "VM many regions OK",
     "VM unmap OK",
     // IPC (ADR-0016): two user processes, a migrating call and back 1000

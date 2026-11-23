@@ -1,6 +1,6 @@
 # Game Mode, design B (design only, for the owner's go)
 
-**Status: APPROVED by the owner, 2026-11-23** ("do your recommendations for all of these", on the four open items below; the rulings are recorded there). Code waits on the kernel running on the X51v and the measurements listed at the end. Was: DRAFT, 2026-11-07. Written on the owner's go of 2026-11-07 on
+**Status: APPROVED by the owner, 2026-11-23; being built** ([game-mode-build.md](game-mode-build.md): the order, the blockers, the measurements) ("do your recommendations for all of these", on the four open items below; the rulings are recorded there). Code waits on the kernel running on the X51v and the measurements listed at the end. Was: DRAFT, 2026-11-07. Written on the owner's go of 2026-11-07 on
 sheet A's alternative 3 ([sheet A](../research/sheets/game-mode-alternatives-a.md)):
 "One kernel, two user-space profiles, fast tier under 2 s keeping programs
 in RAM, full tier up to ~15 s writing them to flash or SD. Start design B

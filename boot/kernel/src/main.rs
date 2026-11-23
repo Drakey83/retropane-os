@@ -1082,6 +1082,70 @@ mod image {
         let pass = populated == Some(PIN_PAGES) && intact && faults == 0;
         ok &= report(&mut uart, "pinned", pass, faults);
 
+        // Game Mode's freeze, fast tier (design B step 5): the whole
+        // process in one pass. The fault loop's untouched zero pages go
+        // back to demand-zero with nothing stored; the reclaim test's
+        // marked pages (aged or mapped) are compressed; pinned pages and
+        // device windows stay. Then every page thaws on its first touch,
+        // intact, and the pinned ones never fault.
+        // The pinned step's full sweeps compressed the rest of the process:
+        // bring the marked pages and the fault loop's zero pages back first,
+        // as a running program would have them.
+        for p in 33..ZERO_PAGES {
+            let _ = rt::try_read((ZERO_VA + p * 4096) as usize);
+        }
+        for p in 0..RECLAIM_PAGES {
+            let _ = rt::try_read((RECLAIM_VA + p * 4096 + 12) as usize);
+        }
+        let free0 = FRAMES.with(|f| f.free_frames() as u32);
+        let zframes0 = ZPOOL.with(|z| z.stats().0 as u32);
+        let start = rt::ticks();
+        let frozen = with_vm(|vm, s| vm.freeze(&s.procs[0].space, true));
+        let freeze_ticks = rt::ticks().wrapping_sub(start);
+        let zgrew = ZPOOL.with(|z| z.stats().0 as u32).saturating_sub(zframes0);
+        let freed = FRAMES.with(|f| f.free_frames() as u32).wrapping_sub(free0);
+        let faults0 = state().0;
+        let start = rt::ticks();
+        let mut intact = true;
+        for p in 0..RECLAIM_PAGES {
+            intact &= rt::try_read((RECLAIM_VA + p * 4096 + 12) as usize) == Some(0xA6E0_0000 + p);
+        }
+        let thaw_ticks = rt::ticks().wrapping_sub(start);
+        let thawed = state().0 - faults0;
+        let faults1 = state().0;
+        for p in 0..PIN_PAGES {
+            intact &= rt::try_read((PIN_VA + p * 4096) as usize) == Some(0x919E_0000 + p);
+        }
+        intact &= rt::try_read((ZERO_VA + 40 * 4096) as usize) == Some(0);
+        let pin_faults = state().0 - faults1 - 1; // the zero page's one
+        let (n, pass) = match frozen {
+            Ok(f) => (
+                f.compressed + f.zeroed,
+                f.zeroed >= ZERO_PAGES - 33
+                    && f.compressed >= RECLAIM_PAGES
+                    && freed == f.compressed + f.zeroed + f.dropped - zgrew
+                    && intact
+                    && pin_faults == 0
+                    && thawed == RECLAIM_PAGES,
+            ),
+            Err(_) => (0, false),
+        };
+        match frozen {
+            Ok(f) => {
+                let _ = writeln!(
+                    uart,
+                    "VM freeze: {} compressed, {} zero, {} let go, {} resident, {} already; {freed} frames freed",
+                    f.compressed, f.zeroed, f.dropped, f.resident, f.already
+                );
+            }
+            Err(e) => {
+                let _ = writeln!(uart, "VM freeze: error {}", fault_error_code(e));
+            }
+        }
+        ok &= report(&mut uart, "freeze", pass, n);
+        let _ = writeln!(uart, "BENCH vm_freeze_process {freeze_ticks} {n}");
+        let _ = writeln!(uart, "BENCH vm_thaw_page {thaw_ticks} {RECLAIM_PAGES}");
+
         // Many regions (ADR-0019): far more than the old fixed table's 64,
         // in kernel pages that follow use. 300 one-page reservations with
         // gaps, the last one touched, then all unmapped: every frame back,
@@ -2328,6 +2392,18 @@ mod image {
             let _ = writeln!(uart, " FAIL (got {got:#010x})");
         }
         pass
+    }
+
+    /// A fault error as a number for the serial log (no `Debug` in the image).
+    fn fault_error_code(e: rp_kernel_mm::space::FaultError) -> u32 {
+        use rp_kernel_mm::space::FaultError;
+        match e {
+            FaultError::NoRegion => 1,
+            FaultError::Protection => 2,
+            FaultError::NoMemory => 3,
+            FaultError::Io => 4,
+            FaultError::Map(_) => 5,
+        }
     }
 
     fn report(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {

@@ -510,6 +510,7 @@ fn main() -> ExitCode {
         | "emu-today"
         | "emu-today-watch"
         | "emu-today-steps"
+        | "emu-heap-ratio"
         | "emu-today-radar-card"
         | "look-replay"
         | "look-judge"
@@ -1008,6 +1009,7 @@ fn run_step(step: &str) -> Result {
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
         "ui-preview" => cross().and_then(|()| ui_preview::run(&workspace_root())),
         "emu-today-steps" => cross().and_then(|()| emu::today_steps(&workspace_root())),
+        "emu-heap-ratio" => cross().and_then(|()| emu::heap_ratio(&workspace_root())),
         "emu-today-watch" => cross()
             .and_then(|()| emu::today_watch(&workspace_root(), &args().nth(2).unwrap_or_default())),
         "emu-today" => cross()

@@ -372,6 +372,17 @@ is measured yet; no frame rate is promised before the evaluation.
   - [ ] 7c. Maps cooked at their first load on the X51v and kept on the card; the world drawn from the cooked clusters (integer corners, iWMMXt, the walk only on a cluster change) **Kit 103 (2026-11-18): the cook, the file (MD5-checked, bounds-checked), the walk over the cooked PVS array (made only on a cluster change) built and the default (`-rpnocook` the control); cascade 29.1 / 19.2, fight 19.8 / 22.2 against kit 102's 28.7 / 18.7 and 19.6 / 21.9, the cascade's picture byte for byte (ref-rp.md "Step 7c"). Left: the corners on iWMMXt, the brush entities' float path** **Kit 104 (the owner's ruling on R331): off-screen faces not sent by default: cascade 29.6 / 19.6, fight 19.9 / 22.4** **Kit 105: the corners by TMIA on iWMMXt, exact but no faster on the X51v (runs 161-164): not kept** **Kit 106 (the owner's rulings: A+B on, a 20 Hz server tick): cascade 29.8 / 22.9, fight 21.6 / 23.8**
   - [ ] 7d. Collision and movement on the cooked integer hulls
   - [ ] 7f. Sound mixed in integers with iWMMXt into the OS mixer
+- [ ] 8. **Game Mode, design B built** (the owner's go 2026-11-23, "rule 0 all of it"; the plan, the blockers and each step's rule 0 sheet: [design/game-mode-build.md](design/game-mode-build.md)). No open architectural line blocks it (`cargo xtask gate` 2026-11-22: 30 of 30 for phases 2, 4, 5); what blocks it is unbuilt work: K1 the kernel never run on the X51v, K2 nothing of the OS a process yet, K3 the large-allocation region (R363), K4 the CE personality, K5 the internal flash unread (R6). Measured 2026-11-22: the shell's heap 4.5x by the kernel's LZ4 and store (7.45 MiB live kept as 3.73 MiB, 2.0x, with code and the icon pack's file counted), `rp-kernel` 104,236 B + 119,340 B zeroed; SD writes already measured (1 MiB by DMA 4.9 MB/s)
+  - [x] G1. A process's memory frozen in one pass (`Vm::freeze`: compressed, zero pages to demand-zero with nothing stored, page-cache pages let go; thawed lazily), host tests and `emu-kernel`'s `VM freeze` *(2026-11-22; two reclaim bugs found and fixed on the way)*
+  - [ ] G2. A process's threads frozen at the scheduler (ADR-0010), emulator test
+  - [ ] G3. The return record: 256 KiB reserved at boot outside every slot, versioned, checksummed, bounds-checked
+  - [ ] G4. The large-allocation region in the kernel's address map, at least 64 MB (R363), mapped in 1 MiB sections
+  - [ ] G5. The kernel on the X51v (K1): `rp-kernel` as a test image under the loader, its steps and `BENCH` lines (the freeze and thaw's) from the run log *(device run: the owner's go)*
+  - [ ] G6. Exclusivity grants (display, input, audio) and the mode manager (switch, 5 s watchdog, one way out); hold Power 3 s after the WM check (R366)
+  - [ ] G7. Half-Life's runner as Game Mode's one program under the kernel, measured against the bare test image (R270)
+  - [ ] G8. The full tier: a preallocated swap file, compressed pages written in 1 MiB DMA runs (R364's write measurement first)
+  - [ ] G9. Full Mode's services' `suspend`/`resume`, the snapshot return (R153) (waits on K2)
+  - [ ] G10. Design B's test table on the X51v
 
 ## At the end: a faster Quake 3 port
 **Owner's request, 2026-10-14.** The Quake 3 port on the owner's card (Q3CE,

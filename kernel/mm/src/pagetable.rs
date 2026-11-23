@@ -558,6 +558,10 @@ impl PageTables {
             return false;
         }
         mem.l2(table)[i] = if payload == 0 {
+            // Cleared: no longer a used entry (a stored one counts as used,
+            // and a fault entry mapped again counts again: without this the
+            // table's count stayed one too high and it was never freed).
+            self.used[(mva >> 20) as usize] -= 1;
             0
         } else {
             arm::l2_stored(payload)
