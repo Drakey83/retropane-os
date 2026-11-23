@@ -19,6 +19,7 @@ mod hlprep;
 mod lookcheck;
 mod measure;
 mod module;
+mod motion_cost;
 mod mutants;
 mod perf;
 mod policy;
@@ -305,6 +306,9 @@ commands:
             the clocks and voltage put back): run it before `load rp-clocks`
   ui-preview the shell's screens drawn on the PC by the image's own shell and 2D
             renderer code: PNGs and an index page in target/ui-preview/
+  motion-cost Calendar's motion (the week strip, the zooms) frame by frame
+            through the shell, the app and the 2D engine's model, each frame
+            priced from the engine's measured rates against the 33 ms rule
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
   emu-apps  the organiser's app programs (version 2) on the image: each
@@ -517,6 +521,7 @@ fn main() -> ExitCode {
         | "look-judge"
         | "emu-today-look"
         | "ui-preview"
+        | "motion-cost"
         | "emu-crash"
         | "emu-probe"
         | "emu-cf"
@@ -1010,6 +1015,7 @@ fn run_step(step: &str) -> Result {
         "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
         "ui-preview" => cross().and_then(|()| ui_preview::run(&workspace_root())),
+        "motion-cost" => cross().and_then(|()| motion_cost::run(&workspace_root())),
         "emu-today-steps" => cross().and_then(|()| emu::today_steps(&workspace_root())),
         "emu-heap-ratio" => cross().and_then(|()| emu::heap_ratio(&workspace_root())),
         "emu-today-watch" => cross()

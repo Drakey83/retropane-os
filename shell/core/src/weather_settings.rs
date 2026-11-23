@@ -66,7 +66,7 @@ pub(crate) enum Item {
     LivingSky,
     /// T1: the region and its units.
     Units,
-    /// T1: the 12- or 24-hour clock (R373).
+    /// T1: the 12- or 24-hour clock (R383).
     Clock,
     /// T1: the icon pack.
     Icons,

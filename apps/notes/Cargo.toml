@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 rp-app = { path = "../api" }
 rp-pim = { path = "../../shell/pim" }
+# `in_place!`: Notes made straight into its slot (P6, every frame under 4 KB).
+rp-hal-mem = { path = "../../hal/mem" }
 
 # The program's runtime (entry, panic) only in the device build.
 [target.'cfg(target_os = "none")'.dependencies]

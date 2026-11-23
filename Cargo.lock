@@ -76,6 +76,7 @@ version = "0.0.0"
 dependencies = [
  "rp-app",
  "rp-draw",
+ "rp-hal-mem",
  "rp-hal-user",
  "rp-pim",
 ]
@@ -86,6 +87,7 @@ version = "0.0.0"
 dependencies = [
  "rp-app",
  "rp-draw",
+ "rp-hal-mem",
  "rp-hal-user",
  "rp-pim",
 ]
@@ -96,6 +98,7 @@ version = "0.0.0"
 dependencies = [
  "rp-app",
  "rp-draw",
+ "rp-hal-mem",
  "rp-hal-user",
  "rp-pim",
 ]

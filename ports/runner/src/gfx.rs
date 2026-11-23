@@ -47,11 +47,39 @@ use rp_port::gfx::{Piece, Screen, check, send, send_runs};
 use super::panel;
 
 mod chain;
+mod framelog;
 mod pmwatch;
 mod probe4f;
+mod regprobe;
 use chain::Settled;
+use framelog::Kind as FrameKind;
+pub use framelog::{FILE as FRAME_LOG_FILE, FrameLog, ROOM as FRAME_LOG_ROOM};
+pub use regprobe::{FILE as REG_PROBE_FILE, ROOM as REG_PROBE_ROOM, RegProbe};
+
+/// R340's probe ([`RegProbe`], `-rpprobe`): the core's registers read
+/// through a few renders.
+pub static REG_PROBE: rt::Global<Option<RegProbe>> = rt::Global::new(None);
+pub const fn regprobe_renders() -> usize {
+    regprobe::RENDERS
+}
+pub const fn regprobe_from() -> u32 {
+    regprobe::FROM_FRAME
+}
 use pmwatch::{F_OVERLAP, F_RENDERING, F_TA_BUSY, Moment};
 pub use pmwatch::{FILE as PM_WATCH_FILE, PmWatch, ROOM as PM_WATCH_ROOM};
+
+/// R340's next measure ([`FrameLog`]): the chip's two stages frame by
+/// frame, put in by the runner and taken back for the card.
+pub static FRAME_LOG: rt::Global<Option<FrameLog>> = rt::Global::new(None);
+
+fn frame_ev(k: FrameKind, frame: u32, a: u32, b: u32) {
+    let t = rt::ticks();
+    FRAME_LOG.with(|l| {
+        if let Some(l) = l.as_mut() {
+            l.put(k, frame, t, a, b);
+        }
+    });
+}
 
 /// R340's measure ([`PmWatch`]): the runner puts it in before the program
 /// runs and takes it back after, for the card.
@@ -2020,6 +2048,12 @@ impl Chip {
         });
         o.defer_us = Some(d);
         o.arm_cursor = pm_cursor(o);
+        frame_ev(
+            FrameKind::Arm,
+            o.pm_frame,
+            ch.last_words,
+            ch.last_descriptors | u32::from(o.rendering.is_some()) << 31,
+        );
         if !ch.arm(regs) {
             o.defer_us = None;
             c.ta_hangs += 1;
@@ -2046,6 +2080,12 @@ impl Chip {
                     b.ta_n += 1;
                 });
                 o.ta_us = us;
+                frame_ev(
+                    FrameKind::TaDone,
+                    o.pm_frame,
+                    us,
+                    u32::from(o.rendering.is_some()),
+                );
                 if let Some(d) = o.defer_us.take() {
                     HOLD_END.with(|h| {
                         if d < us {
@@ -2810,6 +2850,12 @@ impl Open {
                 self.mem_owed = true;
             }
             if ev & EV_9 != 0 {
+                frame_ev(
+                    FrameKind::Ev9,
+                    self.pm_frame,
+                    self.rendering.map_or(u32::MAX, us_since),
+                    st,
+                );
                 // R340 after run 330: each of the first 60 events whole
                 // (the render's age, the program's texture writes during
                 // it, the frame, the chain's place), so a play names what
@@ -2887,6 +2933,7 @@ impl Open {
         regs.write32(MBX + reg::ENABLE, self.en);
         if ok {
             self.render_us = us;
+            frame_ev(FrameKind::RenderDone, self.pm_frame, us, 1);
             mem_back(regs, self.overlap);
             Ok(us)
         } else {
@@ -3060,6 +3107,7 @@ impl Open {
         }
         if let Some(t0) = self.rendering.take() {
             self.render_us = us_since(t0);
+            frame_ev(FrameKind::RenderDone, self.pm_frame, self.render_us, 0);
         }
         regs.write32(MBX + reg::CLEAR, m3::RENDER_DONE);
         regs.write32(MBX + reg::ENABLE, self.en);
@@ -3102,6 +3150,7 @@ impl Open {
             from.regions = CHK_REGIONS;
         }
         self.rendering = Some(rt::ticks());
+        frame_ev(FrameKind::RenderStart, self.pm_frame, 0, 0);
         self.render_writes = QUIET.with(|q| q.calls);
         let target = if self.lay.ta.height < H {
             SCREEN_BAR
@@ -3113,6 +3162,17 @@ impl Open {
             let v = words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
             regs.write32(MBX + off, v);
         }
+        // R340's probe: this render watched to its end, the registers read
+        let fr = self.pm_frame;
+        REG_PROBE.with(|p| {
+            if let Some(p) = p.as_mut()
+                && p.wants(fr)
+            {
+                p.watch(regs, |r| {
+                    status(r).is_some_and(|s| s & m3::RENDER_DONE != 0)
+                });
+            }
+        });
     }
 }
 
@@ -3707,6 +3767,12 @@ impl Screen for Chip {
                 let into = o.next_b;
                 if ch.prepare(&o.ta_lay(into), &bg, parts, ta_eps_now(self.log)) {
                     o.defer_t0 = Some(rt::ticks());
+                    frame_ev(
+                        FrameKind::Prepare,
+                        o.pm_frame,
+                        ch.last_words,
+                        u32::from(o.rendering.is_some()) << 31,
+                    );
                     bisect_step(c.ev[3], o.scene_pages, self.log);
                     o.armed_b = into;
                     o.next_b = !into;
@@ -3744,6 +3810,12 @@ impl Screen for Chip {
             o.arm_cursor = pm_cursor(o);
             // kit 63: the TA's memory cleared by the chain itself
             let into = o.overlap && o.next_b;
+            frame_ev(
+                FrameKind::Arm,
+                o.pm_frame,
+                (bg.len() + parts.iter().map(|p| p.len()).sum::<usize>()) as u32,
+                u32::from(o.rendering.is_some()) << 31,
+            );
             match ch.start(regs, &o.ta_lay(into), &bg, parts, ta_eps_now(self.log)) {
                 Ok(true) => {
                     if o.rendering.is_some() || o.pending.is_some() {

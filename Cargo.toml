@@ -158,6 +158,15 @@ opt-level = "s"
 # record changed): built for size, the lean rule.
 [profile.release.package.rp-pim]
 opt-level = "s"
+# Calendar and Contacts describe frames (layout, text, a few hundred
+# commands a frame), as rp-shell does, and their file readers and writers
+# (vCard, iCalendar, time zones, pictures) are cold code: built for size,
+# the lean rule. Calendar was 208 KB at opt-level 3 once it read and wrote
+# .ics files, past the 192 KB a program file may be (2026-11-23).
+[profile.release.package.rp-app-calendar]
+opt-level = "s"
+[profile.release.package.rp-app-contacts]
+opt-level = "s"
 [profile.release.package.rp-drv-sdcard]
 opt-level = "s"
 [profile.release.package.rp-drv-pxa-mmc]

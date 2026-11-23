@@ -22,8 +22,13 @@ use crate::Argb;
 
 /// Slots a store holds at most: every condition at every size the shell
 /// shows (22 x 4, the previews' whole set) and room over (the device's
-/// store has 28; each slot costs 20 bytes here).
-pub const SLOTS: usize = 160;
+/// store has 28; each slot costs 20 bytes here). The image's store asks
+/// for 114 (`rp_today::PIC_CLASSES`, held under this by a build check);
+/// the PC's previews pack all 88 condition pictures beside the app
+/// programs' 80 slots, 170 in all, so they get room of their own: at 160
+/// the last classes were left out in silence (Notes' ink layers past the
+/// eighth, its miniatures, a program's map: 2026-11-23).
+pub const SLOTS: usize = if cfg!(target_os = "none") { 160 } else { 192 };
 
 /// A picture in a [`Pics`] store: its slot, the slot's generation when it
 /// was made, and its size. Plain data: copied freely, checked on use.

@@ -56,6 +56,24 @@ impl<T> AppSlot<T> {
         let cell = unsafe { &mut *self.value.get() };
         Some(cell.write(make()))
     }
+
+    /// Makes the value with `init` in the slot itself (`init` writes it
+    /// through the `MaybeUninit`, `rp_hal_mem::in_place!`, a field at a
+    /// time, and returns it), for an app's state too big to be made on the
+    /// stack and moved (the stack rule, P6: Contacts' 31 KB, Notes' 11 KB);
+    /// `None` after the first time. As `rp_hal_pxa27x::rt::Slot::put_in`.
+    #[allow(clippy::mut_from_ref)]
+    pub fn put_in(
+        &'static self,
+        init: impl FnOnce(&'static mut MaybeUninit<T>) -> &'static mut T,
+    ) -> Option<&'static mut T> {
+        if self.taken.replace(true) {
+            return None;
+        }
+        // SAFETY: as `put_with`: the flag was clear, so this is the only
+        // reference ever made of the value.
+        Some(init(unsafe { &mut *self.value.get() }))
+    }
 }
 
 impl<T> Default for AppSlot<T> {

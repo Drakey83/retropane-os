@@ -18,8 +18,10 @@ mod program {
         }
         static SLOT: AppSlot<rp_app_notes::Notes> = AppSlot::new();
         let (today, intent) = (o.today, o.intent);
+        // Made in its slot, a field at a time (11 KB: made on the stack and
+        // moved it took an 11,000 B frame here).
         o.program = SLOT
-            .put_with(|| rp_app_notes::opened_for(today, intent))
+            .put_in(|m| rp_app_notes::opened_in(m, today, intent))
             .map(|p| p as &mut dyn rp_app::Program);
     }
 

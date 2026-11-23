@@ -138,6 +138,12 @@ mod image {
     /// not cycles (a miss), every 2,000 of them (one number: the command
     /// line holds 63 words). Implies [`SAMPLE_WORD`].
     const SAMPLE_ON_WORD: &[u8] = b"-rpsampleon";
+    /// A test run's word for the codec's output level, 0-100 (its hardware
+    /// volume on the audio taper; nothing the CPU does changes): the owner,
+    /// 2026-11-23, "lower the volume on all of these test you keep running
+    /// to 5%". Test kits pass 22, 5% of full amplitude on the taper
+    /// (`xashkit::TEST_LEVEL`); a play kit leaves [`LEVEL`].
+    const VOL_WORD: &[u8] = b"-rpvol";
     /// The samples' file: `RPSAMP1\0`, then little-endian words: samples
     /// a second, samples, ticks that found the room full, the sample at
     /// each of the run's steps 1 to 5 (`u32::MAX`: not reached), then each
@@ -1704,6 +1710,11 @@ mod image {
         // R340's measure: the parameter memory manager's snapshots
         let (pm_mem, room) = room.split_at_mut(super::gfx::PM_WATCH_ROOM);
         super::gfx::PM_WATCH.with(|w| *w = super::gfx::PmWatch::new(pm_mem));
+        // R340's next measure: the chip's stages frame by frame
+        let (fl_mem, room) = room.split_at_mut(super::gfx::FRAME_LOG_ROOM);
+        super::gfx::FRAME_LOG.with(|l| *l = super::gfx::FrameLog::new(fl_mem));
+        let (pr_mem, room) = room.split_at_mut(super::gfx::REG_PROBE_ROOM);
+        super::gfx::REG_PROBE.with(|p| *p = super::gfx::RegProbe::new(pr_mem));
         let mut files: Files<'static, Disk, HANDLES> = Files::new(vol, work, room);
         files.remember(Names::new(names));
 
@@ -2073,6 +2084,22 @@ mod image {
         }
         if args[..arg_count]
             .iter()
+            .any(|a| a.to_bytes() == b"-rpprobe")
+        {
+            super::gfx::REG_PROBE.with(|p| {
+                if let Some(p) = p.as_mut() {
+                    p.on = true;
+                }
+            });
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpprobe: the 2700G's registers read through {} renders from frame {} (reads only)",
+                super::gfx::regprobe_renders(),
+                super::gfx::regprobe_from()
+            );
+        }
+        if args[..arg_count]
+            .iter()
             .any(|a| a.to_bytes() == b"-rpnoholdend")
         {
             super::gfx::HOLD_END.with(|h| h.on = false);
@@ -2227,6 +2254,24 @@ mod image {
                 "runner: -rpwalloc: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
             );
         }
+        if let Some(level) = args[..arg_count]
+            .iter()
+            .position(|a| a.to_bytes() == VOL_WORD)
+            .and_then(
+                |at| match number(args[..arg_count].get(at + 1)?.to_bytes())? {
+                    (v, []) => Some(v.min(100)),
+                    _ => None,
+                },
+            )
+            && let Some(a) = audio.as_mut()
+        {
+            let set = a.set_level(level);
+            let _ = writeln!(
+                uart,
+                "sound: -rpvol: the codec's level {level} of 100 ({})",
+                if set.is_ok() { "set" } else { "not set" }
+            );
+        }
         let sample_on = args[..arg_count]
             .iter()
             .position(|a| a.to_bytes() == SAMPLE_ON_WORD)
@@ -2324,6 +2369,26 @@ mod image {
                 Out,
                 "runner: R340: the parameter memory manager's snapshots ({} KiB) {put}",
                 w.bytes().len() / 1024
+            );
+        }
+        // R340's probe: the registers' snapshots to the card
+        if let Some(mut p) = super::gfx::REG_PROBE.with(Option::take)
+            && p.on
+        {
+            let n = p.bytes().len();
+            let put = write_card(super::gfx::REG_PROBE_FILE, &[p.bytes()]);
+            let _ = writeln!(
+                Out,
+                "runner: R340 -rpprobe: the registers' snapshots ({n} bytes) {put}"
+            );
+        }
+        // R340's next measure: the chip's stages frame by frame to the card
+        if let Some(mut l) = super::gfx::FRAME_LOG.with(Option::take) {
+            let put = write_card(super::gfx::FRAME_LOG_FILE, &[l.bytes()]);
+            let _ = writeln!(
+                Out,
+                "runner: R340: the chip's stages frame by frame ({} bytes) {put}",
+                l.bytes().len()
             );
         }
         // The program's end stopped the DMA engine (`Sys::end`): the codec

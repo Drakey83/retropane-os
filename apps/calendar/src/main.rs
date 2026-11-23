@@ -19,7 +19,7 @@ mod program {
         static SLOT: AppSlot<rp_app_calendar::Calendar> = AppSlot::new();
         let today = o.today;
         o.program = SLOT
-            .put_with(|| rp_app_calendar::opened(today))
+            .put_in(|slot| rp_app_calendar::opened_in(slot, today))
             .map(|p| p as &mut dyn rp_app::Program);
     }
 

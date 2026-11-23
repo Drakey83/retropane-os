@@ -1,5 +1,5 @@
 //! Times of day as every app writes them, in the clock the user chose
-//! ([`crate::Ctx::clock12`]): "3:05 PM" or "15:05" (R373).
+//! ([`crate::Ctx::clock12`]): "3:05 PM" or "15:05" (R383).
 //!
 //! Iterate, don't imitate (rule 0). Windows Mobile 5 read a time-style
 //! string from Regional Settings and each program formatted with it (or

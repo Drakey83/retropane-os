@@ -26,11 +26,13 @@
 
 pub mod align;
 pub mod apps;
+mod caps;
 pub mod chart;
 mod keyboard;
 pub mod motion;
 pub mod panel;
 mod panel_art;
+pub mod prog_map;
 pub mod sky;
 pub mod station;
 mod today_feed;
@@ -264,7 +266,7 @@ pub enum WindowBody {
 
 /// Where Today's tasks line goes (tasks-rule0.md: "Today screen's tasks
 /// line fed from the store"); three drawn for the owner's pick
-/// (R369 in docs/reminders.md), A the default until then.
+/// (R374 in docs/reminders.md), A the default until then.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TodayTasks {
     /// A: on the calendar panel's top line, right of "TODAY": "3 TASKS
@@ -333,6 +335,12 @@ pub const fn light_glass(c: Argb, style: LightStyle) -> Argb {
 /// 2026-11-14: design for both looks, everything cohesive).
 #[must_use]
 pub fn look_color(c: Argb, text: bool, style: LightStyle) -> Argb {
+    // A clear (a fill of nothing: "the window here", rp_draw::CLEAR) stays
+    // one in either look (Calendar's zoom clears its card to the window;
+    // made glass it showed the month through the day, 2026-11-23).
+    if c == rp_draw::CLEAR {
+        return c;
+    }
     if sky::is_ink(c)
         || panel::is_panel(c)
         || c == WASH
@@ -1046,6 +1054,8 @@ pub struct Shell {
     radar_map_for: Option<(i32, i32)>,
     radar_card: weather_net::CardMap,
     asked_map: bool,
+    /// The open program's map (prog_map.rs).
+    pmap: prog_map::ProgMap,
     /// The default icon pack's offset asked next ([`Ask::Pack`]).
     pack_at: u32,
     /// The station's instruments and when they came (ms).
@@ -1237,6 +1247,7 @@ macro_rules! shell_start {
             radar_map_for: None,
             radar_card: weather_net::CardMap::Unknown,
             asked_map: false,
+            pmap: prog_map::ProgMap::default(),
             pack_at: 0,
             station: None,
             station_at: 0,
@@ -2299,6 +2310,7 @@ impl Shell {
                 pics.free_owned(PROGRAM_PICS);
             }
             self.shapes.forget();
+            self.prog_map_closed();
         }
         if self.screen != Screen::Today {
             // A key half typed is forgotten on the way.
@@ -2582,6 +2594,7 @@ impl Shell {
             pics.free_owned(PROGRAM_PICS);
         }
         self.shapes.forget();
+        self.prog_map_closed();
         *self.program.borrow_mut() = Some(p);
         self.screen = Screen::Program;
         self.prog_field = None;
@@ -2841,7 +2854,7 @@ impl Shell {
             now: self.program_now(),
             pics: self.app_pics,
             forecast: &self.forecast[..usize::from(self.forecast_n)],
-            // The region's date order and the clock chosen (R373: it was
+            // The region's date order and the clock chosen (R383: it was
             // `true` whatever the settings said).
             us: self.region.month_first,
             clock12: self.region.clock12,
@@ -2901,7 +2914,7 @@ impl Shell {
                 now: self.program_now(),
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
-                // The region's date order and the clock chosen (R373: it was
+                // The region's date order and the clock chosen (R383: it was
                 // `true` whatever the settings said).
                 us: self.region.month_first,
                 clock12: self.region.clock12,
@@ -2921,6 +2934,53 @@ impl Shell {
         }
     }
 
+    /// The open program's body for its question in flight (a `PUT` to the
+    /// PC or a `CARDPUT`): its bytes from `at` into `out`, how many (0: no
+    /// more).
+    pub fn program_body(&mut self, at: usize, out: &mut [u8]) -> usize {
+        let (fonts, look) = (self.program_fonts(), self.program_look());
+        let cx = rp_app::Ctx {
+            fonts: &fonts,
+            look: &look,
+            now: self.program_now(),
+            pics: self.app_pics,
+            forecast: &self.forecast[..usize::from(self.forecast_n)],
+            // The region's date order and the clock chosen (R383).
+            us: self.region.month_first,
+            clock12: self.region.clock12,
+            utc_offset: self.utc_offset,
+            shapes: &self.shapes,
+            clip: &self.clip,
+            pim: Some(&self.apps.store),
+        };
+        let mut p = self.program.borrow_mut();
+        p.as_mut().map_or(0, |p| p.net_body(at, out, &cx))
+    }
+
+    /// The open program's question for the device's own card
+    /// ([`rp_app::Program::card_ask`]), taken: its name, argument, and (a
+    /// `CARDPUT`) the body's length. The device answers it with
+    /// [`Shell::card_answer`]; no dock is needed.
+    pub fn card_ask(&mut self) -> Option<(&'static [u8], rp_app::Text<64>, usize)> {
+        let ask = self.program.borrow_mut().as_mut()?.card_ask()?;
+        let len = if ask.what == b"CARDPUT" {
+            ask.arg
+                .get()
+                .split(|&c| c == b' ')
+                .next()
+                .and_then(|w| core::str::from_utf8(w).ok()?.parse().ok())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Some((ask.what, ask.arg, len))
+    }
+
+    /// The device's answer to the open program's card question.
+    pub fn card_answer(&mut self, ok: bool, body: &[u8]) {
+        self.program_net(ok, body);
+    }
+
     /// Sends `e` to the open program and does what it answers.
     fn program_event(&mut self, e: rp_app::Event) -> Action {
         let (fonts, look) = (self.program_fonts(), self.program_look());
@@ -2931,7 +2991,7 @@ impl Shell {
                 now: self.program_now(),
                 pics: self.app_pics,
                 forecast: &self.forecast[..usize::from(self.forecast_n)],
-                // The region's date order and the clock chosen (R373: it was
+                // The region's date order and the clock chosen (R383: it was
                 // `true` whatever the settings said).
                 us: self.region.month_first,
                 clock12: self.region.clock12,
@@ -2947,16 +3007,25 @@ impl Shell {
             }
         };
         self.program_keyboard();
+        self.reminders_follow();
+        self.program_caps();
+        // What changed is found from the draw lists (R191's difference,
+        // `rp_draw::changes`): a program can't say where its answer shows,
+        // and marking the whole screen drew all of it again for every
+        // reply, ~500 blits and ~47 ms a frame for Calendar's Day (priced,
+        // `cargo xtask motion-cost`), a week strip's 448 x 62 slide
+        // included. With no lists kept, a restatement is the whole screen
+        // as before.
         match reply {
             rp_app::Reply::Nothing => Action::Nothing,
             rp_app::Reply::Redraw => {
-                self.dirty(Rect::new(0, 0, W, H));
+                self.restate();
                 Action::Redraw
             }
             rp_app::Reply::Animate => {
                 // The next step about a frame later (the 33 ms rule).
                 self.prog_anim = Some(self.now.wrapping_add(30));
-                self.dirty(Rect::new(0, 0, W, H));
+                self.restate();
                 Action::Redraw
             }
             rp_app::Reply::Close => {
@@ -3155,6 +3224,14 @@ impl Shell {
             };
             return Action::OpenProgram(n);
         }
+        // The reminder banner over any screen, before what lies under it
+        // (an app program's area took its touches: its keys were dead over
+        // an open app). The Start menu lies over the banner.
+        if !self.menu_open
+            && let Some(a) = self.banner_input(e)
+        {
+            return a;
+        }
         let before = self.damaged;
         if let Some(a) = self.chart_input(e) {
             return match a {
@@ -3164,12 +3241,6 @@ impl Shell {
         }
         // An app program's area, its keyboard and its keys.
         if let Some(a) = self.program_input(e) {
-            return a;
-        }
-        // The reminder banner's buttons, over any screen.
-        if let Input::PenUp { x, y } = e
-            && let Some(a) = self.banner_tap(x, y)
-        {
             return a;
         }
         let act = match e {
@@ -3939,7 +4010,12 @@ impl Shell {
         let feed = {
             let mut feed = self.feed.borrow_mut();
             let store = self.apps.store.try_borrow().ok();
-            feed.update(store.as_ref().and_then(|s| s.as_ref()), now.day, now.minute);
+            feed.update(
+                store.as_ref().and_then(|s| s.as_ref()),
+                now.day,
+                now.minute,
+                self.utc_offset,
+            );
             *feed
         };
         if self.pressed == Some(Target::Agenda) && !self.panels_off {

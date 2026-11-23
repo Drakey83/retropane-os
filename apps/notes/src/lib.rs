@@ -17,6 +17,8 @@ use rp_app::kit::{self, DIM, TEXT, tint};
 use rp_app::{
     Argb, Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, Text, W, WIDE,
 };
+
+mod pen;
 use rp_pim::store::{Kind, tag};
 
 /// One block of a note, as a note is written (the previews' samples, and
@@ -53,29 +55,93 @@ pub enum View {
     Note(u8),
 }
 
-/// The line in a note's text that stands for its ink panel.
-const INK_LINE: u8 = 0x01;
+pub mod doc;
+pub mod export;
+pub mod import;
+pub mod words;
+
+use doc::INK_LINE;
+
+/// A stroke's style bit: an extension byte follows its first point (the
+/// ink block it belongs to, and whether a width for each point follows its
+/// steps). Strokes written before blocks have none: block 0, one width.
+pub const EXT: u8 = 0x80;
+/// The extension byte's bit: the stroke's widths follow its steps, four
+/// bits a point ([`width_scale`]).
+const EXT_WIDTHS: u8 = 0x80;
+
 /// The packed stroke `ink` starts with: its length in bytes (`None`
 /// where the ink ends, or breaks).
 fn stroke_len(ink: &[u8]) -> Option<usize> {
     let count = usize::from(*ink.first()?);
-    let len = 6 + 2 * count.checked_sub(1)?;
+    let style = *ink.get(1)?;
+    let mut len = 6 + 2 * count.checked_sub(1)?;
+    if style & EXT != 0 {
+        let ext = *ink.get(6)?;
+        len += 1;
+        if ext & EXT_WIDTHS != 0 {
+            len += count.div_ceil(2);
+        }
+    }
     (len <= ink.len()).then_some(len)
 }
 
-/// A packed stroke ([`stroke_len`]'s bytes) as its points: its style and
-/// how many.
-fn unpack(s: &[u8], pts: &mut [(i16, i16); 255]) -> (u8, usize) {
+/// A packed stroke unpacked: its style (without [`EXT`]), its points'
+/// count, its ink block, and whether `widths` were filled.
+#[derive(Clone, Copy, Debug)]
+struct Unpacked {
+    style: u8,
+    n: usize,
+    block: u8,
+    widths: bool,
+}
+
+/// A packed stroke ([`stroke_len`]'s bytes) as its points (and, where it
+/// has them, its widths).
+fn unpack_all(s: &[u8], pts: &mut [(i16, i16); 255], widths: &mut [u8; 255]) -> Unpacked {
     let count = usize::from(s[0]);
+    let (ext, steps) = if s[1] & EXT != 0 { (s[6], 7) } else { (0, 6) };
     let mut x = i16::from_le_bytes([s[2], s[3]]);
     let mut y = i16::from_le_bytes([s[4], s[5]]);
     pts[0] = (x, y);
     for k in 1..count {
-        x = x.saturating_add(i16::from(s[4 + 2 * k] as i8));
-        y = y.saturating_add(i16::from(s[5 + 2 * k] as i8));
+        x = x.saturating_add(i16::from(s[steps + 2 * k - 2] as i8));
+        y = y.saturating_add(i16::from(s[steps + 2 * k - 1] as i8));
         pts[k] = (x, y);
     }
-    (s[1], count)
+    let has = ext & EXT_WIDTHS != 0;
+    if has {
+        let w = steps + 2 * (count - 1);
+        for (k, out) in widths.iter_mut().enumerate().take(count) {
+            let b = s[w + k / 2];
+            *out = if k % 2 == 0 { b & 15 } else { b >> 4 };
+        }
+    }
+    Unpacked {
+        style: s[1] & !EXT,
+        n: count,
+        block: ext & 0x7F,
+        widths: has,
+    }
+}
+
+/// [`unpack_all`] for the points alone: its style and how many.
+fn unpack(s: &[u8], pts: &mut [(i16, i16); 255]) -> (u8, usize) {
+    let mut w = [0u8; 255];
+    let u = unpack_all(s, pts, &mut w);
+    (u.style, u.n)
+}
+
+/// The block a packed stroke belongs to.
+fn block_of(s: &[u8]) -> u8 {
+    if s[1] & EXT != 0 { s[6] & 0x7F } else { 0 }
+}
+
+/// A point's width (four bits) as a scale of the stroke's size, in 1/12:
+/// 8 is the size itself, 0 a third of it, 15 nearly twice.
+#[must_use]
+pub const fn width_scale(w: u8) -> i32 {
+    (w as i32 & 15) + 4
 }
 
 /// How much of `ink` is whole strokes that fit a field (the tests': a
@@ -103,7 +169,7 @@ fn pages(store: &rp_pim::store::Store<'_>, id: u32) -> ([u32; PAGES], usize) {
     let mut ids = [0u32; PAGES];
     let mut n = 0;
     for r in store.all(Kind::Ink) {
-        if r.num(tag::PARENT) == Some(id) && n < PAGES {
+        if r.num(tag::PARENT) == Some(id) && n < PAGES && !doc::is_text_page(&r) {
             // Kept in order as they come (the store gives none).
             let at = ids[..n].iter().position(|&i| i > r.id).unwrap_or(n);
             ids.copy_within(at..n, at + 1);
@@ -122,10 +188,10 @@ fn pages_of(cx: &Ctx, id: u32) -> ([u32; PAGES], usize) {
         .unwrap_or(([0; PAGES], 0))
 }
 
-/// The first stroke a point of the pen's `path` came within 8 px of
-/// taken out of `ink`: its bytes closed over.
+/// The first stroke of ink block `block` a point of the pen's `path` came
+/// within 8 px of taken out of `ink`: its bytes closed over.
 #[inline(never)]
-fn erase_in(ink: &mut [u8], inn: &mut usize, path: &[(i16, i16)]) -> bool {
+fn erase_in(ink: &mut [u8], inn: &mut usize, path: &[(i16, i16)], block: u8) -> bool {
     let near = |s: &[(i16, i16)]| {
         s.iter().any(|&(x, y)| {
             path.iter()
@@ -136,7 +202,7 @@ fn erase_in(ink: &mut [u8], inn: &mut usize, path: &[(i16, i16)]) -> bool {
     let mut at = 0;
     while let Some(len) = stroke_len(&ink[at..*inn]) {
         let (_, k) = unpack(&ink[at..at + len], &mut pts);
-        if near(&pts[..k]) {
+        if block_of(&ink[at..at + len]) == block && near(&pts[..k]) {
             ink.copy_within(at + len..*inn, at);
             *inn -= len;
             return true;
@@ -170,8 +236,8 @@ const OWN_INK: usize = 1900;
 enum InkOp<'a> {
     /// A packed stroke added at its end.
     Add(&'a [u8]),
-    /// The first stroke the pen's path crossed taken out.
-    Erase(&'a [(i16, i16)]),
+    /// The first stroke of the block the pen's path crossed taken out.
+    Erase(&'a [(i16, i16)], u8),
     /// Its last stroke taken off.
     Last,
 }
@@ -208,7 +274,7 @@ fn ink_op(cx: &Ctx, rec: u32, op: InkOp<'_>, page: bool) -> bool {
         InkOp::Add(s) if !page && (b > 0 || a + s.len() > OWN_INK) => return false,
         InkOp::Add(s) if b > 0 || a + s.len() > TEXT_MAX => [tag::INK_MORE, 0],
         InkOp::Add(_) => [tag::INK, 0],
-        InkOp::Erase(_) => [tag::INK, tag::INK_MORE],
+        InkOp::Erase(..) => [tag::INK, tag::INK_MORE],
         InkOp::Last if b > 0 => [tag::INK_MORE, 0],
         InkOp::Last => [tag::INK, 0],
     };
@@ -225,7 +291,7 @@ fn ink_op(cx: &Ctx, rec: u32, op: InkOp<'_>, page: bool) -> bool {
                 n += s.len();
                 true
             }),
-            InkOp::Erase(path) => erase_in(&mut buf, &mut n, path),
+            InkOp::Erase(path, block) => erase_in(&mut buf, &mut n, path, block),
             InkOp::Last => drop_last(&buf, &mut n),
         };
         if changed {
@@ -240,29 +306,13 @@ fn ink_op(cx: &Ctx, rec: u32, op: InkOp<'_>, page: bool) -> bool {
 }
 
 /// The packed stroke `stroke` added at the end of note `id`'s ink: the
-/// last page's, or the note's own while it has none (a note with no ink
-/// panel yet gets its place at the text's end); where that is full, a
-/// new page.
+/// last page's, or the note's own while it has none; where that is full, a
+/// new page. (Its ink block's line is the caller's: the stroke names it.)
 fn add_stroke(cx: &Ctx, id: u32, stroke: &[u8]) -> bool {
     let (page, np) = pages_of(cx, id);
     let on_last = match page[..np].last() {
         Some(&p) => ink_op(cx, p, InkOp::Add(stroke), true),
-        None => {
-            text_edit(cx, id, &mut |text, tn| {
-                if text[..*tn].split(|&c| c == 10).any(|l| l == [INK_LINE]) || *tn + 2 > text.len()
-                {
-                    return false;
-                }
-                if *tn > 0 {
-                    text[*tn] = 10;
-                    *tn += 1;
-                }
-                text[*tn] = INK_LINE;
-                *tn += 1;
-                true
-            });
-            ink_op(cx, id, InkOp::Add(stroke), false)
-        }
+        None => ink_op(cx, id, InkOp::Add(stroke), false),
     };
     on_last
         || (np < PAGES
@@ -281,10 +331,21 @@ fn add_stroke(cx: &Ctx, id: u32, stroke: &[u8]) -> bool {
                 .is_some())
 }
 
+/// An edit to note `id`'s text through the app's store
+/// ([`doc::edit`]).
+fn text_op(cx: &Ctx, id: u32, e: &doc::Edit<'_>) -> Result<([u8; 4], usize), doc::Refused> {
+    let mut g = cx
+        .pim
+        .and_then(|c| c.try_borrow_mut().ok())
+        .ok_or(doc::Refused::Full)?;
+    let store = g.as_mut().ok_or(doc::Refused::Full)?;
+    doc::edit(store, id, e)
+}
+
 /// The last stroke of record `rec`'s ink copied into `out`: its length (0
 /// with no ink).
 #[inline(never)]
-fn last_stroke(cx: &Ctx, rec: u32, out: &mut [u8; 6 + 2 * 254]) -> usize {
+fn last_stroke(cx: &Ctx, rec: u32, out: &mut [u8; STROKE_MAX]) -> usize {
     let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
         return 0;
     };
@@ -308,56 +369,6 @@ fn last_stroke(cx: &Ctx, rec: u32, out: &mut [u8; 6 + 2 * 254]) -> usize {
         }
         _ => 0,
     }
-}
-
-/// Note `id`'s text given to `change` (with room to grow) and written
-/// back, every other field kept.
-#[inline(never)]
-fn text_edit(cx: &Ctx, id: u32, change: &mut dyn FnMut(&mut [u8], &mut usize) -> bool) -> bool {
-    let Some(mut guard) = cx.pim.and_then(|c| c.try_borrow_mut().ok()) else {
-        return false;
-    };
-    let Some(store) = guard.as_mut() else {
-        return false;
-    };
-    let Some(r) = store.get(id) else { return false };
-    let mut text = [0u8; rp_pim::store::TEXT_MAX];
-    let mut tn = r.text(tag::TEXT).len().min(text.len());
-    text[..tn].copy_from_slice(&r.text(tag::TEXT)[..tn]);
-    if !change(&mut text, &mut tn) {
-        return false;
-    }
-    if store.change(id, &[(tag::TEXT, &text[..tn])]).is_ok() {
-        return true;
-    }
-    // No room in the record: a note written before `OWN_INK` holds ink in
-    // its second field. That goes to a page of its own (in its own frame:
-    // with it here this one was 4,136 bytes, over the stack rule), and the
-    // text is kept.
-    ink_more_to_a_page(store, id)
-        && store
-            .change(id, &[(tag::TEXT, &text[..tn]), (tag::INK_MORE, &[])])
-            .is_ok()
-}
-
-/// Note `id`'s second ink field copied to a new page of its ink (the
-/// note's record is then changed without it by the caller).
-#[inline(never)]
-fn ink_more_to_a_page(store: &mut rp_pim::store::Store<'_>, id: u32) -> bool {
-    let mut ink = [0u8; rp_pim::store::TEXT_MAX];
-    let Some(r) = store.get(id) else { return false };
-    let n = r.text(tag::INK_MORE).len().min(ink.len());
-    if n == 0 {
-        return false;
-    }
-    ink[..n].copy_from_slice(&r.text(tag::INK_MORE)[..n]);
-    store
-        .put(
-            Kind::Ink,
-            None,
-            &[(tag::PARENT, &id.to_le_bytes()), (tag::INK, &ink[..n])],
-        )
-        .is_ok()
 }
 
 /// Where `text` holds the search `q`, whatever its capitals.
@@ -431,7 +442,7 @@ pub const SIZE_BOLD: u8 = 0x20;
 /// needs its two ends and a curve a few more, so a note holds several
 /// times the writing in the same room and the spline brush draws the same
 /// stroke. Returns how many of `pts[..n]` are left, in place.
-fn simplify(pts: &mut [(i16, i16); LIVE], n: usize) -> usize {
+fn simplify(pts: &mut [(i16, i16); LIVE], ws: &mut [u8; LIVE], n: usize) -> usize {
     if n < 3 {
         return n;
     }
@@ -476,6 +487,7 @@ fn simplify(pts: &mut [(i16, i16); LIVE], n: usize) -> usize {
     for k in 0..n {
         if keep[k] {
             pts[m] = pts[k];
+            ws[m] = ws[k];
             m += 1;
         }
     }
@@ -495,41 +507,74 @@ pub fn encode_ink(strokes: &[&[(i16, i16)]], out: &mut [u8]) -> Option<usize> {
 /// [`encode_ink`] with each stroke's style.
 pub fn encode_styled(strokes: &[&[(i16, i16)]], styles: &[u8], out: &mut [u8]) -> Option<usize> {
     let mut n = 0;
-    let mut put = |b: u8, n: &mut usize| -> Option<()> {
-        *out.get_mut(*n)? = b;
-        *n += 1;
+    for (si, st) in strokes.iter().enumerate().filter(|(_, s)| !s.is_empty()) {
+        let style = styles.get(si).copied().unwrap_or(0) & !EXT;
+        n += encode_stroke(st, None, style, 0, out.get_mut(n..)?)?;
+    }
+    Some(n)
+}
+
+/// One stroke packed (version 2): its points, a width for each where
+/// given (four bits, [`width_scale`]), its style and its ink block (block
+/// 0 with no widths packs as version 1, the way every stroke before blocks
+/// was kept). Long steps are split (a split point takes the width before
+/// it), so nothing is lost. The length, or `None` when it doesn't fit.
+pub fn encode_stroke(
+    st: &[(i16, i16)],
+    widths: Option<&[u8]>,
+    style: u8,
+    block: u8,
+    out: &mut [u8],
+) -> Option<usize> {
+    if st.is_empty() {
+        return Some(0);
+    }
+    let mut pts = [(0i16, 0i16); 255];
+    let mut ws = [8u8; 255];
+    let w_of = |k: usize| widths.and_then(|w| w.get(k)).copied().unwrap_or(8) & 15;
+    let mut k = 1;
+    let mut last = st[0];
+    pts[0] = last;
+    ws[0] = w_of(0);
+    for (i, &p) in st.iter().enumerate().skip(1) {
+        while k < pts.len() && ((p.0 - last.0).abs() > 127 || (p.1 - last.1).abs() > 127) {
+            last = (
+                last.0 + (p.0 - last.0).clamp(-127, 127),
+                last.1 + (p.1 - last.1).clamp(-127, 127),
+            );
+            pts[k] = last;
+            ws[k] = w_of(i - 1);
+            k += 1;
+        }
+        if k < pts.len() {
+            pts[k] = p;
+            ws[k] = w_of(i);
+            k += 1;
+            last = p;
+        }
+    }
+    let ext = block != 0 || widths.is_some();
+    let mut n = 0;
+    let mut put = |b: u8| -> Option<()> {
+        *out.get_mut(n)? = b;
+        n += 1;
         Some(())
     };
-    for (si, st) in strokes.iter().enumerate().filter(|(_, s)| !s.is_empty()) {
-        // The points with long steps split into steps of at most 127.
-        let mut pts = [(0i16, 0i16); 255];
-        let mut k = 0;
-        let mut last = st[0];
-        pts[0] = last;
-        k += 1;
-        for &p in &st[1..] {
-            while k < pts.len() && ((p.0 - last.0).abs() > 127 || (p.1 - last.1).abs() > 127) {
-                last = (
-                    last.0 + (p.0 - last.0).clamp(-127, 127),
-                    last.1 + (p.1 - last.1).clamp(-127, 127),
-                );
-                pts[k] = last;
-                k += 1;
-            }
-            if k < pts.len() {
-                pts[k] = p;
-                k += 1;
-                last = p;
-            }
-        }
-        put(k as u8, &mut n)?;
-        put(styles.get(si).copied().unwrap_or(0), &mut n)?;
-        for b in pts[0].0.to_le_bytes().iter().chain(&pts[0].1.to_le_bytes()) {
-            put(*b, &mut n)?;
-        }
-        for w in pts[..k].windows(2) {
-            put((w[1].0 - w[0].0) as i8 as u8, &mut n)?;
-            put((w[1].1 - w[0].1) as i8 as u8, &mut n)?;
+    put(k as u8)?;
+    put(if ext { style | EXT } else { style & !EXT })?;
+    for b in pts[0].0.to_le_bytes().iter().chain(&pts[0].1.to_le_bytes()) {
+        put(*b)?;
+    }
+    if ext {
+        put((block & 0x7F) | if widths.is_some() { EXT_WIDTHS } else { 0 })?;
+    }
+    for w in pts[..k].windows(2) {
+        put((w[1].0 - w[0].0) as i8 as u8)?;
+        put((w[1].1 - w[0].1) as i8 as u8)?;
+    }
+    if widths.is_some() {
+        for pair in ws[..k].chunks(2) {
+            put(pair[0] | pair.get(1).copied().unwrap_or(0) << 4)?;
         }
     }
     Some(n)
@@ -545,28 +590,23 @@ pub fn decode_ink(
     styles: &mut [u8],
 ) -> usize {
     let (mut at, mut np, mut ns) = (0usize, 0usize, 0usize);
-    while at + 6 <= ink.len() && ns < ends.len() {
-        let count = usize::from(ink[at]);
-        if let Some(st) = styles.get_mut(ns) {
-            *st = ink[at + 1];
-        }
-        let x = i16::from_le_bytes([ink[at + 2], ink[at + 3]]);
-        let y = i16::from_le_bytes([ink[at + 4], ink[at + 5]]);
-        at += 6;
-        if count == 0 || np + count > pts.len() || at + 2 * (count - 1) > ink.len() {
+    let mut one = [(0i16, 0i16); 255];
+    while ns < ends.len() {
+        let Some(len) = stroke_len(&ink[at..]) else {
+            break;
+        };
+        let (style, count) = unpack(&ink[at..at + len], &mut one);
+        if np + count > pts.len() {
             break;
         }
-        let (mut px, mut py) = (x, y);
-        pts[np] = (px, py);
-        for k in 1..count {
-            px = px.saturating_add(i16::from(ink[at] as i8));
-            py = py.saturating_add(i16::from(ink[at + 1] as i8));
-            at += 2;
-            pts[np + k] = (px, py);
+        if let Some(st) = styles.get_mut(ns) {
+            *st = style;
         }
+        pts[np..np + count].copy_from_slice(&one[..count]);
         np += count;
         ends[ns] = np as u16;
         ns += 1;
+        at += len;
     }
     ns
 }
@@ -624,6 +664,8 @@ struct Row {
     found: bool,
     lines: [Line; 12],
     n: usize,
+    /// It holds strokes (its own ink field: the first pages hold them).
+    inked: bool,
 }
 
 impl Row {
@@ -637,12 +679,14 @@ impl Row {
             found: true,
             lines: [Line::Ink; 12],
             n: 0,
+            inked: !r.text(tag::INK).is_empty(),
         };
         for l in r.text(tag::TEXT).split(|&c| c == b'\n') {
             if row.n == row.lines.len() {
                 break;
             }
-            row.lines[row.n] = if l == [INK_LINE] {
+            let l = l.strip_prefix(&[doc::CONT]).unwrap_or(l);
+            row.lines[row.n] = if doc::ink_block(l).is_some() {
                 Line::Ink
             } else if let Some(t) = l.strip_prefix(b"[x] ") {
                 Line::Check(Text::of(t), true)
@@ -657,7 +701,7 @@ impl Row {
     }
 
     fn has_ink(&self) -> bool {
-        self.lines[..self.n].iter().any(|l| matches!(l, Line::Ink))
+        self.inked || self.lines[..self.n].iter().any(|l| matches!(l, Line::Ink))
     }
 }
 
@@ -754,7 +798,7 @@ pub struct Notes {
     live: [(i16, i16); LIVE],
     live_n: usize,
     ink_at: Option<(u16, u16)>,
-    checks: [(Rect, u8); 12],
+    checks: [(Rect, usize); 12],
     n_checks: usize,
     typing: bool,
     /// A new note to start on the first frame (the Note button).
@@ -811,8 +855,109 @@ pub struct Notes {
     mini_used: u8,
     ring: Option<Pic>,
     full: Option<Pic>,
-    painted: Option<(View, u32)>,
+    painted: Option<(View, u32, u16, u16)>,
+    /// The pen's filter, and the stroke being written's widths, its ink
+    /// block and that block's top below the ink layers' (negative:
+    /// scrolled above).
+    filt: pen::Filter,
+    live_w: [u8; LIVE],
+    live_block: u8,
+    live_dy: i32,
+    /// The open note's layout: the rows scrolled past, the items on
+    /// screen, every row it has, its lines, its last item (and that item's
+    /// first row), the next ink block's number, and each block's rows.
+    scroll: u16,
+    vis: [Vis; 24],
+    n_vis: usize,
+    total_rows: u16,
+    n_lines: usize,
+    last: Option<(Item, u16)>,
+    next_block: u8,
+    rows_of: [u8; BLOCKS],
+    /// The line typing goes into (none: a new line at the end), and the
+    /// view follows it.
+    cursor: Option<usize>,
+    follow: bool,
+    /// A stylus down off the ink: where (a drag scrolls, a tap places the
+    /// caret or ticks).
+    tap: Option<(u16, u16, bool)>,
+    /// The block layout's design (the mock-ups' variants; 0 the default).
+    pub design: u8,
+    /// The menu's second rows: 1 the export formats, 2 the files to
+    /// import.
+    menu_row: u8,
+    /// A card question waiting for the shell (rp_today::cardfiles:
+    /// `CARDFILES`, `CARDFILE`, `CARDPUT`), and the step under way.
+    asking: Option<rp_app::NetAsk>,
+    job: Job,
+    /// The files offered for import, and each one's number in the card's
+    /// list (a file is asked for by number, never by path).
+    files: [Text<64>; 8],
+    file_no: [u8; 8],
+    n_files: usize,
+    /// What the tray says after a file step.
+    said: &'static [u8],
+    reader: import::Reader,
+    png: export::PngWork,
+    /// The word suggestions, the words learned from the notes (and the
+    /// store change they were counted at).
+    sugg: [[u8; words::WORD_MAX]; 3],
+    sugg_n: [usize; 3],
+    learned: words::Learned,
+    learned_at: Option<u32>,
+    /// Whether the next letter typed is a capital, and whether the
+    /// suggestions wait to be worked out at the next frame (a preview).
+    caps_next: bool,
+    sugg_stale: bool,
 }
+
+/// What a line of an open note is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Item {
+    Text,
+    Check(bool),
+    Ink(u8),
+}
+
+/// An item of the open note on screen: its line, its first row (counted
+/// from the note's top), its rows.
+#[derive(Clone, Copy, Debug)]
+struct Vis {
+    line: usize,
+    row: u16,
+    rows: u16,
+    item: Item,
+}
+
+/// A file step under way.
+#[derive(Clone, Copy, Debug)]
+enum Job {
+    None,
+    /// Note `id` written as `fmt` (`block` for ink; the blocks still to go
+    /// after it), `len` bytes.
+    Write {
+        id: u32,
+        fmt: export::Format,
+        block: u8,
+        left: u128,
+    },
+    /// The folder listed for import.
+    List,
+    /// File `file` of the card's text files read into note `id`: its
+    /// lines put in so far, and the bytes read.
+    Read {
+        id: u32,
+        put: u32,
+        file: u8,
+        at: u32,
+    },
+}
+
+/// The open note's first row's top (under its title) and a row's height.
+const TOP: u16 = PAPER.y + 56;
+const ROW: u16 = 28;
+/// The scroll rail: a drag along the paper's right edge always scrolls.
+const RAIL: u16 = 28;
 
 /// Paints `strokes` (in the sheet's 448 x 352) into `px` (`w` x `h`, scaled to
 /// fit) in `c`: each stroke a Catmull-Rom curve through its points, laid
@@ -865,7 +1010,25 @@ fn brush(
 ) {
     let sx = i32::from(w) * 256 / i32::from(INK_W);
     let sy = i32::from(h) * 256 / i32::from(INK_H);
-    let s = sx.min(sy);
+    brush_at(w, h, sx.min(sy), strokes, styles, &[], (0, 0), only, put);
+}
+
+/// [`brush`] with each stroke's point widths (empty: one width) and the
+/// strokes moved by `off` (sheet pixels: an ink block's place on the
+/// sheet): the radius goes from one point's width to the next along the
+/// curve, and a segment wholly off the picture is skipped.
+#[allow(clippy::too_many_arguments)]
+fn brush_at(
+    w: u16,
+    h: u16,
+    s: i32,
+    strokes: &[&[(i16, i16)]],
+    styles: &[u8],
+    widths: &[&[u8]],
+    off: (i32, i32),
+    only: Option<Argb>,
+    put: &mut dyn FnMut(usize, u32, Argb),
+) {
     // Stamp radius in 1/16 px (at least a pixel's worth).
     let base_rad = (20 * s / 256).max(10);
     let mut stamp = |cx16: i32, cy16: i32, rad: i32, c: Argb| {
@@ -899,13 +1062,37 @@ fn brush(
             _ => base_rad,
         };
         let rad = if marker { rad * 3 } else { rad };
+        let ws: &[u8] = widths.get(si).copied().unwrap_or(&[]);
+        let wk = |k: isize| {
+            let k = k.clamp(0, st.len() as isize - 1) as usize;
+            ws.get(k).map_or(12, |&w| width_scale(w))
+        };
         let p = |i: isize| {
             let k = i.clamp(0, st.len() as isize - 1) as usize;
-            (i32::from(st[k].0) * s / 16, i32::from(st[k].1) * s / 16)
+            (
+                (i32::from(st[k].0) + off.0) * s / 16,
+                (i32::from(st[k].1) + off.1) * s / 16,
+            )
         };
+        let (wpx, hpx) = (i32::from(w) * 16, i32::from(h) * 16);
         // (A stroke of one point is a dot.)
         for i in 0..(st.len() as isize - 1).max(1) {
             let (p0, p1, p2, p3) = (p(i - 1), p(i), p(i + 1), p(i + 2));
+            // A segment wholly off the picture (an ink block scrolled
+            // past) costs nothing: the curve stays within its four points.
+            let reach = rad * 2;
+            let (lo_x, hi_x) = (
+                p0.0.min(p1.0).min(p2.0).min(p3.0),
+                p0.0.max(p1.0).max(p2.0).max(p3.0),
+            );
+            let (lo_y, hi_y) = (
+                p0.1.min(p1.1).min(p2.1).min(p3.1),
+                p0.1.max(p1.1).max(p2.1).max(p3.1),
+            );
+            if hi_x + reach < 0 || lo_x - reach > wpx || hi_y + reach < 0 || lo_y - reach > hpx {
+                continue;
+            }
+            let (w1, w2) = (wk(i), wk(i + 1));
             // Steps by the segment's length, a stamp every half pixel.
             let len = ((p2.0 - p1.0).abs() + (p2.1 - p1.1).abs()) / 8 + 2;
             for t in 0..len {
@@ -919,12 +1106,13 @@ fn brush(
                         + (3 * b - a - 3 * c + d) * t3)
                         / 512
                 };
-                stamp(
-                    cr(p0.0, p1.0, p2.0, p3.0),
-                    cr(p0.1, p1.1, p2.1, p3.1),
-                    rad,
-                    c,
-                );
+                // The width from this point's to the next's.
+                let r = if marker {
+                    rad
+                } else {
+                    (rad * (w1 * (256 - t) + w2 * t) / (256 * 12)).max(8)
+                };
+                stamp(cr(p0.0, p1.0, p2.0, p3.0), cr(p0.1, p1.1, p2.1, p3.1), r, c);
             }
         }
     }
@@ -955,42 +1143,137 @@ pub fn paint_over(
 /// keeping the most coverage: the stroke being written a segment at a
 /// time and the kept ink alike, so what is written is what is kept.
 pub fn paint_cover(words: &mut [u32], strokes: &[&[(i16, i16)]], styles: &[u8], want: Argb) {
-    brush(INK_W, INK_H, strokes, styles, None, &mut |i, a, c| {
-        if c != want {
-            return;
+    paint_cover_at(words, strokes, styles, &[], 0, want);
+}
+
+/// [`paint_cover`] with each stroke's widths, its ink block `dy` pixels
+/// below the layer's top (above it where negative: scrolled).
+pub fn paint_cover_at(
+    words: &mut [u32],
+    strokes: &[&[(i16, i16)]],
+    styles: &[u8],
+    widths: &[&[u8]],
+    dy: i32,
+    want: Argb,
+) {
+    brush_at(
+        INK_W,
+        INK_H,
+        256,
+        strokes,
+        styles,
+        widths,
+        (0, dy),
+        None,
+        &mut |i, a, c| {
+            if c != want {
+                return;
+            }
+            let n = ((a + 8) / 17).min(15);
+            let shift = 8 * ((i / 2) % 4) as u32 + if i.is_multiple_of(2) { 4 } else { 0 };
+            if let Some(word) = words.get_mut(i / 8)
+                && n > (*word >> shift) & 15
+            {
+                *word = (*word & !(15 << shift)) | (n << shift);
+            }
+        },
+    );
+}
+
+/// Every packed stroke of note `id` in the order written (the note's own
+/// fields, then its ink pages'), given to `f`.
+pub(crate) fn each_stroke(store: &rp_pim::store::Store<'_>, id: u32, f: &mut dyn FnMut(&[u8])) {
+    let Some(rec) = store.get(id) else { return };
+    let (page, np) = pages(store, id);
+    let recs = core::iter::once(rec).chain(page[..np].iter().filter_map(|&i| store.get(i)));
+    for field in recs.flat_map(|r| [r.text(tag::INK), r.text(tag::INK_MORE)]) {
+        let mut at = 0;
+        while let Some(n) = stroke_len(&field[at..]) {
+            f(&field[at..at + n]);
+            at += n;
         }
-        let n = ((a + 8) / 17).min(15);
-        let shift = 8 * ((i / 2) % 4) as u32 + if i.is_multiple_of(2) { 4 } else { 0 };
-        if let Some(word) = words.get_mut(i / 8)
-            && n > (*word >> shift) & 15
-        {
-            *word = (*word & !(15 << shift)) | (n << shift);
+    }
+}
+
+/// The ink blocks a note can have (block numbers 0-94: [`doc::ink_line`]).
+pub const BLOCKS: usize = 95;
+/// A new ink block's height in ruled rows (196 px, the first panel's).
+pub const BLOCK_ROWS: u8 = 7;
+/// A written ink block's least height in rows (a line of writing and room
+/// under it).
+pub const WRITTEN_ROWS: i32 = 3;
+
+/// Each ink block's height in ruled rows (28 px): its lowest stroke and a
+/// row and a half below it (where the pen goes on and the block grows),
+/// [`WRITTEN_ROWS`] at least; [`BLOCK_ROWS`] while it is empty. A block
+/// never cuts a stroke.
+#[must_use]
+pub(crate) fn block_rows(store: &rp_pim::store::Store<'_>, id: u32) -> [u8; BLOCKS] {
+    let mut low = [-1i32; BLOCKS];
+    let mut pts = [(0i16, 0i16); 255];
+    each_stroke(store, id, &mut |p| {
+        let (_, n) = unpack(p, &mut pts);
+        if let Some(l) = low.get_mut(usize::from(block_of(p))) {
+            for q in &pts[..n] {
+                *l = (*l).max(i32::from(q.1).max(0));
+            }
         }
     });
+    let mut rows = [BLOCK_ROWS; BLOCKS];
+    for (r, l) in rows.iter_mut().zip(low) {
+        if l >= 0 {
+            *r = ((l + 40 + 27) / 28).clamp(WRITTEN_ROWS, 255) as u8;
+        }
+    }
+    rows
 }
 
 /// Paints the ink of note `id` from the store into a new picture of
-/// `w` x `h` in `c`.
+/// `w` x `h` in `c`: its blocks one under another, as the note lays them.
 fn ink_pic(cx: &Ctx, id: u32, w: u16, h: u16, c: Argb) -> Option<Pic> {
     let pics = cx.pics?;
     let guard = cx.pim?.try_borrow().ok()?;
     let store = guard.as_ref()?;
-    let rec = store.get(id)?;
-    let (page, np) = pages(store, id);
+    let rows = block_rows(store, id);
+    // Each block's top: the blocks before it, in number order.
+    let mut top = [0i32; BLOCKS];
+    let used = export::inked_blocks(store, id);
+    let mut y = 0;
+    for (b, t) in top.iter_mut().enumerate() {
+        *t = y;
+        if used & (1 << b) != 0 {
+            y += i32::from(rows[b]) * 28;
+        }
+    }
     let p = pics.alloc(w, h)?;
-    let only = Some(c);
     pics.write(p, |px| {
         px.iter_mut().for_each(|q| *q = 0);
         let mut pts = [(0i16, 0i16); 255];
-        let recs = core::iter::once(rec).chain(page[..np].iter().filter_map(|&i| store.get(i)));
-        for field in recs.flat_map(|r| [r.text(tag::INK), r.text(tag::INK_MORE)]) {
-            let mut at = 0;
-            while let Some(n) = stroke_len(&field[at..]) {
-                let (style, k) = unpack(&field[at..at + n], &mut pts);
-                paint_over(px, w, h, &[&pts[..k]], &[style], only);
-                at += n;
-            }
-        }
+        let mut ws = [8u8; 255];
+        each_stroke(store, id, &mut |packed| {
+            let u = unpack_all(packed, &mut pts, &mut ws);
+            let off = (0, top[usize::from(u.block).min(BLOCKS - 1)]);
+            let widths: &[u8] = if u.widths { &ws[..u.n] } else { &[] };
+            let s =
+                (i32::from(w) * 256 / i32::from(INK_W)).min(i32::from(h) * 256 / i32::from(INK_H));
+            brush_at(
+                w,
+                h,
+                s,
+                &[&pts[..u.n]],
+                &[u.style],
+                &[widths],
+                off,
+                Some(c),
+                &mut |i, a, c| {
+                    if let Some(q) = px.get_mut(i)
+                        && a > *q >> 24
+                    {
+                        *q = (c & 0x00FF_FFFF) | (a << 24);
+                    }
+                },
+            );
+        });
     });
     Some(p)
 }
@@ -1000,7 +1283,24 @@ impl Notes {
     /// old way in: the store now holds them).
     #[must_use]
     pub fn new(_samples: &'static [Note]) -> Self {
-        Self {
+        notes_start!(value)
+    }
+
+    /// [`Notes::new`] made straight into `slot` (the program's, in `.bss`),
+    /// a field at a time: Notes is about 11 KB (its PNG band 4 KB), and made
+    /// on the stack and moved it took an 11,000 B frame in the program's
+    /// entry (`cargo xtask stacks`, P6: every frame under 4 KB).
+    pub fn new_in(slot: &mut core::mem::MaybeUninit<Self>) -> &mut Self {
+        notes_start!(slot,)
+    }
+}
+
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for [`Notes::new`] and
+/// [`Notes::new_in`], as the shell's `shell_start!`.
+macro_rules! notes_start {
+    ($($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Notes {
             tool: Tool::Pen,
             pen: 0,
             marker_hue: None,
@@ -1048,12 +1348,81 @@ impl Notes {
             ring: None,
             full: None,
             painted: None,
-        }
-    }
+            filt: pen::Filter::default(),
+            live_w: [8; LIVE],
+            live_block: 0,
+            live_dy: 0,
+            scroll: 0,
+            vis: [Vis {
+                line: 0,
+                row: 0,
+                rows: 0,
+                item: Item::Text,
+            }; 24],
+            n_vis: 0,
+            total_rows: 0,
+            n_lines: 0,
+            last: None,
+            next_block: 1,
+            rows_of: [BLOCK_ROWS; BLOCKS],
+            cursor: None,
+            follow: false,
+            tap: None,
+            design: 0,
+            menu_row: 0,
+            asking: None,
+            job: Job::None,
+            files: [Text::EMPTY; 8],
+            file_no: [0; 8],
+            n_files: 0,
+            said: b"",
+            reader: import::Reader::new(),
+            png: export::PngWork::new(),
+            sugg: [[0; words::WORD_MAX]; 3],
+            sugg_n: [0; 3],
+            learned: words::Learned::new(),
+            learned_at: None,
+            caps_next: true,
+            sugg_stale: false,
+        })
+    };
+}
+use notes_start;
 
+impl Notes {
     /// Shows `view`.
     pub fn show(&mut self, view: View) {
         self.view = view;
+    }
+
+    /// The previews' states (`cargo xtask ui-preview`): the tool (0 the
+    /// pen, 1 the marker, 2 the eraser part way along a path over the first
+    /// ink block), the menu's row (none: closed), and typing at the end of
+    /// line `typing`.
+    pub fn preview(&mut self, tool: u8, menu_row: Option<u8>, typing: Option<usize>) {
+        self.tool = match tool {
+            1 => Tool::Marker,
+            2 => Tool::Erase,
+            _ => Tool::Pen,
+        };
+        if tool == 1 {
+            self.marker_hue = Some(4);
+        }
+        if tool == 2 {
+            for (k, p) in self.live.iter_mut().enumerate().take(14) {
+                *p = (150 + k as i16 * 7, 46 + ((k as i16 * 5) % 11));
+            }
+            self.live_n = 14;
+            self.live_dy = 0;
+        }
+        self.menu = menu_row.is_some();
+        self.menu_row = menu_row.unwrap_or(0);
+        if let Some(k) = typing {
+            self.typing = true;
+            self.cursor = Some(k);
+            self.tool = Tool::Text;
+            self.sugg_stale = true;
+        }
     }
 
     /// The notes copied again from the store when its records changed.
@@ -1103,34 +1472,49 @@ impl Notes {
         Some(k)
     }
 
-    /// Note `id`'s ink painted from the store into its layers, a stroke
-    /// at a time from its bytes (the note's own, then its pages').
+    /// Note `id`'s ink painted from the store into its layers: the strokes
+    /// of each ink block on screen, at the block's place (the note's own
+    /// fields, then its pages').
     fn ink_layers(&mut self, cx: &Ctx, id: u32) {
         let Some(pics) = cx.pics else { return };
+        for l in &mut self.ink {
+            if let Some((_, p)) = l.take() {
+                pics.free(p);
+            }
+        }
         let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
             return;
         };
         let Some(store) = guard.as_ref() else { return };
-        let Some(rec) = store.get(id) else { return };
-        let (page, np) = pages(store, id);
-        let mut pts = [(0i16, 0i16); 255];
-        let recs = core::iter::once(rec).chain(page[..np].iter().filter_map(|&i| store.get(i)));
-        for field in recs.flat_map(|r| [r.text(tag::INK), r.text(tag::INK_MORE)]) {
-            let mut at = 0;
-            while let Some(n) = stroke_len(&field[at..]) {
-                let (style, k) = unpack(&field[at..at + n], &mut pts);
-                let colour = stroke_colour(style);
-                if let Some(l) = self.layer_for(pics, colour)
-                    && let Some((_, p)) = self.ink[l]
-                {
-                    pics.write(p, |w| paint_cover(w, &[&pts[..k]], &[style], colour));
-                }
-                at += n;
+        // Each block's top below the layers' (none: not on screen).
+        let mut dy = [None::<i32>; BLOCKS];
+        for v in &self.vis[..self.n_vis] {
+            if let Item::Ink(b) = v.item {
+                dy[usize::from(b)] =
+                    Some(i32::from(ROW) * (i32::from(v.row) - i32::from(self.scroll)));
             }
         }
+        let mut pts = [(0i16, 0i16); 255];
+        let mut ws = [8u8; 255];
+        each_stroke(store, id, &mut |packed| {
+            let u = unpack_all(packed, &mut pts, &mut ws);
+            let Some(d) = dy.get(usize::from(u.block)).copied().flatten() else {
+                return;
+            };
+            let colour = stroke_colour(u.style);
+            let widths: &[u8] = if u.widths { &ws[..u.n] } else { &[] };
+            if let Some(l) = self.layer_for(pics, colour)
+                && let Some((_, p)) = self.ink[l]
+            {
+                pics.write(p, |w| {
+                    paint_cover_at(w, &[&pts[..u.n]], &[u.style], &[widths], d, colour)
+                });
+            }
+        });
     }
 
-    /// The search typed: each note found when its title or text holds it.
+    /// The search typed: each note found when its title or text holds it
+    /// (every chunk of its text).
     fn find(&mut self, cx: &Ctx) {
         let q = &self.query[..self.query_n];
         let Some(cell) = cx.pim else { return };
@@ -1139,16 +1523,16 @@ impl Notes {
         for row in self.rows.iter_mut().flatten() {
             row.found = q.is_empty()
                 || store.get(row.id).is_some_and(|r| {
-                    let has = |t: &[u8]| {
-                        t.len() >= q.len() && t.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
-                    };
-                    has(r.text(tag::TITLE)) || has(r.text(tag::TEXT))
-                });
+                    let t = r.text(tag::TITLE);
+                    t.len() >= q.len() && t.windows(q.len()).any(|w| w.eq_ignore_ascii_case(q))
+                })
+                || doc::holds(store, row.id, q);
         }
     }
 
     fn paint(&mut self, cx: &Ctx) {
-        let key = (self.view, self.seen.unwrap_or(0));
+        let rows = self.view_rows();
+        let key = (self.view, self.seen.unwrap_or(0), self.scroll, rows);
         if self.painted == Some(key) {
             return;
         }
@@ -1165,15 +1549,99 @@ impl Notes {
             // (`mini`).
             View::Home => {}
             View::Note(i) => {
-                if let Some(row) = self.rows.get(usize::from(i)).copied().flatten()
-                    && row.has_ink()
-                    && self.ink.iter().all(Option::is_none)
-                {
+                if let Some(row) = self.rows.get(usize::from(i)).copied().flatten() {
                     self.ink_layers(cx, row.id);
                 }
             }
         }
         self.painted = Some(key);
+    }
+
+    /// The rows the open note shows (fewer while the keyboard is up).
+    fn view_rows(&self) -> u16 {
+        let bottom = if self.typing { 392 } else { TRAY.y };
+        (bottom - TOP) / ROW
+    }
+
+    /// The open note laid out: its lines walked, each item's rows (a
+    /// paragraph wrapped to the paper, a checklist item one, an ink block
+    /// its rows), those on screen kept; the view moved to the caret's line
+    /// when it follows it.
+    fn layout(&mut self, cx: &Ctx, id: u32) {
+        let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+            return;
+        };
+        let Some(store) = guard.as_ref() else { return };
+        self.rows_of = block_rows(store, id);
+        for _pass in 0..2 {
+            let view = self.view_rows();
+            let (top, rows_of, font) = (self.scroll, self.rows_of, cx.fonts.ui);
+            let (mut vis, mut nv) = (self.vis, 0usize);
+            let (mut row, mut last, mut next_block) = (0u16, None, 1u8);
+            let mut cursor_at = None;
+            let cursor = self.cursor;
+            let n_lines = doc::for_lines(store, id, &mut |k, l| {
+                let (item, rows) = match doc::ink_block(l) {
+                    Some(b) => {
+                        next_block = next_block.max(b + 1);
+                        (
+                            Item::Ink(b),
+                            u16::from(rows_of[usize::from(b).min(BLOCKS - 1)]),
+                        )
+                    }
+                    None if l.starts_with(b"[ ] ") => (Item::Check(false), 1),
+                    None if l.starts_with(b"[x] ") => (Item::Check(true), 1),
+                    None => (Item::Text, wrap(font, l, PAPER.w - 48, &mut |_| {})),
+                };
+                if cursor == Some(k) {
+                    cursor_at = Some((row, rows));
+                }
+                if row + rows > top && row < top + view && nv < vis.len() {
+                    vis[nv] = Vis {
+                        line: k,
+                        row,
+                        rows,
+                        item,
+                    };
+                    nv += 1;
+                }
+                last = Some((item, row));
+                row = row.saturating_add(rows);
+                true
+            });
+            (self.vis, self.n_vis, self.total_rows, self.n_lines) = (vis, nv, row, n_lines);
+            self.last = last;
+            self.next_block = next_block.min(94);
+            // The caret's line in view (its last row at the foot).
+            let want = match (self.follow, cursor_at) {
+                (true, Some((r, n))) if r + n > top + view => Some(r + n - view.min(r + n)),
+                (true, Some((r, _))) if r < top => Some(r),
+                (true, None) if self.cursor.is_none() && row + 1 > top + view => {
+                    Some(row + 1 - view)
+                }
+                _ => None,
+            };
+            self.follow = false;
+            match want {
+                Some(s) if s != self.scroll => self.scroll = s,
+                _ => break,
+            }
+        }
+    }
+
+    /// The item at screen row `y` (none: blank paper below the last).
+    fn item_at(&self, y: u16) -> Option<Vis> {
+        let r = self.scroll + (y.saturating_sub(TOP)) / ROW;
+        self.vis[..self.n_vis]
+            .iter()
+            .copied()
+            .find(|v| r >= v.row && r < v.row + v.rows)
+    }
+
+    /// A note's item's top on screen (above the paper's top where it is
+    /// scrolled part away).
+    fn screen_y(&self, row: u16) -> i32 {
+        i32::from(TOP) + i32::from(ROW) * (i32::from(row) - i32::from(self.scroll))
     }
 
     /// Whether the home shows `r`: the search typed and the filter tab.
@@ -1589,9 +2057,6 @@ impl Notes {
 
     fn note(&mut self, f: &mut Frame, cx: &Ctx, i: u8) {
         self.n_checks = 0;
-        // The whole sheet under the title takes ink (the first ink panel
-        // was 196 rows in among the lines, and what was typed after it
-        // lay under it: the owner on the X51v, 2026-11-15).
         self.ink_at = Some(INK_AT);
         let Some(note) = self.rows.get(usize::from(i)).copied().flatten() else {
             return;
@@ -1630,39 +2095,7 @@ impl Notes {
             (note.title.get(), ink)
         };
         kit::text(f, paper.x + 24, paper.y + 44, cx.fonts.title, tcol, title);
-        let mut y = paper.y + 84;
-        for (line_k, b) in note.lines[..note.n].iter().enumerate() {
-            match b {
-                Line::Text(t) => {
-                    let t = t.get();
-                    kit::fitted(f, paper.x + 24, y, cx.fonts.ui, ink, t, paper.w - 40);
-                    y += 28;
-                }
-                Line::Check(t, done) => {
-                    let t = t.get();
-                    if self.n_checks < self.checks.len() {
-                        let line = line_k;
-                        self.checks[self.n_checks] = (
-                            Rect::new(paper.x + 16, y - 24, paper.w - 30, 30),
-                            line as u8,
-                        );
-                        self.n_checks += 1;
-                    }
-                    kit::round_check(f, cx, paper.x + 24, y - 18, self.ring, self.full, *done);
-                    let col = if *done { kit::keep(0x9020_2A38) } else { ink };
-                    kit::text(f, paper.x + 58, y, cx.fonts.ui, col, t);
-                    if *done {
-                        f.push(rp_app::Cmd::Fill {
-                            r: Rect::new(paper.x + 58, y - 7, cx.fonts.ui.width(t), 1),
-                            color: col,
-                        });
-                    }
-                    y += 28;
-                }
-                // (The ink is the sheet's own layer now, not a line.)
-                Line::Ink => {}
-            }
-        }
+        self.body(f, cx, note.id, note.colour);
         // The ink over the lines: the markers' layers first, the pens'
         // over them (a highlighter lies under the writing).
         let (ix, iy) = INK_AT;
@@ -1678,59 +2111,298 @@ impl Notes {
                 }
             }
         }
-        // Pen and marker strokes are painted into their layer as they go
-        // ([`Self::live_paint`]); the eraser's path shows as dots.
-        let c = kit::keep(0x80FF_FFFF);
-        let shown = if self.tool == Tool::Erase {
-            self.live_n
-        } else {
-            0
-        };
-        for &(x, yy) in &self.live[..shown] {
+        // The eraser's path: a ring where it is, its trail as dots.
+        if self.tool == Tool::Erase && self.live_n > 0 {
+            let c = kit::keep(0x80FF_FFFF);
+            for &(x, yy) in &self.live[..self.live_n] {
+                let sy = i32::from(yy) + self.live_dy + i32::from(iy);
+                if (i32::from(TOP)..i32::from(TRAY.y)).contains(&sy) {
+                    f.push(rp_app::Cmd::Fill {
+                        r: Rect::new(ix + x as u16, sy as u16, 3, 3),
+                        color: c,
+                    });
+                }
+            }
+            let (x, yy) = self.live[self.live_n - 1];
+            let sy = i32::from(yy) + self.live_dy + i32::from(iy);
+            if sy >= i32::from(TOP) + 12
+                && let Some(ring) = self.ring
+            {
+                f.push(rp_app::Cmd::Pic {
+                    x: (ix + x as u16).saturating_sub(12),
+                    y: (sy - 12) as i16,
+                    pic: ring,
+                });
+            }
+        }
+        // Under the last whole row the paper again: a row cut by the tray
+        // shows neither its writing nor its ink.
+        let bottom = TOP + self.view_rows() * ROW;
+        if bottom + 2 < TRAY.y {
             f.push(rp_app::Cmd::Fill {
-                r: Rect::new(ix + x as u16, iy + yy as u16, 3, 3),
-                color: c,
+                r: Rect::new(paper.x + 6, bottom + 2, paper.w - 6, TRAY.y - bottom - 2),
+                color: kit::keep(0xFFCE_C8B6),
             });
         }
-        // The menu, when open, over the tool strip.
         if self.menu {
-            kit::panel(f, cx, STRIP);
-            let words: [&[u8]; 4] = [
+            self.draw_menu(f, cx, &note);
+            return;
+        }
+        self.tray(f, cx, note.id);
+    }
+
+    /// The open note's lines from its scroll: paragraphs wrapped on the
+    /// rules, checklist items with their round tick, ink blocks as the
+    /// design draws them, the caret where typing goes, and the scroll's
+    /// place along the right edge.
+    fn body(&mut self, f: &mut Frame, cx: &Ctx, id: u32, colour: Argb) {
+        let ink: Argb = kit::keep(0xFF20_2A38);
+        let view = self.view_rows();
+        let bottom = TOP + view * ROW;
+        let font = cx.fonts.ui;
+        let x0 = PAPER.x + 24;
+        let max = PAPER.w - 48;
+        // The ink blocks' look under their strokes (the design).
+        for v in &self.vis[..self.n_vis] {
+            let Item::Ink(b) = v.item else { continue };
+            let y = self.screen_y(v.row).max(i32::from(TOP)) as u16;
+            let end = (self.screen_y(v.row + v.rows) as u16).min(bottom);
+            if end <= y {
+                continue;
+            }
+            match self.design {
+                // Framed pads: a sunken sheet of the paper a shade deeper.
+                1 => kit::round_rect(
+                    f,
+                    cx,
+                    Rect::new(PAPER.x + 12, y + 2, PAPER.w - 24, end - y - 4),
+                    kit::keep(kit::mix(0xFFCE_C8B6, 0xFF70_7890, 0x30)),
+                ),
+                // Margin marks: the block's bar in the note's colour.
+                2 => f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(PAPER.x + 12, y + 4, 3, end - y - 8),
+                    color: colour,
+                }),
+                // The open sheet: nothing but the paper (the default).
+                _ => {}
+            }
+            let _ = b;
+        }
+        let (vis, nv, scroll) = (self.vis, self.n_vis, self.scroll);
+        let mut checks = (self.checks, 0usize);
+        let caret = if self.typing { self.cursor } else { None };
+        let mut caret_at = None;
+        if let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok())
+            && let Some(store) = guard.as_ref()
+        {
+            let first = vis[..nv].first().map_or(usize::MAX, |v| v.line);
+            let lastl = vis[..nv].last().map_or(0, |v| v.line);
+            doc::for_lines(store, id, &mut |k, l| {
+                if k < first {
+                    return true;
+                }
+                if k > lastl {
+                    return false;
+                }
+                let Some(v) = vis[..nv].iter().find(|v| v.line == k) else {
+                    return true;
+                };
+                let row_y =
+                    |r: u16| i32::from(TOP) + i32::from(ROW) * (i32::from(r) - i32::from(scroll));
+                match v.item {
+                    Item::Text => {
+                        let t = l.strip_prefix(&[doc::CONT]).unwrap_or(l);
+                        let mut r = v.row;
+                        let mut end_x = x0;
+                        wrap(font, t, max, &mut |part| {
+                            let y = row_y(r) + i32::from(ROW);
+                            if y > i32::from(TOP) && y <= i32::from(bottom) {
+                                kit::text(f, x0, y as u16, font, ink, part);
+                            }
+                            end_x = x0 + font.width(part);
+                            r += 1;
+                        });
+                        if caret == Some(k) {
+                            caret_at = Some((end_x, row_y(v.row + v.rows - 1)));
+                        }
+                    }
+                    Item::Check(done) => {
+                        let t = &l[4..];
+                        let y = row_y(v.row) + i32::from(ROW);
+                        if y > i32::from(TOP) && y <= i32::from(bottom) {
+                            let y = y as u16;
+                            if checks.1 < checks.0.len() {
+                                checks.0[checks.1] = (Rect::new(PAPER.x + 16, y - 24, 40, 30), k);
+                                checks.1 += 1;
+                            }
+                            kit::round_check(f, cx, x0, y - 18, self.ring, self.full, done);
+                            let col = if done { kit::keep(0x9020_2A38) } else { ink };
+                            kit::fitted(f, x0 + 34, y, font, col, t, max - 34);
+                            if done {
+                                f.push(rp_app::Cmd::Fill {
+                                    r: Rect::new(x0 + 34, y - 7, font.width(t).min(max - 34), 1),
+                                    color: col,
+                                });
+                            }
+                            if caret == Some(k) {
+                                caret_at =
+                                    Some((x0 + 34 + font.width(t).min(max - 34), row_y(v.row)));
+                            }
+                        }
+                    }
+                    Item::Ink(_) => {}
+                }
+                true
+            });
+        }
+        self.checks = checks.0;
+        self.n_checks = checks.1;
+        // The caret: typing at the end of its line (or a new one).
+        if self.typing {
+            let at = caret_at
+                .or_else(|| (self.cursor.is_none()).then(|| (x0, self.screen_y(self.total_rows))));
+            if let Some((x, y)) = at
+                && y >= i32::from(TOP)
+                && y + i32::from(ROW) <= i32::from(bottom)
+            {
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(x + 1, y as u16 + 6, 2, 22),
+                    color: tint::NOTES,
+                });
+            }
+        }
+        // Where the view is in a note longer than the screen.
+        if self.total_rows > view {
+            let track = view * ROW;
+            let h =
+                (u32::from(track) * u32::from(view) / u32::from(self.total_rows)).max(24) as u16;
+            let room = track - h;
+            let max_scroll = self.total_rows - view;
+            let y = TOP
+                + (u32::from(room) * u32::from(self.scroll.min(max_scroll))
+                    / u32::from(max_scroll.max(1))) as u16;
+            kit::round_rect(
+                f,
+                cx,
+                Rect::new(PAPER.right() - 9, y, 5, h),
+                kit::keep(0x8070_7890),
+            );
+        }
+    }
+
+    /// The menu over the tool strip: its keys, the export formats, or the
+    /// files to import (a list over the paper).
+    fn draw_menu(&mut self, f: &mut Frame, cx: &Ctx, note: &Row) {
+        kit::panel(f, cx, STRIP);
+        let words = self.menu_words(note);
+        let n = words.iter().filter(|w| !w.is_empty()).count() as u16;
+        for (k, w) in words.iter().enumerate().take(usize::from(n)) {
+            let r = menu_key(k as u16, n);
+            let danger = self.menu_row == 0 && k == 5;
+            kit::key(
+                f,
+                cx,
+                r,
+                if danger {
+                    kit::KeyState::Down
+                } else {
+                    kit::KeyState::Rest
+                },
+            );
+            kit::centred(
+                f,
+                r,
+                r.y + 23,
+                cx.fonts.label,
+                if danger { kit::LATE } else { TEXT },
+                w,
+            );
+        }
+        if self.menu_row == 1 {
+            let hint = Rect::new(TRAY.x, TRAY.y + 40, TRAY.w, 50);
+            kit::panel(f, cx, hint);
+            kit::centred(
+                f,
+                hint,
+                hint.y + 22,
+                cx.fonts.label,
+                DIM,
+                b"EXPORT TO THE CARD, RETROPANE\\NOTES",
+            );
+            kit::centred(
+                f,
+                hint,
+                hint.y + 40,
+                cx.fonts.label,
+                DIM,
+                b"INK AS ONE FILE A BLOCK; BACK RETURNS",
+            );
+        }
+        if self.menu_row == 2 {
+            let list = Rect::new(PAPER.x + 16, 120, PAPER.w - 32, 40 * 8 + 44);
+            kit::panel(f, cx, list);
+            kit::text(
+                f,
+                list.x + 14,
+                list.y + 26,
+                cx.fonts.label,
+                DIM,
+                b"IMPORT A TEXT FILE FROM THE CARD",
+            );
+            if self.n_files == 0 {
+                kit::text(
+                    f,
+                    list.x + 14,
+                    list.y + 70,
+                    cx.fonts.ui,
+                    DIM,
+                    if matches!(self.job, Job::List) {
+                        b"Looking..."
+                    } else {
+                        b"No .txt or .md files on the card"
+                    },
+                );
+            }
+            for (k, name) in self.files[..self.n_files].iter().enumerate() {
+                let r = Rect::new(list.x + 8, list.y + 40 + k as u16 * 40, list.w - 16, 36);
+                kit::key(f, cx, r, kit::KeyState::Rest);
+                kit::fitted(
+                    f,
+                    r.x + 12,
+                    r.y + 24,
+                    cx.fonts.ui,
+                    TEXT,
+                    name.get(),
+                    r.w - 24,
+                );
+            }
+        }
+    }
+
+    /// The menu row's words.
+    fn menu_words(&self, note: &Row) -> [&'static [u8]; 6] {
+        match self.menu_row {
+            1 => [b"TEXT", b"MARKDOWN", b"SVG", b"PNG", b"", b""],
+            2 => [b"BACK", b"", b"", b"", b"", b""],
+            _ => [
                 if note.pinned { b"UNPIN" } else { b"PIN" },
                 b"COLOR",
                 [&b"RULED"[..], b"PLAIN", b"GRID"][usize::from(note.paper)],
+                b"EXPORT",
+                b"IMPORT",
                 if self.confirm_delete {
                     b"DELETE?"
                 } else {
                     b"DELETE"
                 },
-            ];
-            for (k, w) in words.iter().enumerate() {
-                let r = Rect::new(STRIP.x + 6 + k as u16 * 114, STRIP.y + 6, 108, 36);
-                kit::key(
-                    f,
-                    cx,
-                    r,
-                    if k == 3 {
-                        kit::KeyState::Down
-                    } else {
-                        kit::KeyState::Rest
-                    },
-                );
-                kit::centred(
-                    f,
-                    r,
-                    r.y + 23,
-                    cx.fonts.label,
-                    if k == 3 { kit::LATE } else { TEXT },
-                    w,
-                );
-            }
-            return;
+            ],
         }
-        // The palette tray: the colour wells (the chosen one in the glow),
-        // the three sizes drawn at their size, then the tool strip.
-        let strip = STRIP;
+    }
+
+    /// The palette tray: the colour wells (the chosen one in the glow), the
+    /// three sizes drawn at their size, what a file step or a full note
+    /// says, then the tool strip.
+    fn tray(&mut self, f: &mut Frame, cx: &Ctx, id: u32) {
         kit::panel(f, cx, TRAY);
         kit::text(f, 24, 472, cx.fonts.label, DIM, b"COLOR");
         for (i, p) in self.wells.iter().enumerate() {
@@ -1755,27 +2427,26 @@ impl Notes {
                     pic: p,
                 });
             }
+            // The highlighter's wells: its see-through band over each.
+            if self.tool == Tool::Marker {
+                let hue = stroke_colour(MARKER | MARKER_HUE | i as u8);
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(r.x - 2, r.y + 14, r.w + 4, 12),
+                    color: hue,
+                });
+            }
         }
-        if self.text_full {
-            kit::right(
-                f,
-                456,
-                472,
-                cx.fonts.label,
-                kit::LATE,
-                b"THIS NOTE'S TEXT IS FULL",
-            );
+        let note: &[u8] = if self.text_full {
+            b"THIS NOTE'S TEXT IS FULL"
         } else if self.ink_full {
-            kit::right(
-                f,
-                456,
-                472,
-                cx.fonts.label,
-                kit::LATE,
-                b"THIS NOTE'S INK IS FULL",
-            );
+            b"THIS NOTE'S INK IS FULL"
         } else {
+            self.said
+        };
+        if note.is_empty() {
             kit::text(f, 326, 472, cx.fonts.label, DIM, b"SIZE");
+        } else {
+            kit::right(f, 456, 472, cx.fonts.label, kit::LATE, note);
         }
         for (i, d) in [6u16, 12, 20].iter().enumerate() {
             let r = size_key(i as u16);
@@ -1808,7 +2479,6 @@ impl Notes {
             Tool::List => 4,
         };
         for (k, t) in TOOLS.iter().enumerate() {
-            let _ = strip;
             let r = tool_key(k);
             kit::key(
                 f,
@@ -1821,7 +2491,7 @@ impl Notes {
                 },
             );
             // REDO is dim while there is nothing to put back.
-            let col = if k == 6 && (self.redo_n == 0 || self.redo_of != Some(note.id)) {
+            let col = if k == 6 && (self.redo_n == 0 || self.redo_of != Some(id)) {
                 kit::alpha(DIM, 0x80)
             } else {
                 TEXT
@@ -1831,13 +2501,59 @@ impl Notes {
     }
 }
 
+/// Menu key `k` of `n` across the strip (the emulator's checks tap them).
+#[must_use]
+pub const fn menu_key(k: u16, n: u16) -> Rect {
+    let w = (STRIP.w - 12) / n;
+    Rect::new(STRIP.x + 6 + k * w, STRIP.y + 6, w - 4, 36)
+}
+
+/// `t` wrapped to `max` pixels in `font` (at spaces, or anywhere in a word
+/// longer than the line), each row given to `f`: how many rows (one at
+/// least, for an empty line).
+fn wrap(font: &rp_app::Font, t: &[u8], max: u16, f: &mut dyn FnMut(&[u8])) -> u16 {
+    if t.is_empty() {
+        f(t);
+        return 1;
+    }
+    let (mut start, mut rows) = (0usize, 0u16);
+    while start < t.len() {
+        let (mut end, mut w, mut space) = (start, 0u16, None);
+        while end < t.len() {
+            let cw = font.width(&t[end..end + 1]);
+            if w + cw > max && end > start {
+                break;
+            }
+            w += cw;
+            if t[end] == b' ' {
+                space = Some(end);
+            }
+            end += 1;
+        }
+        let cut = if end < t.len() {
+            space.filter(|&s| s > start).map_or(end, |s| s + 1)
+        } else {
+            end
+        };
+        // A wrapped row starts on a character, never inside one.
+        let mut cut = cut;
+        while cut < t.len() && cut > start + 1 && t[cut] & 0xC0 == 0x80 {
+            cut -= 1;
+        }
+        f(&t[start..cut]);
+        rows = rows.saturating_add(1);
+        start = cut;
+    }
+    rows
+}
+
 impl Notes {
     /// The stroke being written, its newest segment painted into the
-    /// note's ink picture with the saved ink's brush (the owner,
-    /// 2026-11-14: "the strokes only showed up as dots, not as fluid
-    /// strokes"). The last three points: the spline's segment before the
-    /// newest is painted again with its neighbour known, the brush keeps
-    /// the most coverage, so nothing doubles.
+    /// note's ink layer at its block's place with the saved ink's brush
+    /// (the owner, 2026-11-14: "the strokes only showed up as dots, not as
+    /// fluid strokes"). The last three points: the spline's segment before
+    /// the newest is painted again with its neighbour known, the brush
+    /// keeps the most coverage, so nothing doubles.
     fn live_paint(&mut self, cx: &Ctx) {
         if self.tool == Tool::Erase {
             return;
@@ -1852,8 +2568,14 @@ impl Notes {
         self.ink[l] = self.ink[l].and_then(|(c, p)| pics.renew(p).map(|p| (c, p)));
         let Some((_, p)) = self.ink[l] else { return };
         let n = self.live_n;
-        let pts = &self.live[n.saturating_sub(3)..n];
-        pics.write(p, |w| paint_cover(w, &[pts], &[style], colour));
+        let from = n.saturating_sub(3);
+        let pts = &self.live[from..n];
+        let marker = style & MARKER != 0;
+        let ws: &[u8] = if marker { &[] } else { &self.live_w[from..n] };
+        let dy = self.live_dy;
+        pics.write(p, |w| {
+            paint_cover_at(w, &[pts], &[style], &[ws], dy, colour)
+        });
     }
 
     /// The style of a stroke written now: the pen's colour or the marker,
@@ -1872,35 +2594,36 @@ impl Notes {
     }
 
     /// The stroke just written added to the note's ink (or, with the
-    /// eraser, the stroke it crossed taken out).
+    /// eraser, the stroke of its block it crossed taken out).
     fn end_stroke(&mut self, cx: &Ctx, id: u32) {
-        let (mut live, tool, style) = (self.live, self.tool, self.style());
+        let (mut live, mut ws, tool, style) = (self.live, self.live_w, self.tool, self.style());
         // Thinned as it is kept (the eraser's path as it was: it is only
         // compared).
         let n = if tool == Tool::Erase {
             self.live_n
         } else {
-            simplify(&mut live, self.live_n)
+            simplify(&mut live, &mut ws, self.live_n)
         };
         self.live_n = 0;
         if n == 0 {
             return;
         }
+        let block = self.live_block;
         let (page, np) = pages_of(cx, id);
         let kept = if tool == Tool::Erase {
             // The note's own strokes first, then each page's, as they are
             // painted.
-            ink_op(cx, id, InkOp::Erase(&live[..n]), false)
+            ink_op(cx, id, InkOp::Erase(&live[..n], block), false)
                 || page[..np]
                     .iter()
-                    .any(|&p| ink_op(cx, p, InkOp::Erase(&live[..n]), true))
+                    .any(|&p| ink_op(cx, p, InkOp::Erase(&live[..n], block), true))
         } else {
-            // Packed once (a stroke is 514 bytes at most), then added at
-            // the ink's end, nothing else read: the last page's, or the
-            // note's own while it has none; where that is full, a new
-            // page.
-            let mut packed = [0u8; 6 + 2 * 254];
-            let Some(len) = encode_styled(&[&live[..n]], &[style], &mut packed) else {
+            // Packed once (a stroke is 7 + 2 x 254 + 128 bytes at most),
+            // then added at the ink's end: the last page's, or the note's
+            // own while it has none; where that is full, a new page.
+            let mut packed = [0u8; STROKE_MAX];
+            let widths = (style & MARKER == 0).then_some(&ws[..n]);
+            let Some(len) = encode_stroke(&live[..n], widths, style, block, &mut packed) else {
                 return;
             };
             // Something new written: nothing to put back any more.
@@ -1948,7 +2671,7 @@ impl Notes {
             Some(&p) => (p, true),
             None => (id, false),
         };
-        let mut last = [0u8; 6 + 2 * 254];
+        let mut last = [0u8; STROKE_MAX];
         let len = last_stroke(cx, rec, &mut last);
         if len > 0 && ink_op(cx, rec, InkOp::Last, is_page) {
             self.remember(id, &last[..len], 0);
@@ -1957,27 +2680,88 @@ impl Notes {
         self.untype(cx, id);
     }
 
-    /// The last character typed taken off (the keyboard's backspace, and
-    /// UNDO with no ink left); kept for REDO. Backspace took a stroke
-    /// while the note had any: it is the typing's key.
+    /// The line typing goes into: the caret's text or checklist line, else
+    /// a new line after it (or at the note's end).
+    fn typing_line(&mut self, cx: &Ctx, id: u32) -> Option<usize> {
+        if let Some(k) = self.cursor
+            && self
+                .line_item(cx, id, k)
+                .is_some_and(|i| !matches!(i, Item::Ink(_)))
+        {
+            return Some(k);
+        }
+        let at = self
+            .cursor
+            .map_or(self.n_lines, |k| k + 1)
+            .min(self.n_lines);
+        text_op(cx, id, &doc::Edit::Insert(at, b"")).ok()?;
+        // An empty note holds no empty line: the first character makes it.
+        self.n_lines = cx
+            .pim
+            .and_then(|c| c.try_borrow().ok())
+            .and_then(|g| g.as_ref().map(|s| doc::line_count(s, id)))
+            .unwrap_or(0);
+        self.cursor = Some(at);
+        Some(at)
+    }
+
+    /// What line `k` of note `id` is.
+    fn line_item(&self, cx: &Ctx, id: u32, k: usize) -> Option<Item> {
+        let g = cx.pim?.try_borrow().ok()?;
+        let store = g.as_ref()?;
+        let mut b = [0u8; 4];
+        let n = doc::line(store, id, k, &mut b)?;
+        let l = &b[..n];
+        Some(match doc::ink_block(l) {
+            Some(x) => Item::Ink(x),
+            None if l.starts_with(b"[ ] ") => Item::Check(false),
+            None if l.starts_with(b"[x] ") => Item::Check(true),
+            None => Item::Text,
+        })
+    }
+
+    /// The last character of the caret's line taken off (the keyboard's
+    /// backspace, and UNDO with no ink left); kept for REDO. An emptied
+    /// line (or an empty checklist item) goes, the caret to the line
+    /// before.
     fn untype(&mut self, cx: &Ctx, id: u32) {
-        let mut gone = None;
-        text_edit(cx, id, &mut |text, tn| {
-            // (The ink panel's own line is not a character to take.)
-            if *tn == 0 || text[*tn - 1] == INK_LINE {
-                return false;
+        let k = match self.cursor {
+            Some(k) => k,
+            None => {
+                // The last line, unless it is ink.
+                let k = self.n_lines.checked_sub(1);
+                match k {
+                    Some(k) if !matches!(self.line_item(cx, id, k), Some(Item::Ink(_))) => k,
+                    _ => return,
+                }
             }
-            *tn -= 1;
-            gone = Some(text[*tn]);
-            true
-        });
-        if let Some(c) = gone {
-            self.remember(id, &[c], 1);
+        };
+        if matches!(self.line_item(cx, id, k), Some(Item::Ink(_)) | None) {
+            return;
+        }
+        let mut b = [0u8; 8];
+        let n = cx
+            .pim
+            .and_then(|c| c.try_borrow().ok())
+            .and_then(|g| g.as_ref().and_then(|s| doc::line(s, id, k, &mut b)))
+            .unwrap_or(0);
+        let empty = n == 0 || (n == 4 && (b[..4] == *b"[ ] " || b[..4] == *b"[x] "));
+        if empty {
+            if text_op(cx, id, &doc::Edit::Remove(k)).is_ok() {
+                self.remember(id, b"\n", 1);
+                self.cursor = k.checked_sub(1);
+                self.n_lines = self.n_lines.saturating_sub(1);
+            }
+            return;
+        }
+        if let Ok((c, m)) = text_op(cx, id, &doc::Edit::Pop(k)) {
+            self.remember(id, &c[..m], 1);
+            self.cursor = Some(k);
         }
     }
 
     /// What UNDO last took out put back (REDO): the stroke where strokes
-    /// are added, the character at the text's end.
+    /// are added (its block in it), the character at the caret.
     fn redo(&mut self, cx: &Ctx, id: u32) {
         if self.redo_of != Some(id) || self.redo_n < 3 {
             return;
@@ -1989,7 +2773,7 @@ impl Notes {
             self.redo_n = 0;
             return;
         };
-        let mut bytes = [0u8; 6 + 2 * 254];
+        let mut bytes = [0u8; STROKE_MAX];
         let Some(to) = bytes.get_mut(..len) else {
             self.redo_n = 0;
             return;
@@ -1997,57 +2781,74 @@ impl Notes {
         to.copy_from_slice(&self.redo[from..from + len]);
         let back = if kind == 0 {
             add_stroke(cx, id, &bytes[..len])
+        } else if bytes[..len] == *b"\n" {
+            let at = self.cursor.map_or(self.n_lines, |k| k + 1);
+            let ok = text_op(cx, id, &doc::Edit::Insert(at, b"")).is_ok();
+            if ok {
+                self.cursor = Some(at);
+            }
+            ok
         } else {
-            let c = bytes[0];
-            text_edit(cx, id, &mut |text, tn| {
-                if *tn < text.len() {
-                    text[*tn] = c;
-                    *tn += 1;
-                    true
-                } else {
-                    false
-                }
-            })
+            self.typing_line(cx, id)
+                .is_some_and(|k| append(cx, id, k, &bytes[..len]))
         };
         if back {
             self.redo_n = from;
         }
     }
 
-    /// Text typed into the note (a new line, or a checklist item, started
-    /// when the tool was chosen).
+    /// Text typed into the note at the caret.
     fn type_char(&mut self, cx: &Ctx, id: u32, c: u8) {
-        self.text_full = !text_edit(cx, id, &mut |text, tn| {
-            if *tn < text.len() {
-                text[*tn] = c;
-                *tn += 1;
-                true
-            } else {
-                false
+        let Some(k) = self.typing_line(cx, id) else {
+            self.text_full = true;
+            return;
+        };
+        self.text_full = !append(cx, id, k, &[c]);
+        self.follow = true;
+    }
+
+    /// Return: a new line after the caret's (a new item in a checklist; an
+    /// empty item ends the list).
+    fn new_line(&mut self, cx: &Ctx, id: u32) {
+        let k = self.typing_line(cx, id);
+        let item = k.and_then(|k| self.line_item(cx, id, k));
+        let at = k.map_or(self.n_lines, |k| k + 1);
+        let mut b = [0u8; 8];
+        let n = k
+            .and_then(|k| {
+                cx.pim
+                    .and_then(|c| c.try_borrow().ok())
+                    .and_then(|g| g.as_ref().and_then(|s| doc::line(s, id, k, &mut b)))
+            })
+            .unwrap_or(0);
+        if matches!(item, Some(Item::Check(_))) && n == 4 {
+            // An empty item: the list ends, the line a paragraph.
+            if let Some(k) = k {
+                let _ = text_op(cx, id, &doc::Edit::Set(k, b""));
+                self.tool = Tool::Text;
             }
-        });
+            return;
+        }
+        let start: &[u8] = if matches!(item, Some(Item::Check(_))) {
+            b"[ ] "
+        } else {
+            b""
+        };
+        if text_op(cx, id, &doc::Edit::Insert(at, start)).is_ok() {
+            self.cursor = Some(at);
+            self.n_lines += 1;
+            self.follow = true;
+        } else {
+            self.text_full = true;
+        }
     }
 
     /// Checklist line `line` ticked or unticked.
-    fn toggle(&mut self, cx: &Ctx, id: u32, line: u8) {
-        text_edit(cx, id, &mut |text, tn| {
-            let mut at = 0;
-            for (k, l) in text[..*tn].split(|&c| c == b'\n').enumerate() {
-                if k == usize::from(line) {
-                    if l.starts_with(b"[ ] ") {
-                        text[at + 1] = b'x';
-                    } else if l.starts_with(b"[x] ") {
-                        text[at + 1] = b' ';
-                    }
-                    return true;
-                }
-                at += l.len() + 1;
-            }
-            false
-        });
+    fn toggle(&mut self, cx: &Ctx, id: u32, line: usize) {
+        let _ = text_op(cx, id, &doc::Edit::Tick(line));
     }
 
-    /// A new note, empty, its ink panel ready: its place in the list.
+    /// A new note, empty, its ink block ready: its place in the list.
     fn new_note(&mut self, cx: &Ctx) -> Option<u8> {
         let cell = cx.pim?;
         let mut guard = cell.try_borrow_mut().ok()?;
@@ -2060,10 +2861,23 @@ impl Notes {
                 &[(tag::TEXT, &[INK_LINE]), (tag::COLOUR, &colour)],
             )
             .ok()?;
+        self.opened();
         store
             .all(Kind::Note)
             .position(|r| r.id == id)
             .map(|k| k as u8)
+    }
+
+    /// A note opened: at its top, the caret at its end, the pen ready.
+    fn opened(&mut self) {
+        self.scroll = 0;
+        self.cursor = None;
+        self.typing = false;
+        self.menu = false;
+        self.menu_row = 0;
+        self.said = b"";
+        self.tool = Tool::Pen;
+        self.painted = None;
     }
 
     /// Note `id`'s field `which` set to the number `v` (or left out for
@@ -2090,7 +2904,368 @@ impl Notes {
             View::Home => None,
         }
     }
+
+    /// The stylus down on the open note's paper: a stroke starts in the
+    /// ink block under it (or, on the blank paper below the last line, in
+    /// the last block when it is ink and close, else a new block), or a
+    /// tap or a drag begins.
+    fn pen_down(&mut self, cx: &Ctx, id: u32, x: u16, y: u16) -> Reply {
+        let rail = x >= PAPER.right() - RAIL;
+        let ink_tool = matches!(self.tool, Tool::Pen | Tool::Marker | Tool::Erase);
+        let target = if rail || !ink_tool {
+            None
+        } else {
+            match self.item_at(y) {
+                Some(Vis {
+                    item: Item::Ink(b),
+                    row,
+                    ..
+                }) => Some((b, row)),
+                Some(_) => None,
+                None if self.tool == Tool::Erase => None,
+                None => match self.last {
+                    // Below an ink block that ends the note: it grows
+                    // there (a new note's sheet takes ink all the way to
+                    // the tray, as it always has).
+                    Some((Item::Ink(b), row)) => Some((b, row)),
+                    // Else a new block where the note ends.
+                    _ => {
+                        let b = self.next_block;
+                        let (line, n) = doc::ink_line(b);
+                        text_op(cx, id, &doc::Edit::Insert(self.n_lines, &line[..n]))
+                            .ok()
+                            .map(|_| {
+                                self.n_lines += 1;
+                                (b, self.total_rows)
+                            })
+                    }
+                },
+            }
+        };
+        match target {
+            Some((b, row)) => {
+                self.live_block = b;
+                self.live_dy = i32::from(ROW) * (i32::from(row) - i32::from(self.scroll));
+                self.inking = true;
+                self.typing = false;
+                self.tap = None;
+                let local = self.local(x, y);
+                let (p, w) = self.filt.start(local.0, local.1);
+                self.live[0] = p;
+                self.live_w[0] = w;
+                self.live_n = 1;
+                self.live_paint(cx);
+            }
+            None => {
+                self.inking = false;
+                self.tap = Some((x, y, false));
+            }
+        }
+        Reply::Redraw
+    }
+
+    /// A screen point in the stroke's block's own coordinates (inside it
+    /// across, never above its top).
+    fn local(&self, x: u16, y: u16) -> (i16, i16) {
+        let lx = (i32::from(x) - i32::from(INK_AT.0)).clamp(0, i32::from(INK_W) - 1);
+        let ly = (i32::from(y) - i32::from(INK_AT.1) - self.live_dy).clamp(0, 32_000);
+        (lx as i16, ly as i16)
+    }
+
+    /// The stylus moved on the paper: the stroke goes on (filtered), or a
+    /// drag scrolls a row at a time.
+    fn pen_move(&mut self, cx: &Ctx, x: u16, y: u16) -> Reply {
+        if self.inking {
+            if self.live_n < LIVE {
+                let local = self.local(x, y);
+                let (p, w) = self.filt.step(local.0, local.1);
+                self.live[self.live_n] = p;
+                self.live_w[self.live_n] = w;
+                self.live_n += 1;
+                self.live_paint(cx);
+            }
+            return Reply::Redraw;
+        }
+        let Some((x0, y0, _)) = self.tap else {
+            return Reply::Nothing;
+        };
+        let d = i32::from(y) - i32::from(y0);
+        if d.abs() < i32::from(ROW) {
+            return Reply::Nothing;
+        }
+        let steps = (d / i32::from(ROW)) as i16;
+        let max = self.total_rows.saturating_sub(self.view_rows()) as i32;
+        let s = (i32::from(self.scroll) - i32::from(steps)).clamp(0, max.max(0)) as u16;
+        self.tap = Some((
+            x0,
+            (i32::from(y0) + i32::from(steps) * i32::from(ROW)) as u16,
+            true,
+        ));
+        if s == self.scroll {
+            return Reply::Nothing;
+        }
+        self.scroll = s;
+        Reply::Redraw
+    }
+
+    /// The stylus lifted off the paper: the stroke kept, or a tap placed
+    /// (a tick box ticks; a line takes the caret).
+    fn pen_up(&mut self, cx: &Ctx, id: u32, x: u16, y: u16) -> Reply {
+        if self.inking {
+            self.inking = false;
+            if self.live_n > 0 && self.live_n < LIVE {
+                let local = self.local(x, y);
+                let last = self.live[self.live_n - 1];
+                if (local.0 - last.0).abs() + (local.1 - last.1).abs() > 0 {
+                    let (p, w) = self.filt.lift(local.0, local.1);
+                    self.live[self.live_n] = p;
+                    self.live_w[self.live_n] = w;
+                    self.live_n += 1;
+                }
+            }
+            self.end_stroke(cx, id);
+            return Reply::Redraw;
+        }
+        let Some((_, _, dragged)) = self.tap.take() else {
+            return Reply::Nothing;
+        };
+        if dragged || x >= PAPER.right() - RAIL {
+            return Reply::Nothing;
+        }
+        if let Some(&(_, line)) = self.checks[..self.n_checks]
+            .iter()
+            .find(|(r, _)| r.contains_point(x, y))
+        {
+            self.toggle(cx, id, line);
+            return Reply::Redraw;
+        }
+        match self.item_at(y) {
+            Some(v) if !matches!(v.item, Item::Ink(_)) => {
+                self.cursor = Some(v.line);
+                self.typing = true;
+                self.tool = if matches!(v.item, Item::Check(_)) {
+                    Tool::List
+                } else {
+                    Tool::Text
+                };
+            }
+            None => {
+                // Below the last line: typing goes on at the end.
+                self.cursor = self
+                    .n_lines
+                    .checked_sub(1)
+                    .filter(|&k| !matches!(self.line_item(cx, id, k), Some(Item::Ink(_))));
+                if self.cursor.is_none() {
+                    self.cursor = None;
+                }
+                self.typing = true;
+                self.tool = Tool::Text;
+            }
+            Some(_) => return Reply::Nothing,
+        }
+        Reply::Redraw
+    }
+
+    /// A file step begun: note `id` exported as `fmt` (each ink block with
+    /// strokes, one file each, for SVG and PNG).
+    fn export(&mut self, cx: &Ctx, id: u32, fmt: export::Format) {
+        let left = match fmt {
+            export::Format::Svg | export::Format::Png => {
+                let m = cx
+                    .pim
+                    .and_then(|c| c.try_borrow().ok())
+                    .and_then(|g| g.as_ref().map(|s| export::inked_blocks(s, id)))
+                    .unwrap_or(0);
+                if m == 0 {
+                    self.said = b"NO INK TO EXPORT";
+                    return;
+                }
+                m
+            }
+            _ => 1,
+        };
+        self.next_file(cx, id, fmt, left);
+    }
+
+    /// The next file of an export: its length counted, the shell asked to
+    /// write it.
+    fn next_file(&mut self, cx: &Ctx, id: u32, fmt: export::Format, left: u128) {
+        let ink = matches!(fmt, export::Format::Svg | export::Format::Png);
+        let block = if ink { left.trailing_zeros() as u8 } else { 0 };
+        let mut count = export::Count::default();
+        let mut title = Text::<64>::EMPTY;
+        if let Some(g) = cx.pim.and_then(|c| c.try_borrow().ok())
+            && let Some(store) = g.as_ref()
+        {
+            title = Text::of(store.get(id).map_or(&[][..], |r| r.text(tag::TITLE)));
+            match fmt {
+                export::Format::Svg => export::svg(store, id, block, &mut count),
+                export::Format::Png => export::png(store, id, block, &mut self.png, &mut count),
+                _ => export::text(store, id, title.get(), fmt, &mut count),
+            }
+        }
+        let mut name = [0u8; 64];
+        let n = export::file_name(title.get(), if ink { block + 1 } else { 0 }, fmt, &mut name);
+        self.job = Job::Write {
+            id,
+            fmt,
+            block,
+            left: left & !(1u128 << block),
+        };
+        self.asking = Some(card_q(b"CARDPUT", count.0 as u32, &[&name[..n]]));
+        self.said = b"SAVING...";
+    }
+
+    /// An import's piece: its lines put at the note's end as they come; a
+    /// damaged file taken back out whole and named.
+    fn import_piece(&mut self, cx: &Ctx, off: u32, total: u32, bytes: &[u8]) -> Reply {
+        let Job::Read { id, put, file, .. } = self.job else {
+            return Reply::Nothing;
+        };
+        let mut put = put;
+        let fail = |me: &mut Self, put: u32, d: import::Damage| {
+            for _ in 0..put {
+                let _ = text_op(cx, id, &doc::Edit::DropLast);
+            }
+            me.job = Job::None;
+            me.said = d.says();
+            me.menu = false;
+            me.menu_row = 0;
+        };
+        if off == 0 {
+            if total > import::MAX_FILE {
+                fail(self, 0, import::Damage::TooBig(total));
+                return Reply::Redraw;
+            }
+            self.reader = import::Reader::new();
+        }
+        let mut sink = |l: &[u8]| -> Result<(), import::Damage> {
+            text_op(cx, id, &doc::Edit::Push(l)).map_err(|_| import::Damage::NoRoom)?;
+            put += 1;
+            Ok(())
+        };
+        let mut r = self.reader.feed(bytes, &mut sink);
+        let end = off as usize + bytes.len() >= total as usize;
+        if r.is_ok() && end {
+            r = self.reader.finish(&mut sink);
+        }
+        match r {
+            Err(d) => fail(self, put, d),
+            Ok(()) if end => {
+                self.job = Job::None;
+                self.said = b"IMPORTED";
+                self.menu = false;
+                self.menu_row = 0;
+                self.follow = true;
+                self.cursor = None;
+            }
+            Ok(()) => {
+                // The next piece, from where this one ended.
+                let at = off + bytes.len() as u32;
+                self.job = Job::Read { id, put, file, at };
+                self.asking = Some(card_q(
+                    b"CARDFILE",
+                    u32::from(file),
+                    &[b"txt", &Digits::of(at)],
+                ));
+            }
+        }
+        Reply::Redraw
+    }
+
+    /// The suggestions for the word before the caret, and whether the next
+    /// letter starts a sentence, from the caret's line.
+    fn suggest_now(&mut self, cx: &Ctx, id: u32) {
+        self.sugg_n = [0; 3];
+        let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+            return;
+        };
+        let Some(store) = guard.as_ref() else { return };
+        self.suggest_in(store, id);
+    }
+
+    /// [`Self::suggest_now`] from the store itself (the previews': the
+    /// shell draws the strip before the program's frame).
+    pub fn suggest_in(&mut self, store: &rp_pim::store::Store<'_>, id: u32) {
+        self.sugg_stale = false;
+        if self.learned_at != Some(store.changes()) {
+            // The user's own words, counted from every note.
+            self.learned.clear();
+            let dict = words::Dict::default_lang();
+            for r in store.all(Kind::Note) {
+                doc::for_lines(store, r.id, &mut |_, l| {
+                    self.learned.count_in(l, dict.as_ref());
+                    true
+                });
+            }
+            self.learned_at = Some(store.changes());
+        }
+        // The caret's line's end: the word being typed and its sentence.
+        let mut b = [0u8; 64];
+        let (n, whole) = self
+            .cursor
+            .and_then(|k| doc::line_tail(store, id, k, &mut b))
+            .unwrap_or((0, true));
+        let line = &b[..n];
+        self.caps_next = if whole || line.iter().any(|&c| c != b' ') {
+            words::sentence_starts(line) && (whole || line.trim_ascii_end().len() < n)
+        } else {
+            false
+        };
+        let start = line
+            .iter()
+            .rposition(|c| !(c.is_ascii_alphabetic() || *c == b'\''))
+            .map_or(0, |i| i + 1);
+        let word = &line[start..];
+        let dict = words::Dict::default_lang();
+        self.sugg_n = words::suggest(word, dict.as_ref(), &self.learned, &mut self.sugg);
+    }
+
+    /// Suggestion `k` taken: the word being typed finished with it and a
+    /// space.
+    fn take_suggestion(&mut self, cx: &Ctx, id: u32, k: usize) {
+        let Some(&n) = self.sugg_n.get(k) else { return };
+        let Some(line) = self.cursor else { return };
+        if n == 0 {
+            return;
+        }
+        let mut b = [0u8; 64];
+        let Some((len, _)) = cx
+            .pim
+            .and_then(|c| c.try_borrow().ok())
+            .and_then(|g| g.as_ref().and_then(|s| doc::line_tail(s, id, line, &mut b)))
+        else {
+            return;
+        };
+        let start = b[..len]
+            .iter()
+            .rposition(|c| !(c.is_ascii_alphabetic() || *c == b'\''))
+            .map_or(0, |i| i + 1);
+        let typed = len - start;
+        let word = self.sugg[k];
+        if n > typed {
+            let mut rest = [0u8; words::WORD_MAX + 1];
+            rest[..n - typed].copy_from_slice(&word[typed..n]);
+            rest[n - typed] = b' ';
+            // The word's own capitals: what was typed is replaced as is.
+            let _ = append(cx, id, line, &rest[..n - typed + 1]);
+        }
+    }
 }
+
+/// `bytes` put at the end of line `k` of note `id` (an empty note's first
+/// line made).
+fn append(cx: &Ctx, id: u32, k: usize, bytes: &[u8]) -> bool {
+    match text_op(cx, id, &doc::Edit::Append(k, bytes)) {
+        Ok(_) => true,
+        Err(doc::Refused::NoLine) => text_op(cx, id, &doc::Edit::Insert(k, bytes)).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// A packed stroke's most bytes: its head and extension, 254 steps and a
+/// width nibble a point.
+const STROKE_MAX: usize = 7 + 2 * 254 + 128;
 
 /// Notes as it first opens (the program's entry and the PC's model).
 #[must_use]
@@ -2103,6 +3278,14 @@ pub fn opened(_today: i32) -> Notes {
 #[must_use]
 pub fn opened_for(today: i32, intent: u8) -> Notes {
     let mut n = opened(today);
+    n.start_new = intent == rp_app::INTENT_NEW;
+    n
+}
+
+/// [`opened_for`] made straight into the program's slot (no 11 KB value on
+/// the stack: [`Notes::new_in`]).
+pub fn opened_in(slot: &mut core::mem::MaybeUninit<Notes>, _today: i32, intent: u8) -> &mut Notes {
+    let n = Notes::new_in(slot);
     n.start_new = intent == rp_app::INTENT_NEW;
     n
 }
@@ -2131,6 +3314,12 @@ impl Program for Notes {
         }
         self.refresh(cx);
         self.find(cx);
+        if let Some(id) = self.open_id() {
+            self.layout(cx, id);
+            if self.sugg_stale && self.typing {
+                self.suggest_now(cx, id);
+            }
+        }
         self.paint(cx);
         match self.view {
             View::Home => self.home(f, cx),
@@ -2167,11 +3356,215 @@ impl Program for Notes {
                 return self.event(Event::PenUp { x, y }, cx);
             }
         }
+        let reply = self.event_in(e, cx, id);
+        // What typing changed: the suggestions and the next capital.
+        if let (Some(id), true) = (self.open_id(), self.typing)
+            && matches!(
+                e,
+                Event::Char(_)
+                    | Event::Delete
+                    | Event::Done
+                    | Event::Suggestion(_)
+                    | Event::PenUp { .. }
+            )
+        {
+            self.suggest_now(cx, id);
+        }
+        reply
+    }
+
+    fn keyboard(&self) -> Option<Field> {
+        match self.view {
+            View::Home if self.searching => Some(Field::Line),
+            View::Note(_) if self.typing => Some(Field::Sentence),
+            _ => None,
+        }
+    }
+
+    fn suggestions(&self) -> [&[u8]; 3] {
+        if !self.typing {
+            return [&[], &[], &[]];
+        }
+        [
+            &self.sugg[0][..self.sugg_n[0]],
+            &self.sugg[1][..self.sugg_n[1]],
+            &self.sugg[2][..self.sugg_n[2]],
+        ]
+    }
+
+    fn caps(&self) -> Option<bool> {
+        (self.typing && matches!(self.view, View::Note(_))).then_some(self.caps_next)
+    }
+
+    fn card_ask(&mut self) -> Option<rp_app::NetAsk> {
+        self.asking.take()
+    }
+
+    fn net_body(&mut self, at: usize, out: &mut [u8], cx: &Ctx) -> usize {
+        let Job::Write { id, fmt, block, .. } = self.job else {
+            return 0;
+        };
+        let Some(g) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+            return 0;
+        };
+        let Some(store) = g.as_ref() else { return 0 };
+        let mut w = export::Window::new(at, out);
+        let mut title = [0u8; 64];
+        let tn = store.get(id).map_or(0, |r| {
+            let t = r.text(tag::TITLE);
+            let n = t.len().min(64);
+            title[..n].copy_from_slice(&t[..n]);
+            n
+        });
+        match fmt {
+            export::Format::Svg => export::svg(store, id, block, &mut w),
+            export::Format::Png => export::png(store, id, block, &mut self.png, &mut w),
+            _ => export::text(store, id, &title[..tn], fmt, &mut w),
+        }
+        w.got
+    }
+
+    fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        match (ok, self.job) {
+            (false, Job::Write { .. }) => {
+                self.job = Job::None;
+                self.said = not_saved(body);
+                Reply::Redraw
+            }
+            (false, Job::Read { id, put, at, .. }) => {
+                // What was put in so far taken back out.
+                for _ in 0..put {
+                    let _ = text_op(cx, id, &doc::Edit::DropLast);
+                }
+                self.job = Job::None;
+                self.said = if at == 0 && body == b"no card" {
+                    b"NOT IMPORTED: NO CARD"
+                } else {
+                    b"NOT IMPORTED: UNREADABLE"
+                };
+                Reply::Redraw
+            }
+            (_, Job::List) => {
+                self.n_files = 0;
+                // "n|name" lines (none if the card isn't there).
+                for l in body.split(|&c| c == b'\n').filter(|_| ok) {
+                    let Some(bar) = l.iter().position(|&c| c == b'|') else {
+                        continue;
+                    };
+                    let no = core::str::from_utf8(&l[..bar])
+                        .ok()
+                        .and_then(|t| t.parse::<u8>().ok());
+                    if let Some(no) = no
+                        && self.n_files < self.files.len()
+                    {
+                        self.files[self.n_files] = Text::of(&l[bar + 1..]);
+                        self.file_no[self.n_files] = no;
+                        self.n_files += 1;
+                    }
+                }
+                self.job = Job::None;
+                Reply::Redraw
+            }
+            (true, Job::Write { id, fmt, left, .. }) => {
+                if left != 0 {
+                    self.next_file(cx, id, fmt, left);
+                } else {
+                    self.job = Job::None;
+                    self.said = b"SAVED IN RETROPANE ON THE CARD";
+                }
+                Reply::Redraw
+            }
+            (true, Job::Read { at, .. }) => {
+                // The file's size, then its bytes from `at`.
+                let Some((size, bytes)) = body.split_first_chunk::<4>() else {
+                    return self.net_answer(false, b"", cx);
+                };
+                let total = u32::from_le_bytes(*size);
+                if bytes.is_empty() && at < total {
+                    // The file shrank under the read: said, not waited on.
+                    return self.net_answer(false, b"", cx);
+                }
+                self.import_piece(cx, at, total, bytes)
+            }
+            _ => Reply::Nothing,
+        }
+    }
+}
+
+/// A card question: `what`, then `n` and the words after it.
+fn card_q(what: &'static [u8], n: u32, rest: &[&[u8]]) -> rp_app::NetAsk {
+    let mut b = [0u8; 64];
+    let d = Digits::of(n);
+    let mut k = d.len();
+    b[..k].copy_from_slice(&d);
+    for w in rest {
+        let w = &w[..w.len().min(b.len().saturating_sub(k + 1))];
+        if k < b.len() {
+            b[k] = b' ';
+            b[k + 1..k + 1 + w.len()].copy_from_slice(w);
+            k += 1 + w.len();
+        }
+    }
+    rp_app::NetAsk {
+        what,
+        arg: Text::of(&b[..k]),
+    }
+}
+
+/// What the tray says when the card refused a save (its reason, from
+/// `rp_today::cardfiles`).
+fn not_saved(why: &[u8]) -> &'static [u8] {
+    match why {
+        b"no card" | b"the card not readable" => b"NOT SAVED: NO CARD",
+        b"the card is full" => b"NOT SAVED: THE CARD IS FULL",
+        b"too big to write" => b"NOT SAVED: TOO LARGE",
+        b"the app's file was short" => b"NOT SAVED: THE NOTE CHANGED",
+        _ => b"NOT SAVED: THE CARD REFUSED IT",
+    }
+}
+
+/// A number's decimal digits, without a heap.
+struct Digits {
+    b: [u8; 10],
+    n: usize,
+}
+
+impl Digits {
+    fn of(mut v: u32) -> Self {
+        let mut b = [0u8; 10];
+        let mut n = 0;
+        loop {
+            b[9 - n] = b'0' + (v % 10) as u8;
+            n += 1;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        Self { b, n }
+    }
+}
+
+impl core::ops::Deref for Digits {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.b[10 - self.n..]
+    }
+}
+
+impl Notes {
+    /// The events, past the D-pad's walk.
+    #[allow(clippy::too_many_lines)]
+    fn event_in(&mut self, e: Event, cx: &Ctx, id: Option<u32>) -> Reply {
         match (e, self.view) {
             (Event::Key(Key::SoftLeft), View::Home) => Reply::Close,
             (Event::Key(Key::SoftLeft), _) => {
                 if self.menu {
-                    self.menu = false;
+                    if self.menu_row != 0 {
+                        self.menu_row = 0;
+                    } else {
+                        self.menu = false;
+                    }
                 } else if self.typing {
                     self.typing = false;
                 } else {
@@ -2181,25 +3574,77 @@ impl Program for Notes {
             }
             (Event::Key(Key::SoftRight), View::Note(_)) => {
                 self.menu = !self.menu;
+                self.menu_row = 0;
                 self.confirm_delete = false;
                 self.focus.clear();
                 Reply::Redraw
             }
+            // A file to import, from the list over the paper.
+            (Event::PenUp { x, y }, View::Note(_))
+                if self.menu
+                    && self.menu_row == 2
+                    && (160..160 + 40 * 8).contains(&y)
+                    && !STRIP.contains_point(x, y) =>
+            {
+                let k = usize::from((y - 160) / 40);
+                if let (Some(id), true) = (id, k < self.n_files) {
+                    let file = self.file_no[k];
+                    self.job = Job::Read {
+                        id,
+                        put: 0,
+                        file,
+                        at: 0,
+                    };
+                    self.asking = Some(card_q(b"CARDFILE", u32::from(file), &[b"txt", b"0"]));
+                    self.said = b"IMPORTING...";
+                    self.menu = false;
+                    self.menu_row = 0;
+                }
+                Reply::Redraw
+            }
             (Event::PenUp { x, y }, View::Note(i)) if self.menu && STRIP.contains_point(x, y) => {
-                let k = usize::from((x - STRIP.x - 6) / 114).min(3);
                 let Some(row) = self.rows.get(usize::from(i)).copied().flatten() else {
                     return Reply::Nothing;
                 };
-                match k {
-                    0 => self.set_num(cx, row.id, tag::PINNED, (!row.pinned).then_some(1)),
-                    1 => {
+                let words = self.menu_words(&row);
+                let n = words.iter().filter(|w| !w.is_empty()).count() as u16;
+                let Some(k) = (0..n).find(|&k| menu_key(k, n).contains_point(x, y)) else {
+                    return Reply::Nothing;
+                };
+                match (self.menu_row, k) {
+                    (1, 0..=3) => {
+                        let fmt = [
+                            export::Format::Text,
+                            export::Format::Markdown,
+                            export::Format::Svg,
+                            export::Format::Png,
+                        ][usize::from(k)];
+                        self.export(cx, row.id, fmt);
+                        self.menu = false;
+                        self.menu_row = 0;
+                    }
+                    (2, _) => self.menu_row = 0,
+                    (_, 0) => self.set_num(cx, row.id, tag::PINNED, (!row.pinned).then_some(1)),
+                    (_, 1) => {
                         let c = kit::IDENTITY
                             .iter()
                             .position(|&x| x == row.colour)
                             .unwrap_or(1);
                         self.set_num(cx, row.id, tag::COLOUR, Some(((c + 1) % 8) as u32));
                     }
-                    2 => self.set_num(cx, row.id, tag::PAPER, Some(u32::from((row.paper + 1) % 3))),
+                    (_, 2) => {
+                        self.set_num(cx, row.id, tag::PAPER, Some(u32::from((row.paper + 1) % 3)))
+                    }
+                    (_, 3) => self.menu_row = 1,
+                    (_, 4) => {
+                        self.menu_row = 2;
+                        self.n_files = 0;
+                        self.job = Job::List;
+                        self.asking = Some(rp_app::NetAsk {
+                            what: b"CARDFILES",
+                            arg: Text::of(b"txt"),
+                        });
+                    }
                     _ if self.confirm_delete => {
                         self.delete_note(cx, row.id);
                         self.menu = false;
@@ -2327,7 +3772,7 @@ impl Program for Notes {
                     return Reply::Redraw;
                 }
                 self.view = View::Note(order[usize::from(self.sel)]);
-                self.tool = Tool::Pen;
+                self.opened();
                 Reply::Redraw
             }
             (Event::Char(c), View::Home) if self.searching && self.query_n < self.query.len() => {
@@ -2348,7 +3793,7 @@ impl Program for Notes {
             (Event::Key(Key::SoftRight), View::Home) => {
                 if let Some(k) = self.new_note(cx) {
                     self.view = View::Note(k);
-                    self.tool = Tool::Pen;
+                    self.opened();
                 }
                 Reply::Redraw
             }
@@ -2361,7 +3806,7 @@ impl Program for Notes {
                 {
                     Some(&(_, k)) => {
                         self.view = View::Note(k);
-                        self.tool = Tool::Pen;
+                        self.opened();
                         Reply::Redraw
                     }
                     None => Reply::Nothing,
@@ -2401,12 +3846,22 @@ impl Program for Notes {
                     1 => self.tool = Tool::Marker,
                     2 => self.tool = Tool::Erase,
                     3 | 4 => {
+                        // A new paragraph, or a new checklist item, after
+                        // the caret's line (at the end with none).
                         self.tool = if k == 3 { Tool::Text } else { Tool::List };
                         self.typing = true;
                         if let Some(id) = id {
-                            let start: &[u8] = if k == 3 { b"\n" } else { b"\n[ ] " };
-                            for &c in start {
-                                self.type_char(cx, id, c);
+                            let at = self
+                                .cursor
+                                .map_or(self.n_lines, |c| c + 1)
+                                .min(self.n_lines);
+                            let start: &[u8] = if k == 3 { b"" } else { b"[ ] " };
+                            if text_op(cx, id, &doc::Edit::Insert(at, start)).is_ok() {
+                                self.cursor = Some(at);
+                                self.n_lines += 1;
+                                self.follow = true;
+                            } else if k == 4 || self.n_lines > 0 {
+                                self.text_full = true;
                             }
                         }
                     }
@@ -2423,13 +3878,15 @@ impl Program for Notes {
                 }
                 Reply::Redraw
             }
-            // A checklist item ticked.
+            // A tick box tapped (the D-pad's centre lifts only).
             (Event::PenUp { x, y }, View::Note(_))
-                if self.live_n == 0
+                if !self.inking
+                    && !self.menu
                     && self.checks[..self.n_checks]
                         .iter()
                         .any(|(r, _)| r.contains_point(x, y)) =>
             {
+                self.tap = None;
                 if let (Some(id), Some(&(_, line))) = (
                     id,
                     self.checks[..self.n_checks]
@@ -2440,62 +3897,48 @@ impl Program for Notes {
                 }
                 Reply::Redraw
             }
-            // Writing: the pen's points inside the ink panel.
-            (Event::PenDown { x, y } | Event::PenMove { x, y }, View::Note(_))
-                if matches!(self.tool, Tool::Pen | Tool::Marker | Tool::Erase) =>
+            // The paper: writing, ticking, placing the caret, scrolling.
+            (Event::PenDown { x, y }, View::Note(_))
+                if !self.menu
+                    && (TOP..TOP + self.view_rows() * ROW).contains(&y)
+                    && PAPER.contains_point(x, y) =>
             {
-                let Some((ix, iy)) = self.ink_at else {
-                    return Reply::Nothing;
-                };
-                if x < ix || y < iy || x >= ix + INK_W || y >= iy + INK_H || y >= TRAY.y {
-                    return Reply::Nothing;
+                match id {
+                    Some(id) => self.pen_down(cx, id, x, y),
+                    None => Reply::Nothing,
                 }
-                // The sheet takes ink everywhere, so a touch that starts
-                // on a list's tick box is the box's, not a stroke.
-                if matches!(e, Event::PenDown { .. }) {
-                    self.inking = !self.checks[..self.n_checks]
-                        .iter()
-                        .any(|(r, _)| r.contains_point(x, y));
-                }
-                if !self.inking {
-                    return Reply::Nothing;
-                }
-                if self.live_n < LIVE {
-                    self.live[self.live_n] = ((x - ix) as i16, (y - iy) as i16);
-                    self.live_n += 1;
-                    self.live_paint(cx);
-                }
-                Reply::Redraw
             }
-            (Event::PenUp { .. }, View::Note(_)) if self.live_n > 0 => {
-                if let Some(id) = id {
-                    self.end_stroke(cx, id);
-                }
-                Reply::Redraw
+            (Event::PenMove { x, y }, View::Note(_)) if self.inking || self.tap.is_some() => {
+                self.pen_move(cx, x, y)
             }
+            (Event::PenUp { x, y }, View::Note(_)) if self.inking || self.tap.is_some() => match id
+            {
+                Some(id) => self.pen_up(cx, id, x, y),
+                None => Reply::Nothing,
+            },
             (Event::Char(c), View::Note(_)) if self.typing => {
                 if let Some(id) = id {
                     self.type_char(cx, id, c);
+                    self.redo_n = 0;
+                }
+                Reply::Redraw
+            }
+            (Event::Suggestion(k), View::Note(_)) if self.typing => {
+                if let Some(id) = id {
+                    self.take_suggestion(cx, id, usize::from(k));
                 }
                 Reply::Redraw
             }
             (Event::Delete, View::Note(_)) if self.typing => {
                 if let Some(id) = id {
                     self.untype(cx, id);
+                    self.follow = true;
                 }
                 Reply::Redraw
             }
             (Event::Done, View::Note(_)) if self.typing => {
-                // Return: a new line, a new item in a checklist.
                 if let Some(id) = id {
-                    let next: &[u8] = if self.tool == Tool::List {
-                        b"\n[ ] "
-                    } else {
-                        b"\n"
-                    };
-                    for &c in next {
-                        self.type_char(cx, id, c);
-                    }
+                    self.new_line(cx, id);
                 }
                 Reply::Redraw
             }
@@ -2503,17 +3946,8 @@ impl Program for Notes {
         }
     }
 
-    fn keyboard(&self) -> Option<Field> {
-        match self.view {
-            View::Home if self.searching => Some(Field::Line),
-            View::Note(_) if self.typing => Some(Field::Sentence),
-            _ => None,
-        }
-    }
-}
-
-impl Notes {
-    /// Note `id` taken out of the store, its ink pages with it.
+    /// Note `id` taken out of the store, its ink pages and text pages with
+    /// it.
     fn delete_note(&mut self, cx: &Ctx, id: u32) {
         if let Some(cell) = cx.pim
             && let Ok(mut g) = cell.try_borrow_mut()
@@ -2523,13 +3957,14 @@ impl Notes {
             for &p in &page[..np] {
                 let _ = store.remove(p);
             }
+            doc::remove_pages(store, id);
             let _ = store.remove(id);
         }
     }
 
     /// What a stylus can tap in an open note besides writing, for the
-    /// D-pad: the menu's four keys while it is up; else the tick boxes,
-    /// the colour wells, the sizes and the tools.
+    /// D-pad: the menu's keys while it is up; else the tick boxes, the
+    /// colour wells, the sizes and the tools.
     fn note_targets(&self) -> ([Rect; 28], usize) {
         let mut t = [Rect::new(0, 0, 0, 0); 28];
         let mut n = 0;
@@ -2540,8 +3975,13 @@ impl Notes {
             }
         };
         if self.menu {
-            for k in 0..4 {
-                add(Rect::new(STRIP.x + 6 + k * 114, STRIP.y + 6, 108, 36));
+            let k = match self.menu_row {
+                1 => 4,
+                2 => 1,
+                _ => 6,
+            };
+            for i in 0..k {
+                add(menu_key(i, k));
             }
         } else {
             for (r, _) in &self.checks[..self.n_checks] {
@@ -2563,3 +4003,5 @@ impl Notes {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_d;

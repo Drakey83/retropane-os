@@ -260,6 +260,31 @@ pub enum Cmd {
         /// is the alpha).
         color: Argb,
     },
+    /// An opaque picture at 16 bits from the RAM store, over what's there:
+    /// RGB565, two pixels a word, the first in the word's low half (its
+    /// first two bytes in memory). `pic.w` words a row: `2 * pic.w` pixels
+    /// wide, `pic.h` tall. Half a 32-bit picture's bytes in the store, the
+    /// upload and the 2D engine's picture cache, at the screen's own depth
+    /// (ADR-0034 C2: opaque pictures at 16 bits). A program's map is one: at
+    /// 32 bits it was 602 KB, past the engine's 384 KiB cache, and never
+    /// drawn (2026-11-23).
+    Pic16 {
+        /// Left edge.
+        x: u16,
+        /// Top edge (negative: its rows above the top are cut).
+        y: i16,
+        /// The picture: its words the pixel pairs.
+        pic: pics::Pic,
+    },
+    /// What this frame does with the renderer's two layers (a zoom between
+    /// views: calendar-rule0.md, the owner's pick D of 2026-11-23). A
+    /// renderer without layers ignores it and draws the frame's other
+    /// commands, which hold the arriving view whole: the change is then
+    /// made at once, never wrong.
+    Layers {
+        /// What to do.
+        op: LayerOp,
+    },
     /// A run of text.
     Text {
         /// The pen's starting position.
@@ -291,6 +316,38 @@ pub enum Cmd {
         /// Its art.
         art: &'static PanelArt,
     },
+}
+
+/// A frame's use of the renderer's two layers ([`Cmd::Layers`]): layer A
+/// holds the screen as it was when the arriving view was drawn, layer B
+/// that view, both screen pictures (whole, at the screen's depth).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LayerOp {
+    /// The frame is drawn into layer B, in two parts on two frames (part
+    /// 0 the screen's top half, then part 1 its bottom half: each inside
+    /// the frame budget where a whole view's draw is not), starting from the
+    /// picture on screen and drawing only where part 0's frame differs from
+    /// it; the picture on screen is kept in layer A; nothing is shown (the
+    /// screen stays as it was).
+    Capture {
+        /// 0, then 1.
+        part: u8,
+    },
+    /// The frame shows one layer whole and the other's content area
+    /// (`from`) scaled into `card`; nothing else of the frame is drawn.
+    /// `arriving_in_card`: B in the card over A (zooming in), else A in the
+    /// card over B (zooming out).
+    Show {
+        /// Where the card is on screen.
+        card: Rect,
+        /// The part of the card's layer scaled into it.
+        from: Rect,
+        /// B in the card (else A).
+        arriving_in_card: bool,
+    },
+    /// Layer B shown whole: the frame captured becomes the screen's (the
+    /// zoom's end), and drawing goes on from it with nothing drawn again.
+    Land,
 }
 
 /// A panel's pre-rendered art (made offline, e.g.
@@ -426,6 +483,15 @@ impl Cmd {
             | Cmd::Outline { r, .. }
             | Cmd::Panel { r, .. } => r,
             Cmd::Clip { .. } => Rect::new(0, 0, 0, 0),
+            // What it changes on screen: nothing while captured (the
+            // damage is the frame's other commands'), the card when shown;
+            // landed, the screen is the frame's own list's picture, so
+            // nothing a later list differs from (the shell's difference drew
+            // the whole screen again when it left the list).
+            Cmd::Layers { op } => match op {
+                LayerOp::Capture { .. } | LayerOp::Land => Rect::new(0, 0, 0, 0),
+                LayerOp::Show { card, .. } => card,
+            },
             Cmd::Image { x, y, img } => Rect::new(x, y, img.w, img.h),
             Cmd::Pic { x, y, pic } => {
                 let cut = y.min(0).unsigned_abs();
@@ -442,6 +508,15 @@ impl Cmd {
                     x,
                     y.max(0).cast_unsigned(),
                     pic.w.saturating_mul(8),
+                    pic.h.saturating_sub(cut),
+                )
+            }
+            Cmd::Pic16 { x, y, pic } => {
+                let cut = y.min(0).unsigned_abs();
+                Rect::new(
+                    x,
+                    y.max(0).cast_unsigned(),
+                    pic.w.saturating_mul(2),
                     pic.h.saturating_sub(cut),
                 )
             }
@@ -589,6 +664,8 @@ impl Frame {
                 // (Ink keeps its colour in every look, as paper does.)
                 Cmd::Image { .. }
                 | Cmd::Pic { .. }
+                | Cmd::Pic16 { .. }
+                | Cmd::Layers { .. }
                 | Cmd::Cover { .. }
                 | Cmd::Clip { .. }
                 | Cmd::Panel { .. } => {}
@@ -692,6 +769,21 @@ impl Frame {
         self.push(Cmd::Clip {
             r: r.unwrap_or(NO_CLIP),
         });
+    }
+
+    /// The clip later commands are drawn in: the last `Clip` pushed
+    /// ([`NO_CLIP`] when none). A program clipping part of its area
+    /// intersects with it and puts it back after, so the clip the shell
+    /// set round the program's window holds (a nested clip).
+    #[must_use]
+    pub fn clip_now(&self) -> Rect {
+        self.cmds()
+            .filter_map(|c| match *c {
+                Cmd::Clip { r } => Some(r),
+                _ => None,
+            })
+            .last()
+            .unwrap_or(NO_CLIP)
     }
 
     /// The drawing commands in order, each with the clip it is drawn in

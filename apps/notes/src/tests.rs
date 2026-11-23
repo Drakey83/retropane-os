@@ -51,14 +51,14 @@ static LOOK: Look = Look {
 
 use rp_app::PanelArt;
 
-fn store() -> &'static core::cell::RefCell<Option<Store<'static>>> {
+pub(super) fn store() -> &'static core::cell::RefCell<Option<Store<'static>>> {
     let mem = vec![0u8; rp_pim::store::MEMORY].leak();
     let mut s = Store::new(mem);
     s.load_start(None);
     Box::leak(Box::new(core::cell::RefCell::new(Some(s))))
 }
 
-fn ctx(pim: &'static core::cell::RefCell<Option<Store<'static>>>) -> Ctx<'static> {
+pub(super) fn ctx(pim: &'static core::cell::RefCell<Option<Store<'static>>>) -> Ctx<'static> {
     Ctx {
         fonts: &FONTS,
         look: &LOOK,
@@ -77,7 +77,7 @@ fn ctx(pim: &'static core::cell::RefCell<Option<Store<'static>>>) -> Ctx<'static
     }
 }
 
-fn draw(n: &mut Notes, cx: &Ctx) {
+pub(super) fn draw(n: &mut Notes, cx: &Ctx) {
     let mut f = Box::new(Frame::new());
     n.draw(&mut f, cx);
 }
@@ -285,7 +285,7 @@ fn search_finds_by_title_and_text_and_the_menu_pins_papers_and_deletes() {
     );
     n.event(
         Event::PenUp {
-            x: STRIP.x + 6 + 2 * 114 + 20,
+            x: menu_key(2, 6).x + 20,
             y: STRIP.y + 20,
         },
         &cx,
@@ -298,7 +298,7 @@ fn search_finds_by_title_and_text_and_the_menu_pins_papers_and_deletes() {
         assert_eq!(r.text(tag::TEXT), b"Plant tomatoes");
     }
     // DELETE asks once, then deletes.
-    let del = STRIP.x + 6 + 3 * 114 + 20;
+    let del = menu_key(5, 6).x + 20;
     draw(&mut n, &cx);
     n.event(
         Event::PenUp {
@@ -345,11 +345,7 @@ fn typing_and_ink_keep_the_paper_colour_pin_and_unknown_fields() {
         )
         .unwrap();
     let n = opened(19_723);
-    text_edit(&cx, id, &mut |text, tn| {
-        text[*tn] = b'b';
-        *tn += 1;
-        true
-    });
+    assert!(append(&cx, id, 0, b"b"));
     n.set_num(&cx, id, tag::COLOUR, Some(2));
     let s = pim.borrow();
     let r = s.as_ref().unwrap().get(id).unwrap();
@@ -362,7 +358,14 @@ fn typing_and_ink_keep_the_paper_colour_pin_and_unknown_fields() {
 }
 
 /// A stroke from (`x0`, `y0`) going right `n` samples, `dy(k)` its rise.
-fn stroke(n: &mut Notes, cx: &Ctx, x0: u16, y0: u16, samples: u16, dy: impl Fn(u16) -> u16) {
+pub(super) fn stroke(
+    n: &mut Notes,
+    cx: &Ctx,
+    x0: u16,
+    y0: u16,
+    samples: u16,
+    dy: impl Fn(u16) -> u16,
+) {
     n.event(Event::PenDown { x: x0, y: y0 }, cx);
     for k in 1..samples {
         n.event(
@@ -439,7 +442,7 @@ fn a_curve_keeps_its_shape_when_thinned() {
         *p = (k as i16 * 6, up[k % 12]);
     }
     let before = pts;
-    let n = simplify(&mut pts, 60);
+    let n = simplify(&mut pts, &mut [8; LIVE], 60);
     assert!(n < 45, "{n}");
     // Every point left out lies within a pixel and a half of the kept line.
     for q in &before[..60] {
@@ -537,7 +540,7 @@ fn ink_goes_on_past_one_record_and_a_full_note_says_so() {
     for _ in 0..2 {
         n.event(
             Event::PenUp {
-                x: STRIP.x + 6 + 3 * 114 + 20,
+                x: menu_key(5, 6).x + 20,
                 y: STRIP.y + 20,
             },
             &cx,
@@ -705,7 +708,7 @@ fn the_dpad_reaches_an_open_note_s_tools_colours_sizes_and_menu() {
     );
     // The menu's keys take the arrows while it is up: PIN by the centre.
     n.event(Event::Key(Key::SoftRight), &cx);
-    assert_eq!(reach(&n), (4, 4));
+    assert_eq!(reach(&n), (6, 6));
     n.event(Event::Key(Key::Down), &cx);
     n.event(Event::Key(Key::Enter), &cx);
     let g = pim.borrow();
@@ -948,15 +951,7 @@ fn a_note_full_of_ink_still_takes_typing() {
     };
     let before = strokes_kept_of(pim, old);
     // (Enough text that the record cannot hold it beside both fields.)
-    assert!(text_edit(&cx, old, &mut |text, tn| {
-        for _ in 0..60 {
-            for &c in b"hello" {
-                text[*tn] = c;
-                *tn += 1;
-            }
-        }
-        true
-    }));
+    assert!(text_op(&cx, old, &doc::Edit::Push(&b"hello".repeat(60))).is_ok());
     assert_eq!(strokes_kept_of(pim, old), before, "no stroke lost");
     let g = pim.borrow();
     let r = g.as_ref().unwrap().get(old).unwrap();

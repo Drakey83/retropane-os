@@ -28,7 +28,7 @@ pub mod kit;
 pub mod timepad;
 
 pub use rp_draw::pics::{Pic, Pics};
-pub use rp_draw::{Argb, Cmd, Font, Frame, PanelArt, Rect};
+pub use rp_draw::{Argb, Cmd, Font, Frame, LayerOp, PanelArt, Rect};
 
 /// The screen.
 pub const W: u16 = 480;
@@ -391,6 +391,25 @@ pub struct NetAsk {
     pub arg: Text<64>,
 }
 
+/// A map a program wants shown (Contacts' address: contacts-rule0.md
+/// "Where they are"): the radar's own map (docs/design/radar-maps.md: the
+/// layers the dock's relay draws from Natural Earth, coloured on the device
+/// in the look shown, kept on the card), centred on a place. The shell
+/// lends it back as a picture of [`kit::MAP_PIC`]'s size
+/// ([`Program::map_answer`]); the place is at its middle, to within a
+/// pixel (the map's key is in thousandths of a degree, ~100 m, a pixel at
+/// zoom 10).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MapAsk {
+    /// Latitude, millionths of a degree.
+    pub lat: i32,
+    /// Longitude, millionths of a degree.
+    pub lon: i32,
+    /// The map's zoom (web Mercator: 10 is ~50 km across the picture at
+    /// mid-latitudes; the relay draws 3-10).
+    pub zoom: u8,
+}
+
 /// [`Opening::intent`]: start something new at once.
 pub const INTENT_NEW: u8 = 1;
 
@@ -418,6 +437,12 @@ pub trait Program {
     fn suggestions(&self) -> [&[u8]; 3] {
         [&[], &[], &[]]
     }
+    /// Whether the next letter typed is a capital (the app knows where its
+    /// caret is: a sentence's start), when the app says; `None` leaves it
+    /// to the keyboard's own rule.
+    fn caps(&self) -> Option<bool> {
+        None
+    }
     /// A question for the network, if the app has one (taken: asked once).
     fn net_ask(&mut self) -> Option<NetAsk> {
         None
@@ -427,5 +452,35 @@ pub trait Program {
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
         let _ = (ok, body, cx);
         Reply::Nothing
+    }
+    /// The map the app wants on screen now, if any (asked again whenever
+    /// it changes: a place, a zoom).
+    fn map_ask(&self) -> Option<MapAsk> {
+        None
+    }
+    /// The map asked for, coloured in the look shown (again after a look
+    /// change), or `None`: none can be had (no connection and none kept on
+    /// the card, or the relay drew none). The picture is the app's until
+    /// it closes (or the next answer replaces it).
+    fn map_answer(&mut self, ask: MapAsk, map: Option<Pic>, cx: &Ctx) -> Reply {
+        let _ = (ask, map, cx);
+        Reply::Nothing
+    }
+    /// A question for the device's own card, if the app has one (taken):
+    /// `CARDFILES` (the files of a kind: `vcf`, `ics`, `pic`, as "n|name"
+    /// lines), `CARDFILE` ("n kind": file n's bytes), `CARDPUT` ("length
+    /// name": the body, [`Program::net_body`], kept as the card's
+    /// `RetroPane\name`). Answered through [`Program::net_answer`], as the
+    /// network's are; the card needs no dock.
+    fn card_ask(&mut self) -> Option<NetAsk> {
+        None
+    }
+    /// The body of the question in flight that sends one (the network's
+    /// `PUT`, the card's `CARDPUT`): its bytes from `at` into `out`, how
+    /// many (0: no more). Asked in order, `at` rising, so an app writes
+    /// a file a piece at a time and never holds it whole.
+    fn net_body(&mut self, at: usize, out: &mut [u8], cx: &Ctx) -> usize {
+        let _ = (at, out, cx);
+        0
     }
 }

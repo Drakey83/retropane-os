@@ -59,7 +59,7 @@ pub struct TimePad {
     a: u16,
     b: u16,
     pm: bool,
-    /// Clock: the 24-hour clock (R373): the hour 0-23 typed in full, no AM
+    /// Clock: the 24-hour clock (R383): the hour 0-23 typed in full, no AM
     /// and PM keys.
     h24: bool,
     /// Before: 0 minutes, 1 hours, 2 days.

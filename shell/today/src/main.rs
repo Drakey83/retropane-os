@@ -243,10 +243,10 @@ mod image {
         }
     }
 
-    /// The reminder's chime: its notes (Hz, ms), its level (0-100) and
-    /// the bytes of its DMA ring.
-    const CHIME: [(u32, u32); 2] = [(880, 150), (1175, 230)];
+    /// The reminder's chime ([`rp_audio::chime::REMINDER`]): its level
+    /// (0-100), each note's amplitude and the bytes of its DMA ring.
     const CHIME_LEVEL: u32 = 70;
+    const CHIME_AMPLITUDE: u16 = 12_000;
     const CHIME_RING: usize = 8192;
 
     /// The wallpaper, packed by the build (sheet today-image-room.md: 460
@@ -813,10 +813,61 @@ mod image {
                 }
             }
         }
+        // The open program's map (Contacts' address: prog_map.rs) the same
+        // way: the layers still in RAM coloured at once, else its file on
+        // the card read a piece a pass, else the relay's.
+        if let Some(key) = shell.prog_map_wanted() {
+            if kept.ram == Some(key) {
+                shell.prog_map_layers(key, map_layers);
+                let _ = writeln!(RunLog, "program map: its layers still in RAM, coloured");
+            } else {
+                if !*card_tried {
+                    *card_tried = true;
+                    *card = take_card();
+                }
+                let t0 = rt::ticks();
+                let got = match card.as_mut() {
+                    Some((c, start)) => map_head(c, *start, key, map_file),
+                    None => Err("no SD card"),
+                };
+                kept.asked_ms = now_ms;
+                kept.read_us = us(t0);
+                kept.unpack_us = 0;
+                match got {
+                    Ok((h, run)) => {
+                        shell.prog_map_card(Some(h.crc));
+                        kept.ram = None;
+                        kept.key = None;
+                        *layers_of = None;
+                        *coloured = None;
+                        kept.step = MapStep::Read {
+                            key,
+                            head: h,
+                            run,
+                            got: if run.is_some() { 0 } else { HEAD },
+                        };
+                        let _ = writeln!(
+                            RunLog,
+                            "program map: on the card ({} bytes): reading it",
+                            h.len
+                        );
+                    }
+                    Err(why) => {
+                        shell.prog_map_card(None);
+                        let _ =
+                            writeln!(RunLog, "program map: not on the card ({why}): the dock's");
+                    }
+                }
+            }
+        }
         // A step under way for a place no longer shown stops.
-        let current = shell.radar_key();
+        let current = shell.prog_map_key().unwrap_or_else(|| shell.radar_key());
         let fail = |shell: &mut rp_shell::Shell, kept: &mut KeptMap, why: &str| {
-            shell.radar_map_card(None);
+            if shell.layers_for_program() {
+                shell.prog_map_card_failed();
+            } else {
+                shell.radar_map_card(None);
+            }
             kept.key = None;
             kept.ram = None;
             kept.step = MapStep::Idle;
@@ -885,6 +936,20 @@ mod image {
                             key,
                             layer: layer + 1,
                         };
+                    }
+                    Ok(()) if shell.layers_for_program() => {
+                        // The program's map: coloured into its picture (the
+                        // radar's layers are another place's now).
+                        kept.ram = Some(key);
+                        kept.step = MapStep::Idle;
+                        *layers_of = None;
+                        *coloured = None;
+                        shell.prog_map_layers(key, map_layers);
+                        let _ = writeln!(
+                            RunLog,
+                            "program map: from the card, {} bytes: read in {} us, unpacked in {} us",
+                            kept.len, kept.read_us, kept.unpack_us
+                        );
                     }
                     Ok(()) => {
                         kept.ram = Some(key);
@@ -1458,6 +1523,10 @@ mod image {
         tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
         /// The default icon pack's piece being fetched (option C).
         pack: bool,
+        /// A `PUT`'s body: its length and the bytes sent so far (the
+        /// program writes it a piece at a time, `Shell::program_body`).
+        stream: usize,
+        streamed: usize,
     }
 
     impl Net {
@@ -1471,6 +1540,8 @@ mod image {
             self.got = 0;
             self.tile = None;
             self.pack = false;
+            self.stream = 0;
+            self.streamed = 0;
         }
     }
 
@@ -2166,6 +2237,8 @@ mod image {
                             got: 0,
                             tile: None,
                             pack: false,
+                            stream: 0,
+                            streamed: 0,
                         });
                     }
                     Err(e) => {
@@ -2861,31 +2934,31 @@ mod image {
                     look_seen[0], look_seen[1]
                 );
             }
-            // A reminder has come up: its chime, once (two rising notes,
-            // under half a second; the loop waits for it, the watchdog
-            // fed). Windows Mobile plays a wave file through its mixer;
-            // ours makes the two notes as they go out, no file and no
-            // mixer.
+            // A reminder has come up: its chime, once (two rising notes
+            // that ring like a small bell, 0.68 s; the loop waits for it,
+            // the watchdog fed). Windows Mobile plays a wave file through
+            // its mixer; ours makes the notes as they go out, in the
+            // speaker's loudest band, no file and no mixer
+            // (rp_audio::chime).
             if shell.take_chime()
                 && let Some((a, dma)) = audio.as_mut()
             {
                 let rate = rp_audio::LINK_RATE.hz();
                 let t0 = rt::ticks();
-                let mut played = true;
-                for (hz, ms) in CHIME {
-                    let mut tone = rp_drv_pxa_i2s::Tone::new(hz, rate, 12_000);
-                    played &= a
-                        .play(
-                            dma,
-                            ring,
-                            &mut tone,
-                            rate * ms / 1000,
-                            &mut rt::ticks,
-                            3_250_000 / 5,
-                            &mut rt::check_in,
-                        )
-                        .is_ok();
-                }
+                let mut chime =
+                    rp_audio::chime::Chime::new(&rp_audio::chime::REMINDER, rate, CHIME_AMPLITUDE);
+                let frames = chime.frames();
+                let played = a
+                    .play(
+                        dma,
+                        ring,
+                        &mut chime,
+                        frames,
+                        &mut rt::ticks,
+                        3_250_000 / 5,
+                        &mut rt::check_in,
+                    )
+                    .is_ok();
                 let _ = writeln!(
                     RunLog,
                     "sound: a reminder's chime {} at {now_ms} ms, {} us in all",
@@ -3053,6 +3126,76 @@ mod image {
                             "organiser: the card refused three writes; the changes stay in RAM and are tried again each minute"
                         );
                     }
+                }
+            }
+            // The open program's card question (rp_today::cardfiles: an
+            // import's list of files, a file, an export written), answered
+            // here with no dock, in the RAM pool while no network answer
+            // is coming into it. Logged after the card is let go.
+            if still
+                && net.as_ref().is_none_or(|n| !n.waiting)
+                && let Some((what, arg, len)) = shell.card_ask()
+            {
+                if !card_tried {
+                    card_tried = true;
+                    *card = take_card();
+                }
+                let words = arg.get();
+                let first = words.split(|&c| c == b' ').next().unwrap_or(&[]);
+                let rest = words.get(first.len() + 1..).unwrap_or(&[]);
+                let number = core::str::from_utf8(first)
+                    .ok()
+                    .and_then(|w| w.parse::<usize>().ok());
+                let answer: Result<usize, &str> = match (card.as_mut(), what, number) {
+                    (None, ..) => Err("no card"),
+                    (Some((c, start)), b"CARDFILES", _) => {
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::cardfiles::list(&mut *c, *start, words, net_buf)
+                    }
+                    (Some((c, start)), b"CARDFILE", Some(k)) => {
+                        // "n kind [offset]".
+                        let mut w = rest.split(|&c| c == b' ');
+                        let kind = w.next().unwrap_or(&[]);
+                        let offset = w
+                            .next()
+                            .and_then(|o| core::str::from_utf8(o).ok()?.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::cardfiles::read(&mut *c, *start, kind, k, offset, net_buf)
+                    }
+                    (Some((c, start)), b"CARDPUT", _) => {
+                        // The body a piece at a time from the app, each
+                        // staged on the card and linked whole at the end
+                        // (cardfiles::put_from): no file need fit the pool.
+                        let (scratch, piece) = net_buf.split_at_mut(rp_today::cardfiles::SCRATCH);
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::cardfiles::put_from(
+                            &mut *c,
+                            *start,
+                            rest,
+                            len,
+                            scratch,
+                            piece,
+                            &mut |at, out| shell.program_body(at, out),
+                        )
+                        .map(|()| 0)
+                    }
+                    _ => Err("not a card question"),
+                };
+                let _ = writeln!(
+                    RunLog,
+                    "card files: {} {} -> {}",
+                    core::str::from_utf8(what).unwrap_or("?"),
+                    core::str::from_utf8(words).unwrap_or("?"),
+                    match answer {
+                        Ok(_) => "done",
+                        Err(e) => e,
+                    }
+                );
+                // A refusal's reason as its body (an app may say it).
+                match answer {
+                    Ok(n) => shell.card_answer(true, &net_buf[..n]),
+                    Err(e) => shell.card_answer(false, e.as_bytes()),
                 }
             }
             if still && def_index.is_none() && !def_failed {
@@ -3330,6 +3473,8 @@ mod image {
                     n.out_at = 0;
                     n.tile = q.tile;
                     n.pack = q.ask == rp_shell::Ask::Pack;
+                    n.stream = q.stream;
+                    n.streamed = 0;
                     n.waiting = true;
                     n.asked_ms = now_ms;
                     let _ = writeln!(
@@ -3341,7 +3486,20 @@ mod image {
                         core::str::from_utf8(q.logged()).unwrap_or("?").trim_end()
                     );
                 }
-                // What is left of the question, as the port takes it.
+                // What is left of the question, as the port takes it; then
+                // a PUT's body, a piece at a time (zeros if the program's
+                // ran short: the relay reads the length it was told).
+                if n.out_at >= n.out_n && n.waiting && n.streamed < n.stream {
+                    let room = n.out.len().min(n.stream - n.streamed);
+                    let mut k = shell.program_body(n.streamed, &mut n.out[..room]);
+                    if k == 0 {
+                        n.out[..room].fill(0);
+                        k = room;
+                    }
+                    n.streamed += k;
+                    n.out_n = k;
+                    n.out_at = 0;
+                }
                 if n.out_at < n.out_n {
                     n.out_at += n.udc.write(&n.out[n.out_at..n.out_n]);
                 }
@@ -3409,8 +3567,10 @@ mod image {
                             // The place's map: its layers in one answer (R184),
                             // the first for the place or the relay's newer one
                             // (a card read under way stops), kept to write to
-                            // the card in a later pass.
-                            let key = shell.radar_key();
+                            // the card in a later pass. Or the open program's
+                            // map (prog_map.rs), kept the same way.
+                            let prog = shell.layers_for_program();
+                            let key = shell.layers_key();
                             let t0 = rt::ticks();
                             let got = match map_file.get_mut(HEAD..HEAD + l) {
                                 Some(f) => {
@@ -3424,7 +3584,7 @@ mod image {
                                 "radar map: the place's layers, {l} bytes, unpacked {got:?} in {} us",
                                 rt::ticks().wrapping_sub(t0) / 13 * 4
                             );
-                            layers_of = got.is_ok().then_some(MapOf::Place);
+                            layers_of = (got.is_ok() && !prog).then_some(MapOf::Place);
                             coloured = None;
                             if got.is_ok() {
                                 kept.key = Some(key);
@@ -3437,8 +3597,11 @@ mod image {
                                 kept.ram = None;
                                 kept.step = MapStep::Idle;
                             }
+                            if prog && got.is_ok() {
+                                shell.prog_map_layers(key, map_layers);
+                            }
                             shell.net_answer(got.is_ok(), &[]);
-                            if got.is_ok() {
+                            if got.is_ok() && !prog {
                                 shell.radar_map_in();
                             }
                         }

@@ -231,7 +231,7 @@ fn holds(hay: &[u8], needle: &[u8]) -> Option<usize> {
 const FLAGS: [u32; 4] = [0, kit::IDENTITY[4], kit::AMBER, LATE];
 
 /// `m` minutes from midnight in the clock chosen: "3:05 PM" or "15:05"
-/// (R373: the one writer every app shares).
+/// (R383: the one writer every app shares).
 fn clock(m: u16, clock12: bool, out: &mut [u8; 8]) -> usize {
     let t = rp_app::clock::time(m, clock12);
     let n = t.get().len();
