@@ -16,10 +16,16 @@
 use rp_app::Text;
 use rp_app::kit::{self, DIM, TEXT, tint};
 use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W, WIDE};
+use rp_pim::contact::{Address, Day};
 use rp_pim::phone;
 use rp_pim::store::{Kind, tag};
 
+pub mod form;
+pub mod io;
 pub mod photo;
+
+pub use form::EditField;
+use form::{EXTRAS, Extra, FORM, SLOTS};
 
 /// People a view holds.
 pub const MAX: usize = 48;
@@ -33,9 +39,10 @@ const PICKS: usize = 8;
 const PHOTO_PAGES: usize = 6;
 /// The card's targets past what it copies: the avatar (the chooser).
 const PICTURE: u8 = 9;
-/// The chooser's keys past its rows.
+/// The chooser's keys past its rows, and its card pictures' rows.
 const MORE: u8 = 100;
 const REMOVE: u8 = 101;
+const CARD_PIC: u8 = 200;
 
 /// What the network is asked for, or was.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,11 +67,14 @@ pub struct Person {
     pub last: Text<24>,
     /// Company.
     pub company: Text<32>,
+    /// Job title.
+    pub job: Text<32>,
     /// Phones: a label and the number as kept (E.164).
     pub phones: [(&'static [u8], Text<20>); 3],
     /// E-mail.
     pub email: Text<40>,
-    /// The address, as lines.
+    /// The address as the card shows it: the street, and the city line
+    /// ("Seattle, WA 98101").
     pub address: [Text<40>; 2],
     /// A favourite.
     pub favourite: bool,
@@ -73,16 +83,16 @@ pub struct Person {
 impl Person {
     /// A person from the store's record.
     fn of(r: &rp_pim::store::Rec<'_>) -> Self {
-        let addr = r.text(tag::ADDRESS);
-        let (a0, a1) = match addr.iter().position(|&c| c == b'\n') {
-            Some(k) => (&addr[..k], &addr[k + 1..]),
-            None => (addr, &b""[..]),
-        };
+        let a = Address::of(r.text(tag::ADDRESS));
+        let mut city = [0u8; 96];
+        let n = a.city_text(&mut city);
+        let (a0, a1) = (a.street, &city[..n]);
         Self {
             id: r.id,
             first: Text::of(r.text(tag::FIRST)),
             last: Text::of(r.text(tag::LAST)),
             company: Text::of(r.text(tag::COMPANY)),
+            job: Text::of(r.text(tag::JOB)),
             phones: [
                 (b"MOBILE", Text::of(r.text(tag::MOBILE))),
                 (b"HOME", Text::of(r.text(tag::HOME))),
@@ -109,58 +119,41 @@ pub enum View {
     Edit(EditField),
     /// One person's picture being chosen.
     Photo(u8),
+    /// Import, export and the doubles ([`io`]).
+    Tools,
+    /// A .vcf file chosen to import.
+    Files,
+    /// A double offered as one.
+    Merge,
 }
 
-/// The editor's rows, in the form's order: nine typed fields, then the
-/// favourite switch and (for a person already kept) Delete. The first
-/// editor typed three of these and drew two more that took no typing; a
-/// kept person could not be changed or deleted at all.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EditField {
-    /// The first name.
-    First,
-    /// The last name.
-    Last,
-    /// The company.
-    Company,
-    /// The mobile number.
-    Mobile,
-    /// The home number.
-    Home,
-    /// The work number.
-    Work,
-    /// The e-mail address.
-    Email,
-    /// The street.
-    Street,
-    /// City, state and postal code.
-    City,
-    /// A favourite or not (a switch).
-    Favourite,
-    /// Delete this person (asked twice).
-    Delete,
-}
-
-/// The typed fields: their label, hint and the most they hold (the
-/// person's own room).
-const FORM: [(&[u8], &[u8], usize); 9] = [
-    (b"FIRST", b"First name", 24),
-    (b"LAST", b"Last name", 24),
-    (b"COMPANY", b"Company", 32),
-    (b"MOBILE", b"(555) 555-0100", 20),
-    (b"HOME", b"Home number", 20),
-    (b"WORK", b"Work number", 20),
-    (b"E-MAIL", b"name@example.com", 40),
-    (b"STREET", b"Start typing an address", 40),
-    (b"CITY", b"City, state, ZIP", 40),
-];
 /// Where the form's first row lies.
 const FORM_Y: u16 = 36 + kit::TITLE_BAND + 6;
+
+/// A line of a person's card: its label, its text (and a second line for
+/// an address).
+#[derive(Clone, Copy, Debug)]
+struct Detail {
+    label: Text<24>,
+    value: Text<64>,
+    more: Text<64>,
+}
+
+impl Detail {
+    const EMPTY: Self = Self {
+        label: Text::EMPTY,
+        value: Text::EMPTY,
+        more: Text::EMPTY,
+    };
+}
+
+/// The card's lines at most.
+const DETAILS: usize = 20;
 
 /// The list's search field and letter strip.
 /// The search field, the home's first line (design-language.md version
 /// 3: people first; the count is its hint, no title band above it).
-const SEARCH: Rect = Rect::new(MARGIN, 44, WIDE, 40);
+const SEARCH: Rect = Rect::new(MARGIN, 44, WIDE - 60, 40);
 const STRIP: Rect = Rect::new(W - MARGIN - 22, 120, 26, 470);
 
 /// Whether `hay` holds `needle`, ignoring case.
@@ -248,14 +241,19 @@ pub struct Contacts {
     /// Typed text per editor field ([`FORM`]'s order), the person being
     /// changed (none: a new one), the favourite switch, Delete asked once,
     /// and the form's rows on screen.
-    form: [[u8; 40]; 9],
-    form_n: [usize; 9],
+    form: [[u8; 40]; SLOTS],
+    form_n: [usize; SLOTS],
+    /// The extra phones and e-mails being edited, and a day typed that
+    /// isn't one (its row says so).
+    extras: [Extra; EXTRAS],
+    n_extras: usize,
+    bad_day: Option<EditField>,
     editing: Option<u32>,
     fav: bool,
     confirm_delete: bool,
     /// Done was pressed with no name typed: the form says so.
     need_name: bool,
-    form_at: [(Rect, EditField); 11],
+    form_at: [(Rect, EditField); 16],
     n_form: usize,
     /// Suggestions for the street (from the network service).
     places: [Option<Place>; 5],
@@ -271,9 +269,31 @@ pub struct Contacts {
     /// The card's targets (what each copies: 0-2 a phone, 3 the e-mail,
     /// 4 the address, 5 the Copy key), and the one just copied with the
     /// ticks its mark shows.
-    card_at: [(Rect, u8); 8],
+    card_at: [(Rect, u8); 24],
     n_card: usize,
     copied: Option<(u8, u8)>,
+    /// The card's lines (read from the record as it is drawn), the first
+    /// shown (a card of more lines than fit goes on over the page), and
+    /// whether more follow.
+    details: [Detail; DETAILS],
+    n_details: usize,
+    card_first: u8,
+    card_more: bool,
+    /// The card and its fields as the store takes them: kept here, not on
+    /// a frame (4 KB together, the stack rule's whole).
+    work: rp_pim::vcard::Card,
+    scratch: rp_pim::vcard::Scratch,
+    /// Import, export, duplicates and pictures from the card ([`io`]).
+    io: io::Io,
+    /// The doubles to be counted at the next draw.
+    recount: bool,
+    /// The JPEG reader of a picture being read, a vCard picture's bytes on
+    /// their way to it, and the second card of a merge.
+    dec: rp_pim::jpeg::Decoder,
+    pic_buf: [u8; 2048],
+    other: rp_pim::vcard::Card,
+    /// A person's picture written as a JPEG for an export.
+    jpeg_buf: [u8; io::JPEG_ROOM],
     /// The street text last asked about, and whether the last answer came
     /// from the device's own addresses (no connection).
     asked: Text<64>,
@@ -311,7 +331,7 @@ pub struct Contacts {
     n_picks: usize,
     more: bool,
     pick_from: u8,
-    pick_at: [(Rect, u8); PICKS + 2],
+    pick_at: [(Rect, u8); PICKS + 6],
     n_pick_at: usize,
     want: Want,
     asked_for: Want,
@@ -350,21 +370,25 @@ fn name(p: &Person, out: &mut [u8; 64]) -> usize {
     n
 }
 
-impl Contacts {
-    /// No one yet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            people: [None; MAX],
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for [`Contacts::new`] and
+/// [`Contacts::new_in`].
+macro_rules! contacts_start {
+    ($($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Contacts {
+            people: @each None,
             seen: None,
             view: View::List,
-            form: [[0; 40]; 9],
-            form_n: [0; 9],
+            form: [[0; 40]; SLOTS],
+            form_n: [0; SLOTS],
+            extras: [Extra::EMPTY; EXTRAS],
+            n_extras: 0,
+            bad_day: None,
             editing: None,
             fav: false,
             confirm_delete: false,
             need_name: false,
-            form_at: [(Rect::new(0, 0, 0, 0), EditField::First); 11],
+            form_at: [(Rect::new(0, 0, 0, 0), EditField::First); 16],
             n_form: 0,
             places: [None; 5],
             first_row: 0,
@@ -373,9 +397,21 @@ impl Contacts {
             next_row: 0,
             total: 0,
             down_y: None,
-            card_at: [(Rect::new(0, 0, 0, 0), 0); 8],
+            card_at: [(Rect::new(0, 0, 0, 0), 0); 24],
             n_card: 0,
             copied: None,
+            details: @each Detail::EMPTY,
+            n_details: 0,
+            card_first: 0,
+            card_more: false,
+            work: rp_pim::vcard::Card::new(),
+            scratch: rp_pim::vcard::Scratch::new(),
+            io: io::Io::new(),
+            recount: false,
+            dec: rp_pim::jpeg::Decoder::new(),
+            pic_buf: [0; 2048],
+            jpeg_buf: @each 0,
+            other: rp_pim::vcard::Card::new(),
             asked: Text::EMPTY,
             offline: false,
             names: [Text::EMPTY; 3],
@@ -391,19 +427,34 @@ impl Contacts {
             bigs: [None; 8],
             big: None,
             painted: false,
-            has_photo: [false; MAX],
-            faces: [(0, 0, None); FACES],
+            has_photo: @each false,
+            faces: @each (0, 0, None),
             face_next: 0,
             picks: [(0, Text::of(b"")); PICKS],
             n_picks: 0,
             more: false,
             pick_from: 0,
-            pick_at: [(Rect::new(0, 0, 0, 0), 0); PICKS + 2],
+            pick_at: [(Rect::new(0, 0, 0, 0), 0); PICKS + 6],
             n_pick_at: 0,
             want: Want::Nothing,
             asked_for: Want::Nothing,
             photo_note: b"",
-        }
+        })
+    };
+}
+
+impl Contacts {
+    /// No one yet.
+    #[must_use]
+    pub fn new() -> Self {
+        contacts_start!(value)
+    }
+
+    /// [`Contacts::new`] made straight into `slot` (the program's, in
+    /// `.bss`), a field at a time: made on the stack and moved it was a
+    /// 31 KB frame (the stack rule, P6: 4 KB).
+    pub fn new_in(slot: &mut core::mem::MaybeUninit<Self>) -> &mut Self {
+        contacts_start!(slot,)
     }
 
     /// The people made again from the store when its records changed.
@@ -569,44 +620,136 @@ impl Contacts {
         self.more = false;
         self.pick_from = 0;
         self.want = Want::List(0);
-        self.photo_note = b"Asking your PC for its pictures...";
+        self.photo_note = b"Looking on the card and your PC...";
+        self.ask_card_pics();
     }
 
-    /// What is typed in field `at` (nothing for a switch).
+    /// What is typed in field `at` (nothing for a switch or a key).
     fn val(&self, at: EditField) -> &[u8] {
-        let k = at as usize;
-        self.form.get(k).map_or(&[][..], |b| &b[..self.form_n[k]])
+        match at {
+            EditField::Extra(k) => self
+                .extras
+                .get(usize::from(k))
+                .map_or(&[][..], |e| &e.value[..e.value_n]),
+            EditField::Label(k) => self
+                .extras
+                .get(usize::from(k))
+                .map_or(&[][..], |e| &e.label[..e.label_n]),
+            _ => at
+                .slot()
+                .map_or(&[][..], |k| &self.form[k][..self.form_n[k]]),
+        }
     }
 
     /// Field `at` set to `s` (as much as it holds).
     fn put(&mut self, at: EditField, s: &[u8]) {
-        let k = at as usize;
-        if let Some(b) = self.form.get_mut(k) {
-            let n = s.len().min(FORM[k].2);
-            b[..n].copy_from_slice(&s[..n]);
-            self.form_n[k] = n;
+        match at {
+            EditField::Extra(k) => {
+                if let Some(e) = self.extras.get_mut(usize::from(k)) {
+                    e.value_n = s.len().min(40);
+                    e.value[..e.value_n].copy_from_slice(&s[..e.value_n]);
+                }
+            }
+            EditField::Label(k) => {
+                if let Some(e) = self.extras.get_mut(usize::from(k)) {
+                    e.label_n = s.len().min(24);
+                    e.label[..e.label_n].copy_from_slice(&s[..e.label_n]);
+                }
+            }
+            _ => {
+                if let Some(k) = at.slot() {
+                    let n = s.len().min(FORM[k].2);
+                    self.form[k][..n].copy_from_slice(&s[..n]);
+                    self.form_n[k] = n;
+                }
+            }
         }
     }
 
-    /// The form's rows: Delete only for a person already kept.
-    fn fields(&self) -> ([EditField; 11], usize) {
+    /// A character typed into field `at` (none past its room).
+    fn push_char(&mut self, at: EditField, c: u8) {
+        let mut b = [0u8; 41];
+        let v = self.val(at);
+        let n = v.len();
+        b[..n].copy_from_slice(v);
+        b[n] = c;
+        self.put(at, &b[..=n]);
+    }
+
+    /// The last character of field `at` taken off.
+    fn pop_char(&mut self, at: EditField) {
+        let mut b = [0u8; 40];
+        let v = self.val(at);
+        let n = v.len().saturating_sub(1);
+        b[..n].copy_from_slice(&v[..n]);
+        self.put(at, &b[..n]);
+    }
+
+    /// The form's rows in order: the common fields, each extra phone and
+    /// e-mail under its kind with a key to add another, the address's
+    /// parts, the days, the switch, and Delete for a person already kept.
+    fn fields(&self) -> ([EditField; 32], usize) {
         use EditField as E;
-        (
-            [
-                E::First,
-                E::Last,
-                E::Company,
-                E::Mobile,
-                E::Home,
-                E::Work,
-                E::Email,
-                E::Street,
-                E::City,
-                E::Favourite,
-                E::Delete,
-            ],
-            if self.editing.is_some() { 11 } else { 10 },
-        )
+        let mut out = [E::First; 32];
+        let mut n = 0;
+        let mut add = |f: E| {
+            out[n] = f;
+            n += 1;
+        };
+        for f in [
+            E::First,
+            E::Last,
+            E::Company,
+            E::Job,
+            E::Mobile,
+            E::Home,
+            E::Work,
+        ] {
+            add(f);
+        }
+        let room = self.n_extras < EXTRAS;
+        for (k, e) in self.extras[..self.n_extras].iter().enumerate() {
+            if e.phone {
+                add(E::Extra(k as u8));
+            }
+        }
+        if room {
+            add(E::AddPhone);
+        }
+        add(E::Email);
+        for (k, e) in self.extras[..self.n_extras].iter().enumerate() {
+            if !e.phone {
+                add(E::Extra(k as u8));
+            }
+        }
+        if room {
+            add(E::AddEmail);
+        }
+        for f in [
+            E::Street,
+            E::City,
+            E::Region,
+            E::Postal,
+            E::Country,
+            E::Birthday,
+            E::Anniversary,
+            E::Website,
+            E::Favourite,
+        ] {
+            add(f);
+        }
+        if self.editing.is_some() {
+            add(E::Delete);
+        }
+        (out, n)
+    }
+
+    /// The row a field is typed on (an extra's label is its row's).
+    const fn row_of(at: EditField) -> EditField {
+        match at {
+            EditField::Label(k) => EditField::Extra(k),
+            f => f,
+        }
     }
 
     /// `view` shown, the D-pad's focus and the marks of the last one gone.
@@ -616,11 +759,14 @@ impl Contacts {
         self.focus.clear();
         self.confirm_delete = false;
         self.copied = None;
+        self.card_first = 0;
     }
 
     /// The editor on an empty form: a new person.
     fn open_new(&mut self) {
-        self.form_n = [0; 9];
+        self.form_n = [0; SLOTS];
+        self.n_extras = 0;
+        self.bad_day = None;
         self.editing = None;
         self.fav = false;
         self.places = [None; 5];
@@ -628,20 +774,78 @@ impl Contacts {
     }
 
     /// The editor on person `i`: every field as kept.
-    fn open_edit(&mut self, i: u8) {
+    fn open_edit(&mut self, i: u8, cx: &Ctx) {
         use EditField as E;
         let Some(p) = self.people.get(usize::from(i)).copied().flatten() else {
             return;
         };
-        self.put(E::First, p.first.get());
-        self.put(E::Last, p.last.get());
-        self.put(E::Company, p.company.get());
-        self.put(E::Mobile, p.phones[0].1.get());
-        self.put(E::Home, p.phones[1].1.get());
-        self.put(E::Work, p.phones[2].1.get());
-        self.put(E::Email, p.email.get());
-        self.put(E::Street, p.address[0].get());
-        self.put(E::City, p.address[1].get());
+        {
+            let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+                return;
+            };
+            let Some(r) = guard.as_ref().and_then(|s| s.get(p.id)) else {
+                return;
+            };
+            // Into the app's own card: 2 KB, not on a frame.
+            rp_pim::vcard::read_into(&r, &mut self.work);
+        }
+        self.form_n = [0; SLOTS];
+        self.n_extras = 0;
+        self.bad_day = None;
+        let (first, last, company, job) = (
+            self.work.first,
+            self.work.last,
+            self.work.company,
+            self.work.job,
+        );
+        self.put(E::First, first.get());
+        self.put(E::Last, last.get());
+        self.put(E::Company, company.get());
+        self.put(E::Job, job.get());
+        for k in 0..self.work.n_phones {
+            let ph = self.work.phones[k];
+            let slot = match ph.label.get() {
+                b"MOBILE" => Some(E::Mobile),
+                b"HOME" => Some(E::Home),
+                b"WORK" => Some(E::Work),
+                _ => None,
+            };
+            match slot {
+                Some(f) if self.val(f).is_empty() => self.put(f, ph.value.get()),
+                _ if self.n_extras < EXTRAS => {
+                    self.extras[self.n_extras] = Extra::of(true, ph.label.get(), ph.value.get());
+                    self.n_extras += 1;
+                }
+                _ => {}
+            }
+        }
+        for k in 0..self.work.n_emails {
+            let e = self.work.emails[k];
+            if k == 0 {
+                self.put(E::Email, e.value.get());
+            } else if self.n_extras < EXTRAS {
+                self.extras[self.n_extras] = Extra::of(false, e.label.get(), e.value.get());
+                self.n_extras += 1;
+            }
+        }
+        for (k, f) in [E::Street, E::City, E::Region, E::Postal, E::Country]
+            .into_iter()
+            .enumerate()
+        {
+            let part = self.work.address[k];
+            self.put(f, part.get());
+        }
+        for (d, f) in [
+            (self.work.birthday, E::Birthday),
+            (self.work.anniversary, E::Anniversary),
+        ] {
+            if let Some(d) = d {
+                let (b, n) = form::day_text(d, cx.us);
+                self.put(f, &b[..n]);
+            }
+        }
+        let url = self.work.url;
+        self.put(E::Website, url.get());
         self.editing = Some(p.id);
         self.fav = p.favourite;
         self.places = [None; 5];
@@ -649,9 +853,10 @@ impl Contacts {
     }
 
     /// The form kept in the store: a new person, or the one being changed
-    /// (a field emptied is taken off the record; the fields the form does
-    /// not show are left as they are). Numbers are kept as E.164 and
-    /// formatted for the region when shown.
+    /// (a field emptied is taken off the record; fields the form doesn't
+    /// show, a note, a picture, are left as they are). Numbers are kept as
+    /// E.164 and formatted for the region when shown; a day typed that
+    /// isn't one keeps nothing and says so on its row.
     fn keep(&mut self, cx: &Ctx) -> bool {
         use EditField as E;
         if self.val(E::First).is_empty()
@@ -663,36 +868,25 @@ impl Contacts {
             self.view = View::Edit(E::First);
             return false;
         }
-        let home = phone::plan(*b"US").unwrap_or(&phone::PLANS[0]);
-        let numbers = [E::Mobile, E::Home, E::Work].map(|f| phone::e164(self.val(f), home));
-        let number = |k: usize, f: E| -> &[u8] {
-            if self.val(f).is_empty() {
-                &[]
-            } else {
-                numbers[k].get()
+        let mut days = [None; 2];
+        for (k, f) in [E::Birthday, E::Anniversary].into_iter().enumerate() {
+            match form::day_typed(self.val(f), cx.us) {
+                Some(d) => days[k] = d,
+                None => {
+                    self.bad_day = Some(f);
+                    self.view = View::Edit(f);
+                    return false;
+                }
             }
-        };
-        let mut address = [0u8; 81];
-        let (st, ci) = (self.val(E::Street), self.val(E::City));
-        let mut an = st.len();
-        address[..an].copy_from_slice(st);
-        if !ci.is_empty() {
-            address[an] = b'\n';
-            address[an + 1..an + 1 + ci.len()].copy_from_slice(ci);
-            an += 1 + ci.len();
         }
-        let one = 1u32.to_le_bytes();
-        let fields: [(u8, &[u8]); 9] = [
-            (tag::FIRST, self.val(E::First)),
-            (tag::LAST, self.val(E::Last)),
-            (tag::COMPANY, self.val(E::Company)),
-            (tag::MOBILE, number(0, E::Mobile)),
-            (tag::HOME, number(1, E::Home)),
-            (tag::WORK, number(2, E::Work)),
-            (tag::EMAIL, self.val(E::Email)),
-            (tag::ADDRESS, &address[..an]),
-            (tag::FAVOURITE, if self.fav { &one } else { &[] }),
-        ];
+        let home = phone::plan(*b"US").unwrap_or(&phone::PLANS[0]);
+        Self::form_card(
+            &self.form,
+            &self.form_n,
+            &self.extras[..self.n_extras],
+            days,
+            &mut self.work,
+        );
         let Some(cell) = cx.pim else { return false };
         let Ok(mut guard) = cell.try_borrow_mut() else {
             return false;
@@ -700,16 +894,73 @@ impl Contacts {
         let Some(store) = guard.as_mut() else {
             return false;
         };
+        // The note isn't the form's: kept as it is.
+        if let Some(r) = self.editing.and_then(|id| store.get(id)) {
+            self.work.note.push(r.text(tag::NOTE));
+        }
+        self.scratch.fill(&self.work, home);
+        let f = self.scratch.fields(&self.work);
+        let one = 1u32.to_le_bytes();
+        let mut all = [(0u8, &[][..]); rp_pim::vcard::FIELDS + 1];
+        all[..rp_pim::vcard::FIELDS].copy_from_slice(&f);
+        all[rp_pim::vcard::FIELDS] = (tag::FAVOURITE, if self.fav { &one } else { &[] });
         let ok = match self.editing {
-            Some(id) => store.change(id, &fields).is_ok(),
-            None => store.put(Kind::Contact, None, &fields).is_ok(),
+            Some(id) => store.change(id, &all).is_ok(),
+            None => store.put(Kind::Contact, None, &all).is_ok(),
         };
         if ok {
             self.seen = None;
-            self.form_n = [0; 9];
+            self.form_n = [0; SLOTS];
+            self.n_extras = 0;
             self.editing = None;
         }
         ok
+    }
+
+    /// The form as a card, into `c` (the app's own: not on a frame).
+    #[inline(never)]
+    fn form_card(
+        form: &[[u8; 40]; SLOTS],
+        form_n: &[usize; SLOTS],
+        extras: &[Extra],
+        days: [Option<Day>; 2],
+        c: &mut rp_pim::vcard::Card,
+    ) {
+        use EditField as E;
+        let v = |f: E| f.slot().map_or(&[][..], |k| &form[k][..form_n[k]]);
+        c.clear();
+        c.first.push(v(E::First));
+        c.last.push(v(E::Last));
+        c.company.push(v(E::Company));
+        c.job.push(v(E::Job));
+        for (f, label) in [
+            (E::Mobile, &b"MOBILE"[..]),
+            (E::Home, b"HOME"),
+            (E::Work, b"WORK"),
+        ] {
+            if !v(f).is_empty() {
+                let _ = c.add_phone(label, v(f));
+            }
+        }
+        if !v(E::Email).is_empty() {
+            let _ = c.add_email(b"Other", v(E::Email));
+        }
+        for e in extras.iter().filter(|e| e.value_n > 0) {
+            let _ = if e.phone {
+                c.add_phone(e.label(), &e.value[..e.value_n])
+            } else {
+                c.add_email(e.label(), &e.value[..e.value_n])
+            };
+        }
+        for (k, f) in [E::Street, E::City, E::Region, E::Postal, E::Country]
+            .into_iter()
+            .enumerate()
+        {
+            c.address[k].push(v(f));
+        }
+        c.birthday = days[0];
+        c.anniversary = days[1];
+        c.url.push(v(E::Website));
     }
 
     /// The person being changed taken out of the store.
@@ -760,41 +1011,57 @@ impl Contacts {
         true
     }
 
-    /// The text target `kind` of person `p`'s card copies.
-    fn card_text(p: &Person, kind: u8) -> Text<96> {
-        match kind {
-            0..=2 => Text::of(shown(p.phones[usize::from(kind)].1.get()).get()),
-            3 => Text::of(p.email.get()),
-            4 => {
-                let mut b = [0u8; 96];
-                let mut n = 0;
-                for &c in p.address[0]
-                    .get()
-                    .iter()
-                    .chain(if p.address[1].is_empty() {
-                        &b""[..]
-                    } else {
-                        b", "
-                    })
-                    .chain(p.address[1].get())
-                {
+    /// The text target `kind` of the card copies: a line (its two lines
+    /// joined for an address), or (the Copy key) the first number.
+    fn card_text(&self, p: &Person, kind: u8) -> Text<96> {
+        if let Some(d) = self.details[..self.n_details].get(usize::from(kind).wrapping_sub(10)) {
+            let mut b = [0u8; 96];
+            let mut n = 0;
+            for &c in d
+                .value
+                .get()
+                .iter()
+                .chain(if d.more.is_empty() { &b""[..] } else { b", " })
+                .chain(d.more.get())
+            {
+                if n < b.len() {
                     b[n] = c;
                     n += 1;
                 }
-                Text::of(&b[..n])
             }
-            // The Copy key: the first number there is.
-            _ => p
-                .phones
-                .iter()
-                .find(|ph| !ph.1.is_empty())
-                .map_or(Text::EMPTY, |ph| Text::of(shown(ph.1.get()).get())),
+            return Text::of(&b[..n]);
+        }
+        p.phones
+            .iter()
+            .find(|ph| !ph.1.is_empty())
+            .map_or(Text::EMPTY, |ph| Text::of(shown(ph.1.get()).get()))
+    }
+
+    /// Shows `view` (the tools and the doubles counted at the next draw,
+    /// where the store is).
+    pub fn show(&mut self, view: View) {
+        self.view = view;
+        self.recount = matches!(view, View::Tools | View::Merge);
+    }
+
+    /// An extra phone or e-mail added to the editor and typed in (the
+    /// previews).
+    pub fn typed_extra(&mut self, phone: bool, label: &[u8], value: &[u8]) {
+        if self.n_extras < EXTRAS {
+            self.extras[self.n_extras] = Extra::of(phone, label, value);
+            self.n_extras += 1;
         }
     }
 
-    /// Shows `view`.
-    pub fn show(&mut self, view: View) {
-        self.view = view;
+    /// Field `at` typed (the previews).
+    pub fn typed_field(&mut self, at: EditField, text: &[u8]) {
+        self.put(at, text);
+    }
+
+    /// A day typed that isn't one, said on its row (the previews).
+    pub fn typed_bad_day(&mut self, at: EditField, text: &[u8]) {
+        self.put(at, text);
+        self.bad_day = Some(at);
     }
 
     /// Types into the editor's fields (the previews).
@@ -864,15 +1131,14 @@ impl Contacts {
         let Some(store) = guard.as_ref() else { return };
         let mut k = 0;
         for r in store.all(Kind::Contact) {
-            let a = r.text(tag::ADDRESS);
-            if k < 5 && a.len() >= typed.len() && a[..typed.len()].eq_ignore_ascii_case(typed) {
-                let (st, ci) = match a.iter().position(|&c| c == b'\n') {
-                    Some(i) => (&a[..i], &a[i + 1..]),
-                    None => (a, &b""[..]),
-                };
+            let a = Address::of(r.text(tag::ADDRESS));
+            let st = a.street;
+            if k < 5 && st.len() >= typed.len() && st[..typed.len()].eq_ignore_ascii_case(typed) {
+                let mut city = [0u8; 96];
+                let n = a.city_text(&mut city);
                 self.places[k] = Some(Place {
                     street: Text::of(st),
-                    city: Text::of(ci),
+                    city: Text::of(&city[..n]),
                 });
                 k += 1;
             }
@@ -885,7 +1151,10 @@ impl Contacts {
             return;
         };
         self.put(EditField::Street, p.street.get());
-        self.put(EditField::City, p.city.get());
+        let a = Address::city_line(p.city.get());
+        self.put(EditField::City, a.city);
+        self.put(EditField::Region, a.region);
+        self.put(EditField::Postal, a.postal);
         self.places = [None; 5];
         self.asked = Text::of(p.street.get());
     }
@@ -1011,9 +1280,10 @@ impl Contacts {
             s[k] = c;
             k += 1;
         }
-        // Search, its hint the count.
+        // Search, its hint the count; the tools' key beside it.
         let field = SEARCH;
         kit::panel(f, cx, field);
+        self.tools_key(f, cx);
         if self.searching {
             f.push(rp_app::Cmd::Outline {
                 r: field,
@@ -1250,10 +1520,38 @@ impl Contacts {
             154,
             cx.fonts.label,
             DIM,
-            b"FROM THE PICTURES FOLDER ON YOUR PC",
+            b"FROM THE CARD AND THE PICTURES FOLDER ON YOUR PC",
         );
         let mut y = 178;
+        // The card's pictures first (no dock needed), four at most.
+        for k in 0..self.io.n_card_pics.min(4) {
+            let r = Rect::new(MARGIN, y, WIDE, 40);
+            kit::panel(f, cx, r);
+            kit::fitted(
+                f,
+                r.x + 14,
+                r.y + 26,
+                cx.fonts.ui,
+                TEXT,
+                self.io.card_pics[k].1.get(),
+                WIDE - 90,
+            );
+            kit::right(
+                f,
+                r.right() - 14,
+                r.y + 26,
+                cx.fonts.label,
+                tint::CONTACTS,
+                b"CARD",
+            );
+            self.pick_at[self.n_pick_at] = (r, CARD_PIC + k as u8);
+            self.n_pick_at += 1;
+            y += 44;
+        }
         for k in 0..self.n_picks {
+            if y + 44 > 540 {
+                break;
+            }
             let r = Rect::new(MARGIN, y, WIDE, 40);
             kit::panel(f, cx, r);
             kit::fitted(
@@ -1288,11 +1586,124 @@ impl Contacts {
         }
     }
 
+    /// Person `p`'s card's lines from their record: the numbers and
+    /// e-mails (the three kept on their own, then each extra with its own
+    /// label), the address, the days, the website, the note.
+    fn details_of(&mut self, cx: &Ctx, p: &Person) {
+        self.n_details = 0;
+        let Some(guard) = cx.pim.and_then(|c| c.try_borrow().ok()) else {
+            return;
+        };
+        let Some(r) = guard.as_ref().and_then(|s| s.get(p.id)) else {
+            return;
+        };
+        let add = |this: &mut Self, label: &[u8], value: &[u8], more: &[u8]| {
+            if this.n_details < DETAILS && !value.is_empty() {
+                // Labels shown in capitals, as the fixed ones are.
+                let mut l = [0u8; 24];
+                let n = label.len().min(24);
+                for (o, c) in l.iter_mut().zip(&label[..n]) {
+                    *o = c.to_ascii_uppercase();
+                }
+                this.details[this.n_details] = Detail {
+                    label: Text::of(&l[..n]),
+                    value: Text::of(value),
+                    more: Text::of(more),
+                };
+                this.n_details += 1;
+            }
+        };
+        for (label, number) in &p.phones {
+            if !number.is_empty() {
+                add(self, label, shown(number.get()).get(), b"");
+            }
+        }
+        let more = r.text(tag::MORE);
+        for e in rp_pim::contact::entries(more).filter(|e| e.kind == rp_pim::contact::Kind::Phone) {
+            add(
+                self,
+                if e.label.is_empty() {
+                    b"Other"
+                } else {
+                    e.label
+                },
+                shown(e.value).get(),
+                b"",
+            );
+        }
+        add(self, b"E-MAIL", p.email.get(), b"");
+        for e in rp_pim::contact::entries(more).filter(|e| e.kind == rp_pim::contact::Kind::Email) {
+            add(
+                self,
+                if e.label.is_empty() {
+                    b"Other"
+                } else {
+                    e.label
+                },
+                e.value,
+                b"",
+            );
+        }
+        if !p.address[0].is_empty() || !p.address[1].is_empty() {
+            let (a, b) = if p.address[0].is_empty() {
+                (p.address[1], Text::EMPTY)
+            } else {
+                (p.address[0], p.address[1])
+            };
+            add(self, b"HOME", a.get(), b.get());
+        }
+        for (label, t) in [
+            (&b"BIRTHDAY"[..], tag::BIRTHDAY),
+            (b"ANNIV.", tag::ANNIVERSARY),
+        ] {
+            if let Some(d) = Day::of_field(r.text(t)) {
+                let (b, n) = form::day_shown(d, cx.us);
+                let mut more = [0u8; 24];
+                let mut m = 0;
+                // The age or the years at the next one.
+                if let Some(y) = d.years_on(d.next_from(cx.now.day)) {
+                    let mut put = |s: &[u8]| {
+                        for &c in s {
+                            if m < more.len() {
+                                more[m] = c;
+                                m += 1;
+                            }
+                        }
+                    };
+                    put(if t == tag::BIRTHDAY { b"turns " } else { b"" });
+                    let mut digits = [0u8; 5];
+                    let mut k = digits.len();
+                    let mut v = y;
+                    loop {
+                        k -= 1;
+                        digits[k] = b'0' + (v % 10) as u8;
+                        v /= 10;
+                        if v == 0 {
+                            break;
+                        }
+                    }
+                    put(&digits[k..]);
+                    put(if t == tag::BIRTHDAY {
+                        b" next"
+                    } else {
+                        b" years next"
+                    });
+                }
+                add(self, label, &b[..n], &more[..m]);
+            }
+        }
+        add(self, b"WEBSITE", r.text(tag::WEBSITE), b"");
+        let note = r.text(tag::NOTE);
+        let first = &note[..note.iter().position(|&c| c == b'\n').unwrap_or(note.len())];
+        add(self, b"NOTE", first, b"");
+    }
+
     fn card(&mut self, f: &mut Frame, cx: &Ctx, i: u8) {
         self.n_card = 0;
         let Some(p) = self.people.get(usize::from(i)).copied().flatten() else {
             return;
         };
+        self.details_of(cx, &p);
         let mut nm = [0u8; 64];
         let nn = name(&p, &mut nm);
         // The band: the big avatar on the person's colour.
@@ -1314,14 +1725,33 @@ impl Contacts {
         self.n_card = 1;
         let line = Rect::new(0, 0, W, 1);
         kit::centred(f, line, 180, cx.fonts.title, TEXT, &nm[..nn]);
-        kit::centred(f, line, 204, cx.fonts.ui, DIM, p.company.get());
+        // "Programmer, Analytical Engines".
+        let mut sub = [0u8; 72];
+        let mut sn = 0;
+        for &c in p
+            .job
+            .get()
+            .iter()
+            .chain(if p.job.is_empty() || p.company.is_empty() {
+                &b""[..]
+            } else {
+                b", "
+            })
+            .chain(p.company.get())
+        {
+            if sn < sub.len() {
+                sub[sn] = c;
+                sn += 1;
+            }
+        }
+        kit::centred(f, line, 204, cx.fonts.ui, DIM, &sub[..sn]);
         if p.favourite {
             kit::centred(f, line, 224, cx.fonts.label, tint::CONTACTS, b"FAVORITE");
         }
-        let mut hit = |r: Rect, kind: u8| {
-            if self.n_card < self.card_at.len() {
-                self.card_at[self.n_card] = (r, kind);
-                self.n_card += 1;
+        let hit = |this: &mut Self, r: Rect, kind: u8| {
+            if this.n_card < this.card_at.len() {
+                this.card_at[this.n_card] = (r, kind);
+                this.n_card += 1;
             }
         };
         let copied = self.copied.map(|c| c.0);
@@ -1354,18 +1784,35 @@ impl Contacts {
             };
             kit::centred(f, r, r.y + 40, cx.fonts.ui, col, word);
             if live {
-                hit(r, 5);
+                hit(self, r, 5);
             }
         }
         y += 76;
-        // The details, a line each (all of them fit: three numbers, the
-        // e-mail and the address were more than the card's room at two
-        // lines a row, and the address was left out without a word). A
-        // tap copies the line.
-        let mut row = |f: &mut Frame, y: u16, h: u16, label: &[u8], kind: u8| -> Rect {
+        // The details, a line each (an address two), as many as fit; a
+        // card of more goes on over the page (a drag or the D-pad), as
+        // the list does. A tap copies the line.
+        if usize::from(self.card_first) >= self.n_details {
+            self.card_first = 0;
+        }
+        let mut k = usize::from(self.card_first);
+        while k < self.n_details {
+            let d = self.details[k];
+            let h = if d.more.is_empty() { 44 } else { 66 };
+            if y + h > 590 {
+                break;
+            }
             let r = Rect::new(MARGIN, y, WIDE, h);
             kit::panel(f, cx, r);
-            kit::text(f, r.x + 14, r.y + 28, cx.fonts.label, DIM, label);
+            kit::fitted(
+                f,
+                r.x + 14,
+                r.y + 28,
+                cx.fonts.label,
+                DIM,
+                d.label.get(),
+                92,
+            );
+            let kind = 10 + k as u8;
             if copied == Some(kind) {
                 kit::right(
                     f,
@@ -1376,57 +1823,70 @@ impl Contacts {
                     b"COPIED",
                 );
             }
-            hit(r, kind);
-            r
-        };
-        for (k, (label, number)) in p.phones.iter().enumerate() {
-            if number.is_empty() {
-                continue;
+            kit::fitted(
+                f,
+                r.x + 110,
+                r.y + 29,
+                cx.fonts.ui,
+                TEXT,
+                d.value.get(),
+                r.w - 190,
+            );
+            if !d.more.is_empty() {
+                kit::fitted(
+                    f,
+                    r.x + 110,
+                    r.y + 53,
+                    cx.fonts.ui,
+                    DIM,
+                    d.more.get(),
+                    r.w - 124,
+                );
             }
-            let r = row(f, y, 44, label, k as u8);
-            kit::text(
-                f,
-                r.x + 110,
-                r.y + 29,
-                cx.fonts.ui,
-                TEXT,
-                shown(number.get()).get(),
-            );
-            y += 46;
+            hit(self, r, kind);
+            y += h + 2;
+            k += 1;
         }
-        if !p.email.is_empty() {
-            let r = row(f, y, 44, b"E-MAIL", 3);
-            kit::fitted(
-                f,
-                r.x + 110,
-                r.y + 29,
-                cx.fonts.ui,
-                TEXT,
-                p.email.get(),
-                r.w - 190,
-            );
-            y += 46;
+        self.card_more = k < self.n_details;
+        if self.card_more || self.card_first > 0 {
+            let mut b = [0u8; 16];
+            let mut n = 0;
+            for (v, sep) in [
+                (usize::from(self.card_first) + 1, &b"-"[..]),
+                (k, b" of "),
+                (self.n_details, b""),
+            ] {
+                if v >= 10 {
+                    b[n] = b'0' + (v / 10) as u8;
+                    n += 1;
+                }
+                b[n] = b'0' + (v % 10) as u8;
+                n += 1;
+                for &c in sep {
+                    b[n] = c;
+                    n += 1;
+                }
+            }
+            kit::right(f, W - MARGIN - 8, 240, cx.fonts.label, DIM, &b[..n]);
         }
-        if !p.address[0].is_empty() || !p.address[1].is_empty() {
-            let r = row(f, y, 66, b"HOME", 4);
-            kit::fitted(
-                f,
-                r.x + 110,
-                r.y + 29,
-                cx.fonts.ui,
-                TEXT,
-                p.address[0].get(),
-                r.w - 190,
-            );
-            kit::fitted(
-                f,
-                r.x + 110,
-                r.y + 53,
-                cx.fonts.ui,
-                TEXT,
-                p.address[1].get(),
-                r.w - 124,
-            );
+    }
+
+    /// The card's next page of lines, if more follow; the first page from
+    /// a later one.
+    fn card_page(&mut self, on: bool) -> bool {
+        if on && self.card_more {
+            // From the first line not shown.
+            let shown = self.card_at[..self.n_card]
+                .iter()
+                .filter(|t| t.1 >= 10)
+                .count() as u8;
+            self.card_first += shown.max(1);
+            true
+        } else if !on && self.card_first > 0 {
+            self.card_first = 0;
+            true
+        } else {
+            false
         }
     }
 
@@ -1462,13 +1922,14 @@ impl Contacts {
         // The row typed is the form's second (the one before it leads, for
         // the place), so it and what follows it sit above the keyboard.
         let (order, n) = self.fields();
-        let i = order[..n].iter().position(|&o| o == at).unwrap_or(0);
+        let row = Self::row_of(at);
+        let i = order[..n].iter().position(|&o| o == row).unwrap_or(0);
         for &fld in &order[i.saturating_sub(1)..n] {
             if y + 44 > 596 {
                 break;
             }
             let r = Rect::new(MARGIN, y, WIDE, 44);
-            let on = fld == at;
+            let on = fld == row;
             kit::panel(f, cx, r);
             if on {
                 f.push(rp_app::Cmd::Outline {
@@ -1477,6 +1938,13 @@ impl Contacts {
                 });
             }
             let x = r.x + 110;
+            let caret = |f: &mut Frame, x: u16, value: &[u8], room: u16| {
+                let cw = cx.fonts.ui.width(value).min(room);
+                f.push(rp_app::Cmd::Fill {
+                    r: Rect::new(x + cw + 1, r.y + 10, 2, 24),
+                    color: kit::FOCUS,
+                });
+            };
             match fld {
                 EditField::Favourite => {
                     kit::text(f, r.x + 12, r.y + 28, cx.fonts.label, DIM, b"FAVORITE");
@@ -1495,8 +1963,91 @@ impl Contacts {
                     };
                     kit::text(f, r.x + 12, r.y + 29, cx.fonts.ui, kit::LATE, word);
                 }
+                EditField::AddPhone | EditField::AddEmail => {
+                    // A key in the row's place: "+ Add phone".
+                    kit::text(
+                        f,
+                        r.x + 12,
+                        r.y + 29,
+                        cx.fonts.ui,
+                        tint::CONTACTS,
+                        if fld == EditField::AddPhone {
+                            b"+  Add a phone"
+                        } else {
+                            b"+  Add an e-mail"
+                        },
+                    );
+                    kit::right(
+                        f,
+                        r.right() - 14,
+                        r.y + 28,
+                        cx.fonts.label,
+                        DIM,
+                        b"WITH ITS OWN LABEL",
+                    );
+                }
+                EditField::Extra(k) => {
+                    let Some(e) = self.extras.get(usize::from(k)).copied() else {
+                        continue;
+                    };
+                    // The label (tapped: typed, or one from the strip) in
+                    // the tint; the value as a phone's or an e-mail's.
+                    let typing_label = at == EditField::Label(k);
+                    let mut label = [0u8; 24];
+                    let shown_label = e.label();
+                    for (o, c) in label.iter_mut().zip(shown_label) {
+                        *o = c.to_ascii_uppercase();
+                    }
+                    let label = &label[..shown_label.len().min(24)];
+                    if typing_label {
+                        kit::fitted(
+                            f,
+                            r.x + 12,
+                            r.y + 28,
+                            cx.fonts.label,
+                            TEXT,
+                            &e.label[..e.label_n],
+                            92,
+                        );
+                        caret(f, r.x + 12, &e.label[..e.label_n], 92);
+                    } else {
+                        kit::fitted(
+                            f,
+                            r.x + 12,
+                            r.y + 28,
+                            cx.fonts.label,
+                            tint::CONTACTS,
+                            label,
+                            92,
+                        );
+                    }
+                    let value = &e.value[..e.value_n];
+                    let number = phone::format(value, home);
+                    let value = if e.phone { number.get() } else { value };
+                    if value.is_empty() {
+                        let hint: &[u8] = if e.phone {
+                            b"Number"
+                        } else {
+                            b"name@example.com"
+                        };
+                        kit::text(f, x, r.y + 29, cx.fonts.ui, kit::alpha(DIM, 0x90), hint);
+                    } else {
+                        kit::fitted(f, x, r.y + 29, cx.fonts.ui, TEXT, value, r.w - 124);
+                    }
+                    if on && !typing_label {
+                        caret(f, x, value, r.w - 124);
+                    }
+                }
                 _ => {
-                    let (label, hint, _) = FORM[fld as usize];
+                    let Some(slot) = fld.slot() else { continue };
+                    let (label, hint, _) = FORM[slot];
+                    // The days' hint the region's way round.
+                    let hint: &[u8] = match fld {
+                        EditField::Birthday | EditField::Anniversary if !cx.us => {
+                            b"DD/MM/YYYY, the year if known"
+                        }
+                        _ => hint,
+                    };
                     let typed = self.val(fld);
                     let number = phone::format(typed, home);
                     let value =
@@ -1505,7 +2056,7 @@ impl Contacts {
                         } else {
                             typed
                         };
-                    kit::text(f, r.x + 12, r.y + 28, cx.fonts.label, DIM, label);
+                    kit::fitted(f, r.x + 12, r.y + 28, cx.fonts.label, DIM, label, 96);
                     if value.is_empty() && self.need_name && fld == EditField::First {
                         kit::text(f, x, r.y + 29, cx.fonts.ui, kit::LATE, b"A name first");
                     } else if value.is_empty() {
@@ -1513,12 +2064,18 @@ impl Contacts {
                     } else {
                         kit::fitted(f, x, r.y + 29, cx.fonts.ui, TEXT, value, r.w - 124);
                     }
+                    if self.bad_day == Some(fld) {
+                        kit::right(
+                            f,
+                            r.right() - 14,
+                            r.y + 28,
+                            cx.fonts.label,
+                            kit::LATE,
+                            b"NOT A DAY",
+                        );
+                    }
                     if on {
-                        let cw = cx.fonts.ui.width(value).min(r.w - 124);
-                        f.push(rp_app::Cmd::Fill {
-                            r: Rect::new(x + cw + 1, r.y + 10, 2, 24),
-                            color: kit::FOCUS,
-                        });
+                        caret(f, x, value, r.w - 124);
                     }
                 }
             }
@@ -1558,6 +2115,11 @@ pub fn opened(_today: i32) -> Contacts {
     Contacts::new()
 }
 
+/// [`opened`] made straight into the program's slot.
+pub fn opened_in(slot: &mut core::mem::MaybeUninit<Contacts>, _today: i32) -> &mut Contacts {
+    Contacts::new_in(slot)
+}
+
 impl Default for Contacts {
     fn default() -> Self {
         Self::new()
@@ -1579,12 +2141,16 @@ impl Program for Contacts {
             View::Card(_) => ("Back", "Edit"),
             View::Edit(_) => ("Cancel", "Done"),
             View::Photo(_) => ("Back", ""),
+            View::Tools | View::Files | View::Merge => ("Back", ""),
         }
     }
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
         self.refresh(cx);
+        if core::mem::take(&mut self.recount) {
+            self.count_doubles(cx);
+        }
         match self.view {
             View::List => {
                 self.list(f, cx);
@@ -1597,6 +2163,18 @@ impl Program for Contacts {
             View::Edit(at) => self.edit(f, cx, at),
             View::Photo(i) => {
                 self.chooser(f, cx, i);
+                self.focus.ring(f, self.targets());
+            }
+            View::Tools => {
+                self.tools_view(f, cx);
+                self.focus.ring(f, self.targets());
+            }
+            View::Files => {
+                self.files_view(f, cx);
+                self.focus.ring(f, self.targets());
+            }
+            View::Merge => {
+                self.merge_view(f, cx);
                 self.focus.ring(f, self.targets());
             }
         }
@@ -1615,6 +2193,24 @@ impl Program for Contacts {
         // The editor: up and down move from row to row, the centre flips
         // the favourite switch and presses Delete. Windows Mobile's
         // Contacts moves a row at a time through one long list.
+        if matches!(self.view, View::Tools | View::Files | View::Merge) {
+            if let Event::Key(k @ (Key::Up | Key::Down | Key::Left | Key::Right)) = e {
+                let mut focus = self.focus;
+                let moved = focus.step(k, self.targets());
+                self.focus = focus;
+                return if moved { Reply::Redraw } else { Reply::Nothing };
+            }
+            if e == Event::Key(Key::Enter)
+                && let Some((x, y)) = self.focus.point()
+            {
+                return self.io_event(Event::PenUp { x, y }, cx);
+            }
+            if e == Event::Key(Key::App) {
+                self.go(View::List);
+                return Reply::Redraw;
+            }
+            return self.io_event(e, cx);
+        }
         if let Event::Key(k) = e
             && matches!(self.view, View::List | View::Card(_) | View::Photo(_))
             && !self.searching
@@ -1631,6 +2227,14 @@ impl Program for Contacts {
                 self.focus.clear();
                 return Reply::Redraw;
             }
+            // A card of more lines than fit: its next page, or the first.
+            if matches!(self.view, View::Card(_))
+                && ((k == Key::Down && self.card_page(true))
+                    || (k == Key::Up && self.card_page(false)))
+            {
+                self.focus.clear();
+                return Reply::Redraw;
+            }
             if k == Key::Enter
                 && let Some((x, y)) = self.focus.point()
             {
@@ -1640,7 +2244,8 @@ impl Program for Contacts {
         if let (Event::Key(k @ (Key::Up | Key::Down | Key::Enter)), View::Edit(at)) = (e, self.view)
         {
             let (order, n) = self.fields();
-            let i = order[..n].iter().position(|&o| o == at).unwrap_or(0);
+            let row = Self::row_of(at);
+            let i = order[..n].iter().position(|&o| o == row).unwrap_or(0);
             match k {
                 Key::Enter => return self.press(at, cx),
                 Key::Down if i + 1 < n => self.view = View::Edit(order[i + 1]),
@@ -1665,12 +2270,26 @@ impl Program for Contacts {
                 Reply::Redraw
             }
             (Event::Key(Key::SoftRight), View::Card(i)) => {
-                self.open_edit(i);
+                self.open_edit(i, cx);
                 Reply::Redraw
+            }
+            (Event::PenDown { y, .. }, View::Card(_)) => {
+                self.down_y = Some(y);
+                Reply::Nothing
             }
             // A card's line, or its Copy key: onto the clipboard as it is
             // shown, with a mark for a second.
             (Event::PenUp { x, y }, View::Card(i)) => {
+                // A drag up or down turns the card's page.
+                if let Some(y0) = self.down_y.take()
+                    && y0.abs_diff(y) > 48
+                {
+                    return if self.card_page(y < y0) {
+                        Reply::Redraw
+                    } else {
+                        Reply::Nothing
+                    };
+                }
                 let hit = self.card_at[..self.n_card]
                     .iter()
                     .find(|(r, _)| r.contains_point(x, y))
@@ -1682,7 +2301,7 @@ impl Program for Contacts {
                 if let Some(kind) = hit
                     && let Some(p) = self.people.get(usize::from(i)).copied().flatten()
                 {
-                    *cx.clip.borrow_mut() = Text::of(Self::card_text(&p, kind).get());
+                    *cx.clip.borrow_mut() = Text::of(self.card_text(&p, kind).get());
                     self.copied = Some((kind, 32));
                     return Reply::Animate;
                 }
@@ -1747,6 +2366,11 @@ impl Program for Contacts {
                     self.searching = true;
                     return Reply::Redraw;
                 }
+                if io::TOOLS_KEY.contains_point(x, y) {
+                    self.searching = false;
+                    self.open_tools(cx);
+                    return Reply::Redraw;
+                }
                 match self.rows_at[..self.n_rows]
                     .iter()
                     .find(|(r, _)| r.contains_point(x, y))
@@ -1781,6 +2405,11 @@ impl Program for Contacts {
                     .find(|(r, _)| r.contains_point(x, y))
                     .map(|t| t.1);
                 match hit {
+                    Some(k) if k >= CARD_PIC => {
+                        if let Some(p) = self.people.get(usize::from(i)).copied().flatten() {
+                            self.pick_card_pic(cx, p.id, usize::from(k - CARD_PIC));
+                        }
+                    }
                     Some(MORE) => {
                         self.pick_from = self.pick_from.saturating_add(PICKS as u8);
                         self.want = Want::List(self.pick_from);
@@ -1814,23 +2443,24 @@ impl Program for Contacts {
                 Reply::Redraw
             }
             (Event::Char(_) | Event::Delete, View::Edit(at)) => {
-                let k = at as usize;
-                if k >= FORM.len() {
+                if !at.typed() {
                     return Reply::Nothing;
                 }
                 match e {
-                    Event::Char(c) if self.form_n[k] < FORM[k].2 => {
-                        self.form[k][self.form_n[k]] = c;
-                        self.form_n[k] += 1;
+                    Event::Char(c) => {
+                        self.push_char(at, c);
                         self.need_name = false;
                     }
-                    Event::Delete => self.form_n[k] = self.form_n[k].saturating_sub(1),
+                    Event::Delete => self.pop_char(at),
                     _ => {}
+                }
+                if self.bad_day == Some(at) {
+                    self.bad_day = None;
                 }
                 if at == EditField::First {
                     self.names_like(cx);
                 }
-                if at == EditField::Street && self.form_n[k] < 3 {
+                if at == EditField::Street && self.val(at).len() < 3 {
                     self.places = [None; 5];
                 }
                 Reply::Redraw
@@ -1865,17 +2495,24 @@ impl Program for Contacts {
                     self.take_place(usize::from(k));
                     return Reply::Redraw;
                 }
-                // A row: typed from now, or (a switch, Delete) pressed.
+                // A row: typed from now, or (a switch, a key, Delete)
+                // pressed; an extra's label, tapped, is typed (or one from
+                // the strip over the keyboard).
                 match self.form_at[..self.n_form]
                     .iter()
                     .find(|(r, _)| r.contains_point(x, y))
-                    .map(|t| t.1)
+                    .copied()
                 {
-                    Some(fld) if fld == at || (fld as usize) >= FORM.len() => {
+                    Some((r, EditField::Extra(k))) if x < r.x + 100 => {
+                        self.view = View::Edit(EditField::Label(k));
+                        self.confirm_delete = false;
+                        Reply::Redraw
+                    }
+                    Some((_, fld)) if fld == at || !fld.typed() => {
                         self.view = View::Edit(fld);
                         self.press(fld, cx)
                     }
-                    Some(fld) => {
+                    Some((_, fld)) => {
                         self.view = View::Edit(fld);
                         self.confirm_delete = false;
                         Reply::Redraw
@@ -1885,6 +2522,23 @@ impl Program for Contacts {
             }
             (Event::Suggestion(k), View::Edit(EditField::Street)) => {
                 self.take_place(usize::from(k));
+                Reply::Redraw
+            }
+            (Event::Suggestion(k), View::Edit(EditField::Label(j))) => {
+                if let Some(e) = self.extras.get(usize::from(j)).copied() {
+                    let labels = if e.phone {
+                        form::PHONE_LABELS
+                    } else {
+                        form::EMAIL_LABELS
+                    };
+                    self.put(EditField::Label(j), labels[usize::from(k).min(2)]);
+                    self.view = View::Edit(EditField::Extra(j));
+                }
+                Reply::Redraw
+            }
+            // The label typed: on to its value.
+            (Event::Done, View::Edit(EditField::Label(j))) => {
+                self.view = View::Edit(EditField::Extra(j));
                 Reply::Redraw
             }
             (Event::Suggestion(k), View::Edit(EditField::First)) => {
@@ -1916,10 +2570,28 @@ impl Program for Contacts {
             return Some(Field::Line);
         }
         match self.view {
-            View::Edit(E::First | E::Last | E::Company) => Some(Field::Name),
+            View::Edit(
+                E::First
+                | E::Last
+                | E::Company
+                | E::Job
+                | E::City
+                | E::Region
+                | E::Country
+                | E::Label(_),
+            ) => Some(Field::Name),
             View::Edit(E::Mobile | E::Home | E::Work) => Some(Field::Phone),
+            View::Edit(E::Extra(k)) => Some(
+                if self.extras.get(usize::from(k)).is_some_and(|e| e.phone) {
+                    Field::Phone
+                } else {
+                    Field::Email
+                },
+            ),
             View::Edit(E::Email) => Some(Field::Email),
-            View::Edit(E::Street | E::City) => Some(Field::Address),
+            View::Edit(E::Street | E::Postal) => Some(Field::Address),
+            View::Edit(E::Birthday | E::Anniversary) => Some(Field::Number),
+            View::Edit(E::Website) => Some(Field::Link),
             _ => None,
         }
     }
@@ -1935,6 +2607,13 @@ impl Program for Contacts {
                 let st = |k: usize| self.places[k].as_ref().map_or(&b""[..], |p| p.street.get());
                 [st(0), st(1), st(2)]
             }
+            View::Edit(EditField::Label(k)) => {
+                if self.extras.get(usize::from(k)).is_some_and(|e| e.phone) {
+                    form::PHONE_LABELS
+                } else {
+                    form::EMAIL_LABELS
+                }
+            }
             _ => [&[], &[], &[]],
         }
     }
@@ -1943,6 +2622,9 @@ impl Program for Contacts {
     /// the last one asked: Photon is asked over whatever connection there
     /// is; the answer's round trip paces the asking.
     fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        if let Some(a) = self.io_net_ask() {
+            return Some(a);
+        }
         // The chooser's questions: the PC's pictures, or one of them.
         if let View::Photo(_) = self.view {
             let want = core::mem::replace(&mut self.want, Want::Nothing);
@@ -1976,6 +2658,9 @@ impl Program for Contacts {
     }
 
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        if self.io.asking() {
+            return self.io_answer(ok, body, cx);
+        }
         match core::mem::replace(&mut self.asked_for, Want::Nothing) {
             Want::List(from) => {
                 if !ok {
@@ -2017,6 +2702,14 @@ impl Program for Contacts {
         }
         Reply::Redraw
     }
+
+    fn card_ask(&mut self) -> Option<rp_app::NetAsk> {
+        self.io_card_ask()
+    }
+
+    fn net_body(&mut self, at: usize, out: &mut [u8], cx: &Ctx) -> usize {
+        self.io_body(at, out, cx)
+    }
 }
 
 impl Contacts {
@@ -2027,6 +2720,7 @@ impl Contacts {
         let card = matches!(self.view, View::Card(_));
         let choosing = matches!(self.view, View::Photo(_));
         core::iter::once(SEARCH)
+            .chain(core::iter::once(io::TOOLS_KEY))
             .filter(move |_| list)
             .chain(
                 self.rows_at[..self.n_rows]
@@ -2046,6 +2740,7 @@ impl Contacts {
                     .filter(move |_| choosing)
                     .map(|t| t.0),
             )
+            .chain(self.io.targets(self.view))
     }
 
     /// A press on the editor's row `at` (a tap on it once chosen, or the
@@ -2060,6 +2755,12 @@ impl Contacts {
                 }
             }
             EditField::Delete => self.confirm_delete = true,
+            // A new row under its kind, typed at once.
+            EditField::AddPhone | EditField::AddEmail if self.n_extras < EXTRAS => {
+                self.extras[self.n_extras] = Extra::of(at == EditField::AddPhone, b"", b"");
+                self.view = View::Edit(EditField::Extra(self.n_extras as u8));
+                self.n_extras += 1;
+            }
             _ => {}
         }
         Reply::Redraw

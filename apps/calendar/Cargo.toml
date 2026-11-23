@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 rp-app = { path = "../api" }
 rp-pim = { path = "../../shell/pim" }
+# Its state made straight into its slot (`in_place!`, the stack rule).
+rp-hal-mem = { path = "../../hal/mem" }
 
 # The program's runtime (entry, panic) only in the device build.
 [target.'cfg(target_os = "none")'.dependencies]

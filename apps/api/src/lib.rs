@@ -423,4 +423,21 @@ pub trait Program {
         let _ = (ok, body, cx);
         Reply::Nothing
     }
+    /// A question for the device's own card, if the app has one (taken):
+    /// `CARDFILES` (the files of a kind: `vcf`, `ics`, `pic`, as "n|name"
+    /// lines), `CARDFILE` ("n kind": file n's bytes), `CARDPUT` ("length
+    /// name": the body, [`Program::net_body`], kept as the card's
+    /// `RetroPane\name`). Answered through [`Program::net_answer`], as the
+    /// network's are; the card needs no dock.
+    fn card_ask(&mut self) -> Option<NetAsk> {
+        None
+    }
+    /// The body of the question in flight that sends one (the network's
+    /// `PUT`, the card's `CARDPUT`): its bytes from `at` into `out`, how
+    /// many (0: no more). Asked in order, `at` rising, so an app writes
+    /// a file a piece at a time and never holds it whole.
+    fn net_body(&mut self, at: usize, out: &mut [u8], cx: &Ctx) -> usize {
+        let _ = (at, out, cx);
+        0
+    }
 }

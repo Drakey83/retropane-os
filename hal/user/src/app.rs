@@ -56,6 +56,22 @@ impl<T> AppSlot<T> {
         let cell = unsafe { &mut *self.value.get() };
         Some(cell.write(make()))
     }
+
+    /// The value made by `init` straight into the slot (it writes it
+    /// through the `MaybeUninit`, a field at a time, and returns it), for
+    /// an app's state too big to be made on the stack and moved (the stack
+    /// rule, P6: Contacts' 31 KB); `None` after the first time.
+    #[allow(clippy::mut_from_ref)]
+    pub fn put_in(
+        &'static self,
+        init: impl FnOnce(&'static mut MaybeUninit<T>) -> &'static mut T,
+    ) -> Option<&'static mut T> {
+        if self.taken.replace(true) {
+            return None;
+        }
+        // SAFETY: as `put_with`: the only reference ever made.
+        Some(init(unsafe { &mut *self.value.get() }))
+    }
 }
 
 impl<T> Default for AppSlot<T> {

@@ -1458,6 +1458,10 @@ mod image {
         tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
         /// The default icon pack's piece being fetched (option C).
         pack: bool,
+        /// A `PUT`'s body: its length and the bytes sent so far (the
+        /// program writes it a piece at a time, `Shell::program_body`).
+        stream: usize,
+        streamed: usize,
     }
 
     impl Net {
@@ -1471,6 +1475,8 @@ mod image {
             self.got = 0;
             self.tile = None;
             self.pack = false;
+            self.stream = 0;
+            self.streamed = 0;
         }
     }
 
@@ -2166,6 +2172,8 @@ mod image {
                             got: 0,
                             tile: None,
                             pack: false,
+                            stream: 0,
+                            streamed: 0,
                         });
                     }
                     Err(e) => {
@@ -3055,6 +3063,81 @@ mod image {
                     }
                 }
             }
+            // The open program's card question (rp_today::cardfiles: an
+            // import's list of files, a file, an export written), answered
+            // here with no dock, in the RAM pool while no network answer
+            // is coming into it. Logged after the card is let go.
+            if still
+                && net.as_ref().is_none_or(|n| !n.waiting)
+                && let Some((what, arg, len)) = shell.card_ask()
+            {
+                let words = arg.get();
+                let first = words.split(|&c| c == b' ').next().unwrap_or(&[]);
+                let rest = words.get(first.len() + 1..).unwrap_or(&[]);
+                let number = core::str::from_utf8(first)
+                    .ok()
+                    .and_then(|w| w.parse::<usize>().ok());
+                let answer: Result<usize, &str> = match (card.as_mut(), what, number) {
+                    (None, ..) => Err("no card"),
+                    (Some((c, start)), b"CARDFILES", _) => {
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::cardfiles::list(&mut *c, *start, words, net_buf)
+                    }
+                    (Some((c, start)), b"CARDFILE", Some(k)) => {
+                        // "n kind [offset]".
+                        let mut w = rest.split(|&c| c == b' ');
+                        let kind = w.next().unwrap_or(&[]);
+                        let offset = w
+                            .next()
+                            .and_then(|o| core::str::from_utf8(o).ok()?.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        rp_hal_x51v::cardsink::settle();
+                        rp_today::cardfiles::read(&mut *c, *start, kind, k, offset, net_buf)
+                    }
+                    (Some((c, start)), b"CARDPUT", _) if len + 4096 <= net_buf.len() => {
+                        // The body a piece at a time from the app, then
+                        // written whole.
+                        let (body, scratch) = net_buf.split_at_mut(len);
+                        let mut at = 0;
+                        while at < len {
+                            let k = shell.program_body(at, &mut body[at..]);
+                            if k == 0 {
+                                break;
+                            }
+                            at += k;
+                        }
+                        if at == len {
+                            rp_hal_x51v::cardsink::settle();
+                            rp_today::cardfiles::put(
+                                &mut *c,
+                                *start,
+                                rest,
+                                body,
+                                &mut scratch[..4096],
+                            )
+                            .map(|()| 0)
+                        } else {
+                            Err("the app's file was short")
+                        }
+                    }
+                    (Some(_), b"CARDPUT", _) => Err("too big for the card's pool"),
+                    _ => Err("not a card question"),
+                };
+                let _ = writeln!(
+                    RunLog,
+                    "card files: {} {} -> {}",
+                    core::str::from_utf8(what).unwrap_or("?"),
+                    core::str::from_utf8(words).unwrap_or("?"),
+                    match answer {
+                        Ok(_) => "done",
+                        Err(e) => e,
+                    }
+                );
+                match answer {
+                    Ok(n) => shell.card_answer(true, &net_buf[..n]),
+                    Err(_) => shell.card_answer(false, &[]),
+                }
+            }
             if still && def_index.is_none() && !def_failed {
                 if !card_tried {
                     card_tried = true;
@@ -3330,6 +3413,8 @@ mod image {
                     n.out_at = 0;
                     n.tile = q.tile;
                     n.pack = q.ask == rp_shell::Ask::Pack;
+                    n.stream = q.stream;
+                    n.streamed = 0;
                     n.waiting = true;
                     n.asked_ms = now_ms;
                     let _ = writeln!(
@@ -3341,7 +3426,20 @@ mod image {
                         core::str::from_utf8(q.logged()).unwrap_or("?").trim_end()
                     );
                 }
-                // What is left of the question, as the port takes it.
+                // What is left of the question, as the port takes it; then
+                // a PUT's body, a piece at a time (zeros if the program's
+                // ran short: the relay reads the length it was told).
+                if n.out_at >= n.out_n && n.waiting && n.streamed < n.stream {
+                    let room = n.out.len().min(n.stream - n.streamed);
+                    let mut k = shell.program_body(n.streamed, &mut n.out[..room]);
+                    if k == 0 {
+                        n.out[..room].fill(0);
+                        k = room;
+                    }
+                    n.streamed += k;
+                    n.out_n = k;
+                    n.out_at = 0;
+                }
                 if n.out_at < n.out_n {
                     n.out_at += n.udc.write(&n.out[n.out_at..n.out_n]);
                 }
