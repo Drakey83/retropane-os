@@ -6,11 +6,19 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod birthdays;
 pub mod calc;
+pub mod contact;
 pub mod date;
 pub mod expr;
+pub mod ics;
+pub mod jpeg;
+pub mod jpeg_out;
 pub mod net;
 pub mod phone;
 pub mod quick;
+pub mod remind;
 pub mod repeat;
 pub mod store;
+pub mod vcard;
+pub mod zone;

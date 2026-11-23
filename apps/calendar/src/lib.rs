@@ -18,7 +18,13 @@ use rp_app::{Ctx, Event, Field, Frame, Key, MARGIN, Pic, Program, Rect, Reply, W
 use rp_pim::date;
 use rp_pim::store::{Kind, tag};
 
+mod files;
 pub mod motion;
+
+/// The calendars' screen's Import and Export keys (the previews tap them).
+pub const IMPORT_KEY_FOR_PREVIEW: Rect = files::IMPORT_KEY;
+/// See [`IMPORT_KEY_FOR_PREVIEW`].
+pub const EXPORT_KEY_FOR_PREVIEW: Rect = files::EXPORT_KEY;
 
 /// Appointments a view holds (a repeat's days count each).
 pub const MAX: usize = 96;
@@ -70,6 +76,9 @@ struct CalRow {
     name: Text,
     colour: u32,
     hidden: bool,
+    /// The Birthdays calendar: its days are the contacts' own
+    /// ([`rp_pim::birthdays`]), none of them records of its own.
+    contacts: bool,
 }
 
 /// One appointment as a view shows it.
@@ -120,6 +129,11 @@ pub enum View {
     /// The search: every appointment kept whose title or place holds
     /// what is typed, whenever it is.
     Find,
+    /// The device's time zone chosen (calendar-rule0.md "Time zones").
+    Zones,
+    /// A calendar file chosen to import, or where to export (".ics import
+    /// and export").
+    Files,
 }
 
 /// The editor's text field being typed.
@@ -143,43 +157,109 @@ struct Edit {
     all_day: bool,
     /// 0 none, then Every's order: day, week, month, year.
     repeat: u8,
-    /// 0 none, 1 at the start, 2 15 min, 3 1 h, 4 1 day before.
-    alert: u8,
-    /// The alert's lead in minutes when it is none of the quick ones
-    /// (`alert` 5).
+    /// The record's own rule and the chip it showed as: kept whole on
+    /// save while that chip is chosen (every 2 weeks on Mon and Wed, the
+    /// 2nd Tuesday, an end day: the chips say only "WEEKLY", "MONTHLY"),
+    /// so an edit of the title never rewrites the repeat (R375).
+    kept_rule: Option<(rp_pim::repeat::Rule, u8)>,
+    /// The alerts on (several, calendar-rule0.md): bit k for chip k, 1 at
+    /// the start, 2 15 min, 3 1 h, 4 1 day before, 5 its own lead
+    /// ([`Edit::alert_other`]); none on is chip 0, NONE.
+    alerts: u8,
+    /// The own lead in minutes (chip 5).
     alert_other: u32,
+    /// The D-pad's chip on the alert row (left and right move it, the
+    /// centre turns it on or off: a row of several needs a cursor apart
+    /// from what is on).
+    alert_at: u8,
+    /// The record's alerts as they were ([`tag::REMIND`]), kept as they
+    /// are unless the alert row is changed (an imported appointment's
+    /// leads the chips can't show, two of its own, are never lost by an
+    /// edit of its title).
+    kept: [u8; 4 * rp_pim::remind::LEADS_MAX],
+    kept_n: u8,
+    alerts_changed: bool,
     cal: usize,
     /// From a calendar link: shown, not changed.
     read_only: bool,
     typing: Option<EditText>,
     confirm_delete: bool,
+    /// "Make a task" was pressed: the task is in Tasks (the key says so
+    /// and makes no second one).
+    task_made: bool,
     /// The D-pad's row ([`EDIT_ROWS`]): up and down move it, left and
     /// right change its value, the centre types in it or presses it.
     row: Option<u8>,
+    /// The zone its time is kept in (empty: the device's own); the editor
+    /// shows and sets the time in the device's zone.
+    zone: rp_pim::net::Short<40>,
 }
 
 const ALERTS: [Option<u32>; 5] = [None, Some(0), Some(15), Some(60), Some(1440)];
 const ALERT_NAMES: [&[u8]; 5] = [b"NONE", b"AT START", b"15 MIN", b"1 HOUR", b"1 DAY"];
 
 impl Edit {
-    /// The alert's lead in minutes (`None`: no alert).
-    fn alert_minutes(&self) -> Option<u32> {
-        match ALERTS.get(usize::from(self.alert)) {
-            Some(a) => *a,
-            None => Some(self.alert_other),
+    /// The alerts' leads in minutes (none: no alert), latest first.
+    fn leads(&self) -> ([u32; 5], usize) {
+        let mut v = [0u32; 5];
+        let mut n = 0;
+        for k in (1..=5u8).rev() {
+            if self.alerts & (1 << k) != 0 {
+                v[n] = ALERTS
+                    .get(usize::from(k))
+                    .copied()
+                    .flatten()
+                    .unwrap_or(self.alert_other);
+                n += 1;
+            }
         }
+        v[..n].sort_unstable_by(|a, b| b.cmp(a));
+        (v, n)
     }
 
-    /// The alert set to `lead` minutes before: one of the quick ones, or
-    /// its own (the sixth chip).
+    /// The own lead (the sixth chip's pad) set to `lead` minutes before:
+    /// a quick one lights its own chip; `None` takes the own one off.
     fn set_alert(&mut self, lead: Option<u32>) {
+        self.alerts &= !(1 << 5);
         match ALERTS.iter().position(|a| *a == lead) {
-            Some(k) => self.alert = k as u8,
+            Some(0) => {}
+            Some(k) => self.alerts |= 1 << k,
             None => {
-                self.alert = 5;
+                self.alerts |= 1 << 5;
                 self.alert_other = lead.unwrap_or(0);
             }
         }
+        self.alerts_changed = true;
+    }
+
+    /// Chip `k` of the alert row tapped: NONE takes every alert off, a
+    /// quick one turns on or off.
+    fn toggle_alert(&mut self, k: usize) {
+        match k {
+            0 => self.alerts = 0,
+            1..=4 => self.alerts ^= 1 << k,
+            _ => return,
+        }
+        self.alerts_changed = true;
+    }
+
+    /// The alerts read from a record's leads.
+    fn load_alerts(&mut self, r: &rp_pim::store::Rec<'_>) {
+        self.alerts = 0;
+        for lead in rp_pim::remind::leads(r) {
+            match ALERTS.iter().position(|a| *a == Some(lead)) {
+                Some(k) => self.alerts |= 1 << k,
+                None => {
+                    self.alerts |= 1 << 5;
+                    self.alert_other = lead;
+                }
+            }
+        }
+        let raw = r.text(tag::REMIND);
+        let n = raw.len().min(self.kept.len()) / 4 * 4;
+        self.kept[..n].copy_from_slice(&raw[..n]);
+        self.kept_n = n as u8;
+        self.alerts_changed = false;
     }
 }
 const REPEAT_NAMES: [&[u8]; 5] = [b"NONE", b"DAILY", b"WEEKLY", b"MONTHLY", b"YEARLY"];
@@ -206,6 +286,21 @@ const EDIT_ROWS: [(u16, u16); 9] = [
     (E_CAL + 14, 30),
     (E_DELETE, 40),
 ];
+
+/// The editor's last row: "Make a task" and, for an appointment of this
+/// device, Delete beside it (a calendar link's is read only: Make a task
+/// alone, the width of the row).
+const fn edit_keys(read_only: bool) -> (Rect, Option<Rect>) {
+    if read_only {
+        (Rect::new(MARGIN, E_DELETE, WIDE, 40), None)
+    } else {
+        let half = (WIDE - 8) / 2;
+        (
+            Rect::new(MARGIN, E_DELETE, half, 40),
+            Some(Rect::new(MARGIN + half + 8, E_DELETE, half, 40)),
+        )
+    }
+}
 
 /// The key on the title band that opens the calendars.
 const CALENDARS_KEY: Rect = Rect::new(W - MARGIN - 128, 46, 128, 30);
@@ -289,6 +384,8 @@ pub struct Calendar {
     /// The store's change count and the window's first day the list was
     /// made at (P1: made when the records change, not each frame).
     seen: Option<(u32, i32)>,
+    /// The store's change count the Birthdays calendar was looked for at.
+    bdays_seen: Option<u32>,
     view: View,
     /// The chosen day.
     day: i32,
@@ -318,6 +415,55 @@ pub struct Calendar {
     /// Today's ring as four 10 px slices, painted the first time the ring
     /// is partly left of the screen in a sliding strip (motion.rs).
     ring_slices: [Option<Pic>; 4],
+    /// The files' and zones' screens, and the device's zone.
+    io: files::Io,
+    /// A status line made at run time (an import's counts): shown when
+    /// `status` is the mark `\x01`.
+    status_text: Text,
+}
+
+/// An iCalendar event's fields for the store (a link's or a file's):
+/// its zone and its first alarm kept with it.
+struct EventFields<'a> {
+    e: &'a rp_pim::ics::Event,
+    st: [u8; 4],
+    mi: [u8; 4],
+    ca: [u8; 4],
+    one: [u8; 4],
+    rule: Option<[u8; 4]>,
+    alarm: Option<[u8; 4]>,
+}
+
+impl<'a> EventFields<'a> {
+    fn of(e: &'a rp_pim::ics::Event, cal: u32) -> Self {
+        let le = |v: u32| v.to_le_bytes();
+        Self {
+            e,
+            st: le(e.start),
+            mi: le(e.minutes.max(1)),
+            ca: le(cal),
+            one: le(1),
+            rule: e.rule.map(|r| le(r.pack(date::day_of(e.start)))),
+            alarm: e.alarm.map(le),
+        }
+    }
+
+    fn list(&self) -> [(u8, &[u8]); 11] {
+        let e = self.e;
+        [
+            (tag::TITLE, e.title.get()),
+            (tag::PLACE, e.place.get()),
+            (tag::NOTE, e.note.get()),
+            (tag::START, &self.st),
+            (tag::MINUTES, &self.mi),
+            (tag::CAL, &self.ca),
+            (tag::ALL_DAY, if e.all_day { &self.one } else { &[] }),
+            (tag::REPEAT, self.rule.as_ref().map_or(&[][..], |r| &r[..])),
+            (tag::ZONE, e.zone.get()),
+            (tag::REMIND, self.alarm.as_ref().map_or(&[][..], |r| &r[..])),
+            (0, &[]),
+        ]
+    }
 }
 
 /// Motion the user started (design-language.md "Motion": started only by
@@ -463,22 +609,12 @@ fn hour(h: u16) -> Buf<6> {
     b
 }
 
-impl Calendar {
-    /// A calendar on `today` showing the store's calendars, `cals` until
-    /// the store holds one.
-    #[must_use]
-    pub fn new(cals: &'static [Cal], today: i32) -> Self {
-        let mut rows = [CalRow {
-            id: 0,
-            name: Text::EMPTY,
-            colour: kit::IDENTITY[0],
-            hidden: false,
-        }; 8];
-        for (r, c) in rows.iter_mut().zip(cals) {
-            r.name = Text::of(c.name);
-            r.colour = c.colour;
-        }
-        Self {
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for [`Calendar::new`] and
+/// [`Calendar::new_in`].
+macro_rules! calendar_start {
+    ($rows:expr, $n_cals:expr, $today:expr; $($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Calendar {
             queue: [0; 8],
             n_queue: 0,
             cal_rows: [(Rect::new(0, 0, 0, 0), 0); 8],
@@ -503,12 +639,13 @@ impl Calendar {
             asked: Asked::Nothing,
             status: b"",
             synced: 0,
-            cals: rows,
-            n_cals: cals.len().clamp(1, 8),
-            appts: [None; MAX],
+            cals: $rows,
+            n_cals: $n_cals,
+            appts: @each None,
             seen: None,
+            bdays_seen: None,
             view: View::Home,
-            day: today,
+            day: $today,
             line: [0; 64],
             line_n: 0,
             ring: None,
@@ -521,7 +658,57 @@ impl Calendar {
             drag: None,
             strip_at: None,
             ring_slices: [None; 4],
+            io: files::Io::new(),
+            status_text: Text::EMPTY,
+        })
+    };
+}
+
+impl Calendar {
+    /// A calendar on `today` showing the store's calendars, `cals` until
+    /// the store holds one.
+    #[must_use]
+    pub fn new(cals: &'static [Cal], today: i32) -> Self {
+        let mut rows = [CalRow {
+            id: 0,
+            name: Text::EMPTY,
+            colour: kit::IDENTITY[0],
+            hidden: false,
+            contacts: false,
+        }; 8];
+        for (r, c) in rows.iter_mut().zip(cals) {
+            r.name = Text::of(c.name);
+            r.colour = c.colour;
         }
+        calendar_start!(rows, cals.len().clamp(1, 8), today; value)
+    }
+
+    /// [`Calendar::new`] made straight into `slot` (the program's, in
+    /// `.bss`), a field at a time: made on the stack and moved it was a
+    /// 22 KB frame (the stack rule, P6: 4 KB).
+    pub fn new_in<'s>(
+        slot: &'s mut core::mem::MaybeUninit<Self>,
+        cals: &'static [Cal],
+        today: i32,
+    ) -> &'s mut Self {
+        let rows = Self::rows_of(cals);
+        calendar_start!(rows, cals.len().clamp(1, 8), today; slot,)
+    }
+
+    /// The calendars' rows before the store has any.
+    fn rows_of(cals: &'static [Cal]) -> [CalRow; 8] {
+        let mut rows = [CalRow {
+            id: 0,
+            name: Text::EMPTY,
+            colour: kit::IDENTITY[0],
+            hidden: false,
+            contacts: false,
+        }; 8];
+        for (r, c) in rows.iter_mut().zip(cals) {
+            r.name = Text::of(c.name);
+            r.colour = c.colour;
+        }
+        rows
     }
 
     /// The list made again from the store when its records changed or
@@ -540,6 +727,8 @@ impl Calendar {
             return;
         }
         self.seen = Some((changes, from));
+        (self.io.device, self.io.guessed) = files::device_zone(store, cx);
+        let device = self.io.device;
         let mut n_cals = 0;
         for r in store.all(Kind::Calendar) {
             if n_cals < self.cals.len() {
@@ -548,6 +737,7 @@ impl Calendar {
                     name: Text::of(r.text(tag::NAME)),
                     colour: kit::IDENTITY[(r.num(tag::COLOUR).unwrap_or(0) % 8) as usize],
                     hidden: r.num(tag::HIDDEN) == Some(1),
+                    contacts: r.text(tag::SOURCE) == rp_pim::birthdays::SOURCE,
                 };
                 n_cals += 1;
             }
@@ -577,9 +767,22 @@ impl Calendar {
             let rule = r
                 .num(tag::REPEAT)
                 .and_then(|v| rp_pim::repeat::Rule::unpack(v, first));
+            // A time kept in another zone, shown in the device's: each
+            // occurrence moved on its own day (a clock change between
+            // them moves one and not the other).
+            let zone = r.text(tag::ZONE);
+            let at = |day: i32| {
+                let wall = date::start_of(day) + u32::from(minute);
+                if len == 0 {
+                    (day, minute)
+                } else {
+                    let s = files::shown(device, zone, wall);
+                    (date::day_of(s), (s % date::DAY_MIN) as u16)
+                }
+            };
             let make = |day: i32| Appt {
-                day,
-                start: minute,
+                day: at(day).0,
+                start: at(day).1,
                 len,
                 title: Text::of(r.text(tag::TITLE)),
                 place: Text::of(r.text(tag::PLACE)),
@@ -588,15 +791,21 @@ impl Calendar {
                 task: false,
                 id: r.id,
             };
+            let inside = |day: i32| {
+                let d = at(day).0;
+                d >= from && d < from + WINDOW
+            };
             match rule {
-                None if first >= from && first < from + WINDOW && k < MAX => {
+                None if inside(first) && k < MAX => {
                     self.appts[k] = Some(make(first));
                     k += 1;
                 }
                 None => {}
                 Some(rule) => {
-                    for day in from.max(first)..from + WINDOW {
-                        if k < MAX && rule.occurs(first, day) {
+                    // A day either side: a zone's day can be the device's
+                    // day before or after.
+                    for day in (from - 1).max(first)..from + WINDOW + 1 {
+                        if k < MAX && rule.occurs(first, day) && inside(day) {
                             self.appts[k] = Some(make(day));
                             k += 1;
                         }
@@ -604,8 +813,41 @@ impl Calendar {
                 }
             }
         }
+        // The Birthdays calendar: the contacts' birthdays and anniversaries
+        // on their days, all day, unless it is hidden. Its rows carry the
+        // contact's id: the editor opens appointments only.
+        if let Some(b) = self.cals[..self.n_cals]
+            .iter()
+            .position(|c| c.contacts && !c.hidden)
+        {
+            let appts = &mut self.appts;
+            rp_pim::birthdays::all(store, from, WINDOW, |e| {
+                let Some(r) = store.get(e.id) else { return };
+                if k >= MAX {
+                    return;
+                }
+                let mut t = [0u8; 40];
+                let n = rp_pim::birthdays::title(&r, &e, &mut t);
+                appts[k] = Some(Appt {
+                    day: e.day,
+                    start: 0,
+                    len: 0,
+                    title: Text::of(&t[..n]),
+                    place: Text::EMPTY,
+                    cal: b as u8,
+                    repeats: true,
+                    task: false,
+                    id: e.id,
+                });
+                k += 1;
+            });
+        }
         // Tasks on their due days (calendar-rule0.md, tasks-rule0.md: the
-        // tie-in), the open ones, in the tasks' blue.
+        // tie-in), the open ones, in the tasks' blue; a repeating one on
+        // each of its days to come as well (Fantastical shows repeating
+        // reminders once; the agenda is where the week is planned). An
+        // "after done" task shows on its due day only: its next day is
+        // not known until it is done.
         for r in store
             .all(Kind::Task)
             .filter(|r| r.num(tag::DONE).is_none() && r.num(tag::PARENT).is_none())
@@ -613,21 +855,80 @@ impl Calendar {
             let Some(due) = r.num(tag::DUE).map(|d| d as i32) else {
                 continue;
             };
-            if k < MAX && due >= from && due < from + WINDOW {
+            let rule = r
+                .num(tag::REPEAT)
+                .and_then(|v| rp_pim::repeat::Rule::unpack(v, due));
+            for day in due.max(from)..from + WINDOW {
+                if k >= MAX {
+                    break;
+                }
+                if day != due && !rule.is_some_and(|x| x.occurs(due, day)) {
+                    if rule.is_none() {
+                        break;
+                    }
+                    continue;
+                }
                 self.appts[k] = Some(Appt {
-                    day: due,
+                    day,
                     start: 0,
                     len: 0,
                     title: Text::of(r.text(tag::TITLE)),
                     place: Text::EMPTY,
                     cal: 0,
-                    repeats: false,
+                    repeats: rule.is_some(),
                     task: true,
                     id: r.id,
                 });
                 k += 1;
             }
         }
+    }
+
+    /// The Birthdays calendar's record made the first time a contact has a
+    /// birthday or an anniversary (in the eighth colour, the previews'
+    /// Birthdays calendar's; shown and hidden as any calendar). A store
+    /// with no calendar yet keeps this device's own first, so appointments
+    /// with none still belong to it. Looked at once per change of the
+    /// store.
+    fn ensure_birthdays(&mut self, cx: &Ctx) {
+        let Some(cell) = cx.pim else { return };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(store) = guard.as_mut() else { return };
+        if self.bdays_seen == Some(store.changes()) {
+            return;
+        }
+        self.bdays_seen = Some(store.changes());
+        if rp_pim::birthdays::calendar(store).is_some() || !rp_pim::birthdays::any(store) {
+            return;
+        }
+        if store.all(Kind::Calendar).next().is_none() {
+            let first = &self.cals[0];
+            let c = kit::IDENTITY
+                .iter()
+                .position(|&x| x == first.colour)
+                .unwrap_or(0) as u32;
+            let _ = store.put(
+                Kind::Calendar,
+                None,
+                &[
+                    (tag::NAME, first.name.get()),
+                    (tag::COLOUR, &c.to_le_bytes()),
+                ],
+            );
+        }
+        let _ = store.put(
+            Kind::Calendar,
+            None,
+            &[
+                (tag::NAME, b"Birthdays"),
+                (tag::COLOUR, &7u32.to_le_bytes()),
+                (tag::SOURCE, rp_pim::birthdays::SOURCE),
+            ],
+        );
+        self.bdays_seen = Some(store.changes());
+        self.seen = None;
     }
 
     /// Opens appointment `id` (or a new one from the quick-add line) in the
@@ -644,17 +945,24 @@ impl Calendar {
             len: 60,
             all_day: false,
             repeat: 0,
+            kept_rule: None,
             // At its time (it was a quarter of an hour before: the owner on
             // the X51v, 2026-11-15, set one a few minutes off, the alert's
             // time was past as it was made, and "it never went off when it
             // was supposed to"; run today-0150 has no reminder in 814 s).
-            alert: 1,
+            alerts: 1 << 1,
             alert_other: 0,
+            alert_at: 1,
+            kept: [0; 4 * rp_pim::remind::LEADS_MAX],
+            kept_n: 0,
+            alerts_changed: true,
             cal: 0,
             read_only: false,
             typing: None,
             confirm_delete: false,
+            task_made: false,
             row: None,
+            zone: rp_pim::net::Short::new(),
         };
         match id {
             Some(id) => {
@@ -662,27 +970,38 @@ impl Calendar {
                 let Ok(guard) = cell.try_borrow() else { return };
                 let Some(store) = guard.as_ref() else { return };
                 let Some(r) = store.get(id) else { return };
+                // A birthday's row is its contact: nothing to edit here.
+                if r.kind != Kind::Appointment {
+                    return;
+                }
                 let t = r.text(tag::TITLE);
                 e.title_n = t.len().min(64);
                 e.title[..e.title_n].copy_from_slice(&t[..e.title_n]);
                 let pl = r.text(tag::PLACE);
                 e.place_n = pl.len().min(64);
                 e.place[..e.place_n].copy_from_slice(&pl[..e.place_n]);
+                e.all_day = r.num(tag::ALL_DAY) == Some(1);
+                e.zone.push(r.text(tag::ZONE));
                 let at = r.num(tag::START).unwrap_or(0);
+                let at = if e.all_day {
+                    at
+                } else {
+                    files::shown(self.io.device, e.zone.get(), at)
+                };
                 e.day = date::day_of(at);
                 e.start = (at % date::DAY_MIN) as u16;
-                e.all_day = r.num(tag::ALL_DAY) == Some(1);
                 e.len = r.num(tag::MINUTES).unwrap_or(60).min(24 * 60) as u16;
-                e.repeat = r
+                let rule = r
                     .num(tag::REPEAT)
-                    .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day))
-                    .map_or(0, |r| match r.every {
-                        rp_pim::repeat::Every::Day => 1,
-                        rp_pim::repeat::Every::Week => 2,
-                        rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
-                        rp_pim::repeat::Every::Year => 4,
-                    });
-                e.set_alert(r.num(tag::REMIND));
+                    .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day));
+                e.repeat = rule.map_or(0, |r| match r.every {
+                    rp_pim::repeat::Every::Day => 1,
+                    rp_pim::repeat::Every::Week => 2,
+                    rp_pim::repeat::Every::MonthDate | rp_pim::repeat::Every::MonthWeekday => 3,
+                    rp_pim::repeat::Every::Year => 4,
+                });
+                e.kept_rule = rule.map(|r| (r, e.repeat));
+                e.load_alerts(&r);
                 let cal = r.num(tag::CAL);
                 e.cal = cal
                     .and_then(|c| self.cals[..self.n_cals].iter().position(|x| x.id == c))
@@ -692,6 +1011,13 @@ impl Calendar {
                     .is_some_and(|c| c.text(tag::SOURCE).starts_with(b"ical:"));
             }
             None => {
+                // A new one is kept in the device's zone: it stays at its
+                // moment if the device later moves to another.
+                if let Some(z) = self.io.device {
+                    let mut b = [0u8; 40];
+                    let n = z.name(&mut b);
+                    e.zone.push(&b[..n]);
+                }
                 // From the quick-add line: what the parser understood.
                 let line = &self.line[..self.line_n];
                 let mut title = [0u8; rp_pim::quick::TITLE_MAX];
@@ -719,10 +1045,22 @@ impl Calendar {
         }
         let le = |v: u32| v.to_le_bytes();
         let start = date::start_of(e.day) + if e.all_day { 0 } else { u32::from(e.start) };
+        // The device's time typed, kept as the time of the appointment's
+        // own zone.
+        let start = if e.all_day {
+            start
+        } else {
+            files::kept(self.io.device, e.zone.get(), start)
+        };
         let (st, mi, one) = (le(start), le(u32::from(e.len.max(5))), le(1));
         let cal = le(self.cals[e.cal.min(self.n_cals - 1)].id);
         let rule = (e.repeat > 0).then(|| {
             use rp_pim::repeat::{Every, Rule};
+            // Its own rule while its chip is chosen; a chip changed is the
+            // plain rule it names.
+            if let Some((r, _)) = e.kept_rule.filter(|&(_, c)| c == e.repeat) {
+                return le(r.pack(e.day));
+            }
             let every =
                 [Every::Day, Every::Week, Every::MonthDate, Every::Year][usize::from(e.repeat - 1)];
             le(Rule {
@@ -730,11 +1068,22 @@ impl Calendar {
                 n: 1,
                 days: 0,
                 until: None,
+                after: false,
             }
             .pack(e.day))
         });
-        let alert = e.alert_minutes().map(le);
-        let mut fields: [(u8, &[u8]); 8] = [
+        // Several alerts (rp_pim::remind): the chips' leads, or the
+        // record's own as they were when the row wasn't changed.
+        let mut alert = [0u8; 4 * rp_pim::remind::LEADS_MAX];
+        let alert_n = if e.alerts_changed {
+            let (v, n) = e.leads();
+            rp_pim::remind::pack(&v[..n], &mut alert)
+        } else {
+            let n = usize::from(e.kept_n);
+            alert[..n].copy_from_slice(&e.kept[..n]);
+            n
+        };
+        let mut fields: [(u8, &[u8]); 9] = [
             (tag::TITLE, &e.title[..e.title_n]),
             (tag::PLACE, &e.place[..e.place_n]),
             (tag::START, &st),
@@ -743,6 +1092,7 @@ impl Calendar {
             (tag::ALL_DAY, &[]),
             (tag::REPEAT, &[]),
             (tag::REMIND, &[]),
+            (tag::ZONE, if e.all_day { &[] } else { e.zone.get() }),
         ];
         if self.cals[e.cal.min(self.n_cals - 1)].id != 0 {
             fields[4].1 = &cal;
@@ -753,8 +1103,8 @@ impl Calendar {
         if let Some(r) = &rule {
             fields[6].1 = r;
         }
-        if let Some(a) = &alert {
-            fields[7].1 = a;
+        if alert_n > 0 {
+            fields[7].1 = &alert[..alert_n];
         }
         let Some(cell) = cx.pim else { return false };
         let Ok(mut guard) = cell.try_borrow_mut() else {
@@ -775,6 +1125,80 @@ impl Calendar {
             self.line_n = 0;
         }
         ok
+    }
+
+    /// "Make a task" (tasks-rule0.md: the tie-in with Calendar): a task in
+    /// Tasks' first list with the appointment's title, due on its day (a
+    /// repeating one's next day from the one shown), and a note saying
+    /// where it came from: when and where the appointment is. Fantastical
+    /// copies the title alone; the note keeps the time and place with the
+    /// task, so it reads on its own in Tasks. True once it is kept.
+    fn make_task(cx: &Ctx, e: &Edit) -> bool {
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let rule =
+            e.id.and_then(|id| store.get(id))
+                .and_then(|r| r.num(tag::REPEAT))
+                .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day));
+        let due = match rule {
+            Some(r) => {
+                let from = e.day.max(cx.now.day);
+                (from..from + 1462)
+                    .find(|&d| r.occurs(e.day, d))
+                    .unwrap_or(e.day)
+            }
+            None => e.day,
+        };
+        let mut note = Buf::<96>::new();
+        let dd = date::date_of(due);
+        note.s(b"From Calendar: ")
+            .s(date::WEEKDAYS[usize::from(date::weekday(due))].as_bytes())
+            .s(b" ")
+            .num(u32::from(dd.day))
+            .s(b" ")
+            .s(&MONTHS[usize::from(dd.month - 1)][..3]);
+        if !e.all_day {
+            note.s(b", ").s(clock(e.start).get());
+        }
+        if e.place_n > 0 {
+            note.s(b", ").s(&e.place[..e.place_n]);
+        }
+        let list = store.all(Kind::List).next().map(|l| l.id.to_le_bytes());
+        let day = (due.max(0) as u32).to_le_bytes();
+        let mut fields: [(u8, &[u8]); 4] = [
+            (tag::TITLE, &e.title[..e.title_n]),
+            (tag::DUE, &day),
+            (tag::NOTE, note.get()),
+            (tag::LIST, &[]),
+        ];
+        let n = match &list {
+            Some(l) => {
+                fields[3].1 = l;
+                4
+            }
+            None => 3,
+        };
+        e.title_n > 0 && store.put(Kind::Task, None, &fields[..n]).is_ok()
+    }
+
+    /// The calendars an appointment can be put in (the editor's chips,
+    /// four at most): every one but Birthdays, whose days are the
+    /// contacts'.
+    fn chip_cals(&self) -> ([usize; 4], usize) {
+        let mut ix = [0; 4];
+        let mut n = 0;
+        for (i, c) in self.cals[..self.n_cals].iter().enumerate() {
+            if !c.contacts && n < ix.len() {
+                ix[n] = i;
+                n += 1;
+            }
+        }
+        (ix, n)
     }
 
     /// The editor's grouped cards.
@@ -838,6 +1262,32 @@ impl Calendar {
             stepper(f, E_START, b"STARTS", b"All day");
         } else {
             stepper(f, E_START, b"STARTS", clock(e.start).get());
+            // A time kept in another zone says where it is from, under
+            // the row: "9:00 AM in New York".
+            let device_name = self.io.device.map(|z| {
+                let mut b = [0u8; 40];
+                let n = z.name(&mut b);
+                (b, n)
+            });
+            let other =
+                !e.zone.is_empty() && device_name.is_none_or(|(b, n)| &b[..n] != e.zone.get());
+            if other {
+                let wall = files::kept(
+                    self.io.device,
+                    e.zone.get(),
+                    date::start_of(e.day) + u32::from(e.start),
+                );
+                if let Some(note) = files::zone_note(e.zone.get(), wall) {
+                    kit::right(
+                        f,
+                        MARGIN + WIDE - 14,
+                        E_LEN + 53,
+                        cx.fonts.label,
+                        tint::CALENDAR,
+                        note.get(),
+                    );
+                }
+            }
         }
         let mut l = Buf::<16>::new();
         if e.len >= 60 && e.len % 60 == 0 {
@@ -865,11 +1315,22 @@ impl Calendar {
             &REPEAT_NAMES,
             usize::from(e.repeat),
         );
+        // A rule the chip says only part of, in words beside the label
+        // ("Every 2 weeks on Mon, Wed until Mar 3"): what is kept on save.
+        if let Some((r, _)) = e
+            .kept_rule
+            .filter(|&(r, c)| c == e.repeat && !r.plain(e.day))
+        {
+            let mut w = [0u8; 64];
+            let n = r.words(e.day, cx.us, &mut w);
+            let x = MARGIN + 4 + cx.fonts.label.width(b"REPEAT") + 10;
+            kit::text(f, x, E_REPEAT + 10, cx.fonts.label, tint::CALENDAR, &w[..n]);
+        }
         // The quick leads, and any other to the minute (the sixth chip
         // brings the pad: a number and its unit, as Google Calendar's
         // custom alert; the owner, 2026-11-15, "by the min").
         let mut other = Buf::<10>::new();
-        if e.alert == 5 {
+        if e.alerts & (1 << 5) != 0 {
             let m = e.alert_other;
             if m.is_multiple_of(1440) {
                 other.num(m / 1440).s(b" DAY");
@@ -889,42 +1350,77 @@ impl Calendar {
             ALERT_NAMES[4],
             other.get(),
         ];
-        chips_row(f, E_ALERT + 14, b"ALERT", &alerts, usize::from(e.alert));
+        // Several on at once (each lit), NONE lit when none is; the
+        // D-pad's chip ringed while the row is chosen.
+        kit::text(f, MARGIN + 4, E_ALERT + 10, cx.fonts.label, DIM, b"ALERTS");
+        let row = Rect::new(MARGIN, E_ALERT + 14, WIDE, 30);
+        for (k, word) in alerts.iter().enumerate() {
+            let on = if k == 0 {
+                e.alerts == 0
+            } else {
+                e.alerts & (1 << k) != 0
+            };
+            kit::gel(f, cx, kit::chip(row, alerts.len(), k), word, on);
+        }
+        if e.row == Some(6) {
+            f.push(rp_app::Cmd::Outline {
+                r: kit::chip(row, alerts.len(), usize::from(e.alert_at)),
+                color: TEXT,
+            });
+        }
         let mut names: [&[u8]; 4] = [b""; 4];
-        let n = self.n_cals.min(4);
-        for (k, c) in self.cals[..n].iter().enumerate() {
-            names[k] = c.name.get();
+        let (ix, n) = self.chip_cals();
+        for (k, &i) in ix[..n].iter().enumerate() {
+            names[k] = self.cals[i].name.get();
         }
         chips_row(
             f,
             E_CAL + 14,
             b"CALENDAR",
             &names[..n],
-            e.cal.min(n.saturating_sub(1)),
+            ix[..n].iter().position(|&i| i == e.cal).unwrap_or(0),
         );
+        // A kept appointment (a calendar link's too) makes a task in
+        // Tasks; one of this device's can be deleted beside it.
+        if e.id.is_some() {
+            let (made, delete) = edit_keys(e.read_only);
+            kit::key(f, cx, made, kit::KeyState::Rest);
+            kit::centred(
+                f,
+                made,
+                made.y + 27,
+                cx.fonts.ui,
+                if e.task_made { tint::TASKS } else { TEXT },
+                if e.task_made {
+                    b"Task made in Tasks"
+                } else {
+                    b"Make a task"
+                },
+            );
+            if let Some(r) = delete {
+                kit::key(f, cx, r, kit::KeyState::Down);
+                kit::centred(
+                    f,
+                    r,
+                    r.y + 27,
+                    cx.fonts.ui,
+                    kit::LATE,
+                    if e.confirm_delete {
+                        b"Tap again"
+                    } else {
+                        b"Delete"
+                    },
+                );
+            }
+        }
         if e.read_only {
             kit::text(
                 f,
                 MARGIN + 4,
-                E_DELETE + 28,
+                E_DELETE + 64,
                 cx.fonts.ui,
                 DIM,
                 b"From a calendar link: read only",
-            );
-        } else if e.id.is_some() {
-            let r = Rect::new(MARGIN, E_DELETE, WIDE, 40);
-            kit::key(f, cx, r, kit::KeyState::Down);
-            kit::centred(
-                f,
-                r,
-                r.y + 27,
-                cx.fonts.ui,
-                kit::LATE,
-                if e.confirm_delete {
-                    b"Tap again to delete"
-                } else {
-                    b"Delete"
-                },
             );
         }
         if let Some(&(top, h)) = e.row.and_then(|r| EDIT_ROWS.get(usize::from(r))) {
@@ -945,11 +1441,11 @@ impl Calendar {
     /// Mobile's editor walks its fields in tab order and opens a picker
     /// for each.
     fn edit_key(&mut self, cx: &Ctx, k: Key) -> Reply {
-        let n_cals = self.n_cals.min(4);
+        let (ix, n_cals) = self.chip_cals();
         let Some(e) = self.edit.as_mut() else {
             return Reply::Nothing;
         };
-        let last = if e.id.is_some() && !e.read_only { 8 } else { 7 };
+        let last = if e.id.is_some() { 8 } else { 7 };
         let to = match (k, e.row) {
             (Key::Down, None) => 0,
             (Key::Up, None) => last,
@@ -959,9 +1455,32 @@ impl Calendar {
             (_, Some(r)) => {
                 let (top, h) = EDIT_ROWS[usize::from(r)];
                 let right = k != Key::Left;
+                if r == 6 {
+                    let row = Rect::new(MARGIN, E_ALERT + 14, WIDE, 30);
+                    if k == Key::Enter {
+                        let c = kit::chip(row, 6, usize::from(e.alert_at));
+                        return self.edit_tap(cx, c.x + c.w / 2, c.y + c.h / 2);
+                    }
+                    e.alert_at = if right {
+                        (e.alert_at + 1).min(5)
+                    } else {
+                        e.alert_at.saturating_sub(1)
+                    };
+                    return Reply::Redraw;
+                }
                 let x = match r {
                     // (The centre on the start: its time pad.)
-                    0 | 1 | 3 | 8 if k == Key::Enter => W / 2,
+                    0 | 1 | 3 if k == Key::Enter => W / 2,
+                    // The last row: Make a task (the centre and left), and
+                    // Delete on the right.
+                    8 => {
+                        let (made, delete) = edit_keys(e.read_only);
+                        match (k, delete) {
+                            (Key::Right, Some(d)) => d.x + d.w / 2,
+                            (Key::Right, None) => return Reply::Nothing,
+                            _ => made.x + made.w / 2,
+                        }
+                    }
                     2..=4 if k != Key::Enter => {
                         if right {
                             W - MARGIN - 30
@@ -972,8 +1491,10 @@ impl Calendar {
                     5..=7 if k != Key::Enter => {
                         let (n, at) = match r {
                             5 => (5, usize::from(e.repeat)),
-                            6 => (6, usize::from(e.alert)),
-                            _ => (n_cals, e.cal),
+                            _ => (
+                                n_cals,
+                                ix[..n_cals].iter().position(|&i| i == e.cal).unwrap_or(0),
+                            ),
                         };
                         if n == 0 {
                             return Reply::Nothing;
@@ -1009,16 +1530,28 @@ impl Calendar {
 
     /// A tap in the editor.
     fn edit_tap(&mut self, cx: &Ctx, x: u16, y: u16) -> Reply {
-        let n_cals = self.n_cals.min(4);
+        let (ix, n_cals) = self.chip_cals();
         let Some(e) = self.edit.as_mut() else {
             return Reply::Nothing;
         };
         let hit = |top: u16, h: u16| y >= top && y < top + h;
         let chip = |n: usize| usize::from((x.saturating_sub(MARGIN)) * n as u16 / WIDE).min(n - 1);
+        let (made, delete) = edit_keys(e.read_only);
+        if e.id.is_some() && made.contains_point(x, y) {
+            e.confirm_delete = false;
+            if !e.task_made {
+                let e = *e;
+                if let Some(ed) = self.edit.as_mut() {
+                    ed.task_made = Self::make_task(cx, &e);
+                }
+            }
+            return Reply::Redraw;
+        }
         if e.read_only {
             return Reply::Nothing;
         }
-        if !hit(E_DELETE, 40) {
+        let on_delete = delete.is_some_and(|d| d.contains_point(x, y));
+        if !on_delete {
             e.confirm_delete = false;
         }
         if hit(E_TITLE, 40) {
@@ -1049,16 +1582,17 @@ impl Calendar {
         } else if hit(E_REPEAT + 14, 30) {
             e.repeat = chip(5) as u8;
         } else if hit(E_ALERT + 14, 30) {
-            match chip(6) {
-                5 => {
-                    let lead = e.alert_minutes().filter(|_| e.alert == 5);
-                    self.pad = Some((1, rp_app::timepad::TimePad::before(lead)));
-                }
-                k => e.alert = k as u8,
+            let k = chip(6);
+            e.alert_at = k as u8;
+            if k == 5 {
+                let lead = (e.alerts & (1 << 5) != 0).then_some(e.alert_other);
+                self.pad = Some((1, rp_app::timepad::TimePad::before(lead)));
+            } else {
+                e.toggle_alert(k);
             }
         } else if hit(E_CAL + 14, 30) && n_cals > 0 {
-            e.cal = chip(n_cals);
-        } else if hit(E_DELETE, 40) && e.id.is_some() {
+            e.cal = ix[chip(n_cals)];
+        } else if on_delete && e.id.is_some() {
             if e.confirm_delete {
                 let id = e.id;
                 self.edit = None;
@@ -1088,7 +1622,8 @@ impl Calendar {
         let guard = cx.pim.and_then(|c| c.try_borrow().ok());
         let store = guard.as_ref().and_then(|g| g.as_ref());
         for c in &self.cals[..self.n_cals] {
-            if y + 56 > 520 {
+            // (The time zone's row and the file keys under the list.)
+            if y + 56 > files::ZONE_ROW.y {
                 break;
             }
             let r = Rect::new(MARGIN, y, WIDE, 52);
@@ -1127,6 +1662,40 @@ impl Calendar {
             y += 56;
         }
         let note = Rect::new(MARGIN, y + 4, WIDE, 84);
+        // The way to a link, when there is room above the zone's row.
+        if note.bottom() + 4 <= files::ZONE_ROW.y {
+            Self::link_note(f, cx, note);
+        }
+        drop(guard);
+        self.files_rows(f, cx);
+        let status = if self.status == b"\x01" {
+            self.status_text.get()
+        } else {
+            self.status
+        };
+        if !status.is_empty() {
+            kit::text(
+                f,
+                MARGIN + 6,
+                GET_KEY.y - 5,
+                cx.fonts.ui,
+                kit::FOCUS,
+                status,
+            );
+        }
+        kit::key(f, cx, GET_KEY, kit::KeyState::On);
+        kit::centred(
+            f,
+            GET_KEY,
+            GET_KEY.y + 29,
+            cx.fonts.ui,
+            TEXT,
+            b"Get calendars and sync",
+        );
+    }
+
+    /// How to get a calendar's link, on the calendars' screen.
+    fn link_note(f: &mut Frame, cx: &Ctx, note: Rect) {
         kit::panel(f, cx, note);
         kit::text(
             f,
@@ -1151,25 +1720,6 @@ impl Calendar {
             cx.fonts.ui,
             DIM,
             b"address, then touch the key below",
-        );
-        if !self.status.is_empty() {
-            kit::text(
-                f,
-                MARGIN + 6,
-                GET_KEY.y - 12,
-                cx.fonts.ui,
-                kit::FOCUS,
-                self.status,
-            );
-        }
-        kit::key(f, cx, GET_KEY, kit::KeyState::On);
-        kit::centred(
-            f,
-            GET_KEY,
-            GET_KEY.y + 29,
-            cx.fonts.ui,
-            TEXT,
-            b"Get calendars and sync",
         );
     }
 
@@ -1261,7 +1811,6 @@ impl Calendar {
     /// Calendar link `n`'s file: its events replace that calendar's in the
     /// store (a link is read only: the copy here is the link's).
     fn take_link(&mut self, n: u8, body: &[u8], cx: &Ctx) {
-        let utc_offset = cx.utc_offset;
         let Some(cell) = cx.pim else { return };
         let Ok(mut guard) = cell.try_borrow_mut() else {
             return;
@@ -1300,26 +1849,9 @@ impl Calendar {
         let mut full = false;
         // Each event put as the reader hands it over (no array of them on
         // the stack), at most PARSED a link.
-        rp_pim::net::ics_each(body, utc_offset, |e| {
-            let le = |v: u32| v.to_le_bytes();
-            let (st, mi, ca, one) = (le(e.start), le(e.minutes.max(1)), le(cal), le(1));
-            let rule = e.rule.map(|r| le(r.pack(date::day_of(e.start))));
-            let mut fields: [(u8, &[u8]); 7] = [
-                (tag::TITLE, e.title.get()),
-                (tag::PLACE, e.place.get()),
-                (tag::START, &st),
-                (tag::MINUTES, &mi),
-                (tag::CAL, &ca),
-                (tag::ALL_DAY, &[]),
-                (tag::REPEAT, &[]),
-            ];
-            if e.all_day {
-                fields[5].1 = &one;
-            }
-            if let Some(r) = &rule {
-                fields[6].1 = r;
-            }
-            if store.put(Kind::Appointment, None, &fields).is_ok() {
+        rp_pim::ics::ics_each(body, |e| {
+            let fields = EventFields::of(e, cal);
+            if store.put(Kind::Appointment, None, &fields.list()).is_ok() {
                 put += 1;
                 put < PARSED as u32
             } else {
@@ -2786,6 +3318,11 @@ pub fn opened(today: i32) -> Calendar {
     Calendar::new(&FIRST_CALS, today)
 }
 
+/// [`opened`] made straight into the program's slot.
+pub fn opened_in(slot: &mut core::mem::MaybeUninit<Calendar>, today: i32) -> &mut Calendar {
+    Calendar::new_in(slot, &FIRST_CALS, today)
+}
+
 impl Program for Calendar {
     fn accent(&self) -> Option<rp_app::Argb> {
         Some(rp_app::kit::tint::CALENDAR)
@@ -2799,7 +3336,8 @@ impl Program for Calendar {
         match self.view {
             _ if self.pad.is_some() => ("Cancel", "Set"),
             View::New => ("Cancel", "Add"),
-            View::Calendars => ("Back", ""),
+            View::Calendars | View::Files => ("Back", ""),
+            View::Zones => ("Back", ""),
             View::Find => ("Back", "Find"),
             View::Edit if self.edit.is_some_and(|e| e.read_only) => ("Back", ""),
             View::Edit => ("Cancel", "Done"),
@@ -2809,6 +3347,7 @@ impl Program for Calendar {
 
     fn draw(&mut self, f: &mut Frame, cx: &Ctx) {
         self.paint(cx);
+        self.ensure_birthdays(cx);
         self.refresh(cx);
         self.hits.clear();
         if let Some((which, pad)) = &self.pad {
@@ -2823,6 +3362,17 @@ impl Program for Calendar {
         if self.view == View::Calendars {
             let under = self.title(f, cx);
             self.calendars_view(f, cx, under + 4);
+            self.focus.ring(f, self.targets());
+            return;
+        }
+        if self.view == View::Files {
+            self.files_view(f, cx);
+            self.focus.ring(f, self.targets());
+            return;
+        }
+        if self.view == View::Zones {
+            self.zones_view(f, cx);
+            self.focus.ring(f, self.targets());
             return;
         }
         if self.view == View::Find {
@@ -2848,6 +3398,27 @@ impl Program for Calendar {
     }
 
     fn event(&mut self, e: Event, cx: &Ctx) -> Reply {
+        // The files' and zones' screens: the D-pad walks their rows, the
+        // centre takes one; the rest is theirs.
+        if matches!(self.view, View::Files | View::Zones) {
+            if let Event::Key(k @ (Key::Up | Key::Down | Key::Left | Key::Right)) = e {
+                let mut focus = self.focus;
+                let moved = focus.step(k, self.targets());
+                self.focus = focus;
+                if moved {
+                    return Reply::Redraw;
+                }
+            }
+            if e == Event::Key(Key::Enter)
+                && let Some((x, y)) = self.focus.point()
+            {
+                return self.files_event(Event::PenUp { x, y }, cx);
+            }
+            if matches!(e, Event::PenDown { .. }) {
+                self.focus.clear();
+            }
+            return self.files_event(e, cx);
+        }
         // The time pad takes everything while it is up.
         if let Some((which, mut pad)) = self.pad {
             use rp_app::timepad::Answer;
@@ -3152,6 +3723,10 @@ impl Program for Calendar {
                 }
                 return Reply::Redraw;
             }
+            Event::PenUp { x, y } if self.view == View::Calendars && self.files_tap(x, y) => {
+                self.focus.clear();
+                return Reply::Redraw;
+            }
             Event::PenUp { x, y }
                 if self.view == View::Calendars && GET_KEY.contains_point(x, y) =>
             {
@@ -3212,6 +3787,7 @@ impl Program for Calendar {
         match (self.view, self.edit.and_then(|e| e.typing)) {
             (View::New, _) => Some(Field::Line),
             (View::Find, _) if self.find_typing => Some(Field::Line),
+            (View::Zones, _) if self.io.typing => Some(Field::Line),
             (View::Edit, Some(EditText::Title)) => Some(Field::Name),
             (View::Edit, Some(EditText::Place)) => Some(Field::Address),
             _ => None,
@@ -3235,6 +3811,9 @@ impl Program for Calendar {
     /// The online calendars: the PC's list first, then each link in turn;
     /// Where's address suggestions as it is typed.
     fn net_ask(&mut self) -> Option<rp_app::NetAsk> {
+        if let Some(a) = self.files_net_ask() {
+            return Some(a);
+        }
         if let Some(e) = self.edit
             && e.typing == Some(EditText::Place)
             && e.place_n >= 3
@@ -3270,6 +3849,9 @@ impl Program for Calendar {
     }
 
     fn net_answer(&mut self, ok: bool, body: &[u8], cx: &Ctx) -> Reply {
+        if self.files_asking() {
+            return self.files_answer(ok, body, cx);
+        }
         let asked = core::mem::replace(&mut self.asked, Asked::Nothing);
         if asked == Asked::Place {
             let mut found = [rp_pim::net::Place::EMPTY; 3];
@@ -3296,6 +3878,14 @@ impl Program for Calendar {
         }
         Reply::Redraw
     }
+
+    fn card_ask(&mut self) -> Option<rp_app::NetAsk> {
+        self.files_card_ask()
+    }
+
+    fn net_body(&mut self, at: usize, out: &mut [u8], cx: &Ctx) -> usize {
+        self.files_body(at, out, cx)
+    }
 }
 
 impl Calendar {
@@ -3315,8 +3905,10 @@ impl Calendar {
         let cals = self.cal_rows[..self.n_cal_rows]
             .iter()
             .map(|r| r.0)
+            .chain([files::ZONE_ROW, files::IMPORT_KEY, files::EXPORT_KEY])
             .chain(once(GET_KEY))
             .filter(move |_| view == View::Calendars);
+        let io = self.io.targets(view);
         let new = once(Rect::new(MARGIN, 322, WIDE, 44)).filter(move |_| view == View::New);
         let found = once(FIND_FIELD)
             .chain(self.find_rows[..self.n_find].iter().map(|r| r.0))
@@ -3329,6 +3921,7 @@ impl Calendar {
             .chain(cals)
             .chain(new)
             .chain(found)
+            .chain(io)
     }
 
     /// The search (Windows Mobile's Calendar has none; a phone's lists

@@ -138,6 +138,12 @@ mod image {
     /// not cycles (a miss), every 2,000 of them (one number: the command
     /// line holds 63 words). Implies [`SAMPLE_WORD`].
     const SAMPLE_ON_WORD: &[u8] = b"-rpsampleon";
+    /// A test run's word for the codec's output level, 0-100 (its hardware
+    /// volume on the audio taper; nothing the CPU does changes): the owner,
+    /// 2026-11-23, "lower the volume on all of these test you keep running
+    /// to 5%". Test kits pass 22, 5% of full amplitude on the taper
+    /// (`xashkit::TEST_LEVEL`); a play kit leaves [`LEVEL`].
+    const VOL_WORD: &[u8] = b"-rpvol";
     /// The samples' file: `RPSAMP1\0`, then little-endian words: samples
     /// a second, samples, ticks that found the room full, the sample at
     /// each of the run's steps 1 to 5 (`u32::MAX`: not reached), then each
@@ -2225,6 +2231,24 @@ mod image {
             let _ = writeln!(
                 uart,
                 "runner: -rpwalloc: {n} MiB of the game's memory write-allocate (0x{WALLOC_FROM:08x}..0x{WALLOC_TO:08x})"
+            );
+        }
+        if let Some(level) = args[..arg_count]
+            .iter()
+            .position(|a| a.to_bytes() == VOL_WORD)
+            .and_then(
+                |at| match number(args[..arg_count].get(at + 1)?.to_bytes())? {
+                    (v, []) => Some(v.min(100)),
+                    _ => None,
+                },
+            )
+            && let Some(a) = audio.as_mut()
+        {
+            let set = a.set_level(level);
+            let _ = writeln!(
+                uart,
+                "sound: -rpvol: the codec's level {level} of 100 ({})",
+                if set.is_ok() { "set" } else { "not set" }
             );
         }
         let sample_on = args[..arg_count]

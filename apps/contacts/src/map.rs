@@ -136,6 +136,26 @@ impl MapPage {
     }
 }
 
+/// The address's two lines as one ("2100 Clarendon Blvd, Arlington, VA
+/// 22201"): what the map page asks the address service and copies.
+#[must_use]
+pub fn address_line(lines: &[rp_app::Text<40>; 2]) -> rp_app::Text<96> {
+    let mut b = [0u8; 96];
+    let mut n = 0;
+    let sep: &[u8] = if lines[0].is_empty() || lines[1].is_empty() {
+        b""
+    } else {
+        b", "
+    };
+    for &c in lines[0].get().iter().chain(sep).chain(lines[1].get()) {
+        if n < b.len() {
+            b[n] = c;
+            n += 1;
+        }
+    }
+    rp_app::Text::of(&b[..n])
+}
+
 /// A place as the record keeps it ([`rp_pim::store::tag::GEO`]): latitude
 /// then longitude, millionths, little-endian.
 #[must_use]

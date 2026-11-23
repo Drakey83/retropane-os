@@ -167,7 +167,7 @@ on the engine, not the CPU, and only where something changed.
      pass. `Land` shows layer B whole as the screen's and goes on from it
      (the other picture brought forward once), nothing drawn again; a zoom
      left before it lands has the screens drawn whole. Every frame priced
-     under 33 ms (`cargo xtask motion-cost`, R369 for the device's times);
+     under 33 ms (`cargo xtask motion-cost`, R381 for the device's times);
      host-checked against the scaler's arithmetic and the CPU reference.
    Nothing in today's shell needs the CPU to draw pixels; the trait's
    "which commands did you take" (ADR-0022) stays for later commands.

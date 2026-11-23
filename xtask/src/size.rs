@@ -576,8 +576,12 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-today",
         max_load: 912 * 1024,
         // 100 KiB since 2026-11-14: the stack 24 -> 40 KiB (the app
-        // programs run on it; shell/today/build.rs).
-        max_zero: 100 * 1024,
+        // programs run on it; shell/today/build.rs). 101 KiB on
+        // 2026-11-23 (test image): Today's calendar panel keeps its feed
+        // from the store (shell/core/src/today_feed.rs, ~170 B) so the
+        // records are walked once a change, not once a frame; 102,464 B
+        // measured with it.
+        max_zero: 101 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (R110, the owner's go 2026-10-29 on its sheet): a 3D

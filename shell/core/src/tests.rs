@@ -208,6 +208,20 @@ fn the_d_pad_reaches_every_target() {
     // quick row under its middle, across it, down to the softkeys.
     s.input(Input::Key(Key::Down));
     assert_eq!(s.focus(), Some(Target::Hero));
+    // The calendar panel, its tasks line on the right and back; down from
+    // either to the quick row.
+    s.input(Input::Key(Key::Down));
+    assert_eq!(s.focus(), Some(Target::Agenda));
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.focus(), Some(Target::TasksLine));
+    s.input(Input::Key(Key::Right));
+    assert_eq!(s.focus(), Some(Target::TasksLine));
+    s.input(Input::Key(Key::Left));
+    assert_eq!(s.focus(), Some(Target::Agenda));
+    s.input(Input::Key(Key::Right));
+    s.input(Input::Key(Key::Up));
+    assert_eq!(s.focus(), Some(Target::Hero));
+    s.input(Input::Key(Key::Down));
     s.input(Input::Key(Key::Down));
     assert_eq!(s.focus(), Some(Target::Quick(2)));
     s.input(Input::Key(Key::Left));
@@ -4209,6 +4223,10 @@ fn a_task_with_a_time_brings_the_banner_at_its_time() {
     assert!(s.reminder_shown(), "at its time");
     let _ = (bank, done);
     // Open goes to Tasks (program 2), not Calendar.
+    s.input(Input::PenDown {
+        x: crate::apps::preview::REMINDER_OPEN.x + 5,
+        y: crate::apps::preview::REMINDER_OPEN.y + 5,
+    });
     assert_eq!(
         s.input(Input::PenUp {
             x: crate::apps::preview::REMINDER_OPEN.x + 5,
@@ -4607,7 +4625,7 @@ fn a_programs_map_is_the_radars_coloured_into_its_picture() {
     assert_eq!(s.prog_map_key(), None);
 }
 
-/// A program asking with an argument of any script (R370).
+/// A program asking with an argument of any script (R382).
 struct Abroad(&'static [u8], bool);
 
 impl rp_app::Program for Abroad {
@@ -4631,7 +4649,7 @@ impl rp_app::Program for Abroad {
 
 #[test]
 fn an_address_of_any_script_reaches_the_relay_whole() {
-    // R370: only ASCII went, so "Zürich" was asked as "Zrich". Letters of
+    // R382: only ASCII went, so "Zürich" was asked as "Zrich". Letters of
     // every script go as their UTF-8 bytes in %XX (the relay decodes and
     // checks them); symbols, control bytes and broken UTF-8 stay out; a
     // letter that won't fit whole is left off, the line always ends.
@@ -4662,4 +4680,326 @@ fn an_address_of_any_script_reaches_the_relay_whole() {
         body.len() % 9 == 0 && !body.is_empty(),
         "whole letters only: {body}"
     );
+}
+
+/// The notification service's day (calendar-rule0.md, tasks-rule0.md):
+/// a shell with an empty store loaded on Monday 1 January 2024.
+fn reminders_shell() -> (Shell, i32) {
+    use rp_pim::date::{self, Date};
+    let mut s = shell(true);
+    s.give_apps(std::vec![0u8; crate::apps::MEMORY].leak());
+    s.set_year(2024);
+    s.set_time(clock(8, 0));
+    s.pim().unwrap().load_start(None);
+    s.pim_loaded();
+    let day = date::days_from(Date {
+        year: 2024,
+        month: 1,
+        day: 1,
+    });
+    (s, day)
+}
+
+fn clock(h: u8, m: u8) -> Time {
+    Time {
+        hour: h,
+        minute: m,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    }
+}
+
+/// An appointment at `h`:`m` on `day` with `leads` and an optional repeat.
+fn appointment(s: &mut Shell, day: i32, h: u32, m: u32, leads: &[u32], repeat: Option<u32>) -> u32 {
+    use rp_pim::store::{Kind, tag};
+    let start = (rp_pim::date::start_of(day) + h * 60 + m).to_le_bytes();
+    let mut buf = [0u8; 4 * rp_pim::remind::LEADS_MAX];
+    let n = rp_pim::remind::pack(leads, &mut buf);
+    let rp = repeat.unwrap_or(0).to_le_bytes();
+    let mut f: std::vec::Vec<(u8, &[u8])> = std::vec![
+        (tag::TITLE, &b"Dentist"[..]),
+        (tag::PLACE, b"Dr. Lee, 410 Pine St"),
+        (tag::START, &start),
+        (tag::REMIND, &buf[..n]),
+    ];
+    if repeat.is_some() {
+        f.push((tag::REPEAT, &rp));
+    }
+    s.pim().unwrap().put(Kind::Appointment, None, &f).unwrap()
+}
+
+/// Several alerts on one appointment (a day, an hour and 15 minutes
+/// before): each sounds at its time, the later one takes the earlier's
+/// place on the banner (one card per appointment), and an answered one
+/// never comes back.
+#[test]
+fn several_alerts_on_one_appointment_each_sound_once() {
+    let (mut s, day) = reminders_shell();
+    appointment(&mut s, day, 15, 0, &[60, 15, 0], None);
+    s.set_time(clock(13, 59));
+    assert!(!s.reminder_shown());
+    s.set_time(clock(14, 0));
+    assert!(s.reminder_shown(), "an hour before");
+    assert!(s.take_chime());
+    s.set_time(clock(14, 30));
+    assert!(!s.take_chime(), "nothing between the alerts");
+    s.set_time(clock(14, 45));
+    assert!(s.take_chime(), "15 minutes before, sounded again");
+    assert_eq!(s.apps.n_due, 1, "one card for the appointment");
+    tap(&mut s, crate::apps::preview::REMINDER_DISMISS);
+    assert!(!s.reminder_shown());
+    s.set_time(clock(14, 59));
+    assert!(!s.reminder_shown());
+    s.set_time(clock(15, 0));
+    assert!(s.reminder_shown(), "at its start");
+    assert!(s.take_chime());
+    tap(&mut s, crate::apps::preview::REMINDER_DISMISS);
+    s.set_time(clock(15, 30));
+    assert!(!s.reminder_shown());
+}
+
+/// 15 MIN snoozes for fifteen minutes; the next minute it would sound is
+/// what the device must wake for.
+#[test]
+fn snooze_fifteen_and_the_next_wake() {
+    let (mut s, day) = reminders_shell();
+    let start = rp_pim::date::start_of(day);
+    appointment(&mut s, day, 15, 0, &[30], None);
+    s.set_time(clock(14, 0));
+    assert_eq!(s.next_reminder(), Some(start + 14 * 60 + 30), "its alert");
+    s.set_time(clock(14, 30));
+    assert!(s.reminder_shown());
+    tap(&mut s, crate::apps::preview::REMINDER_SNOOZE_15);
+    assert!(!s.reminder_shown());
+    assert_eq!(s.next_reminder(), Some(start + 14 * 60 + 45), "the snooze");
+    s.set_time(clock(14, 44));
+    assert!(!s.reminder_shown());
+    s.set_time(clock(14, 45));
+    assert!(s.reminder_shown(), "back after fifteen minutes");
+    assert!(s.take_chime());
+}
+
+/// A weekly appointment reminds on each week's day, with that day's time
+/// on the card, not only on its first.
+#[test]
+fn a_repeating_appointment_reminds_every_time() {
+    use rp_pim::repeat::{Every, Rule};
+    let (mut s, day) = reminders_shell();
+    let weekly = Rule {
+        every: Every::Week,
+        n: 1,
+        days: 0,
+        until: None,
+        after: false,
+    }
+    .pack(day - 14);
+    appointment(&mut s, day - 14, 10, 0, &[15], Some(weekly));
+    s.set_time(clock(9, 44));
+    assert!(!s.reminder_shown());
+    s.set_time(clock(9, 45));
+    assert!(s.reminder_shown(), "the third week's");
+    assert_eq!(
+        s.apps_due_start(),
+        Some(rp_pim::date::start_of(day) + 10 * 60)
+    );
+}
+
+/// Over an open app the banner's keys are the banner's (they were the
+/// app's: the app's area took the touch first), and a stroke that starts
+/// on the app and lifts on the banner stays the app's.
+#[test]
+fn the_banner_answers_over_an_open_app() {
+    struct Counter(std::rc::Rc<core::cell::Cell<u32>>);
+    impl rp_app::Program for Counter {
+        fn title(&self) -> &'static str {
+            "Counter"
+        }
+        fn softkeys(&self) -> (&'static str, &'static str) {
+            ("", "")
+        }
+        fn draw(&mut self, _: &mut rp_app::Frame, _: &rp_app::Ctx) {}
+        fn event(&mut self, _: rp_app::Event, _: &rp_app::Ctx) -> rp_app::Reply {
+            self.0.set(self.0.get() + 1);
+            rp_app::Reply::Nothing
+        }
+    }
+    let (mut s, day) = reminders_shell();
+    s.use_programs(true);
+    let hits = std::rc::Rc::new(core::cell::Cell::new(0));
+    s.open_program(Box::leak(Box::new(Counter(hits.clone()))));
+    appointment(&mut s, day, 9, 0, &[0], None);
+    s.set_time(clock(9, 0));
+    assert!(s.reminder_shown());
+    // A stroke from the app onto the banner: the app's, the banner stays.
+    let k = crate::apps::preview::REMINDER_DISMISS;
+    s.input(Input::PenDown { x: 240, y: 400 });
+    s.input(Input::PenUp {
+        x: k.x + 5,
+        y: k.y + 5,
+    });
+    assert!(s.reminder_shown());
+    let before = hits.get();
+    assert!(before > 0);
+    // OPEN on the banner: the banner's, not the app's.
+    let o = crate::apps::preview::REMINDER_OPEN;
+    s.input(Input::PenDown {
+        x: o.x + 5,
+        y: o.y + 5,
+    });
+    assert_eq!(
+        s.input(Input::PenUp {
+            x: o.x + 5,
+            y: o.y + 5,
+        }),
+        Action::OpenProgram(0)
+    );
+    assert_eq!(hits.get(), before, "the app saw none of it");
+    assert!(!s.reminder_shown());
+}
+
+/// The banner draws its card and four keys inside the screen, the keys
+/// inside the card and apart.
+#[test]
+fn the_banner_fits_and_draws() {
+    let (mut s, day) = reminders_shell();
+    appointment(&mut s, day, 9, 0, &[0], None);
+    s.set_time(clock(9, 0));
+    {
+        let (card, keys) = s.banner_layout();
+        assert!(card.x + card.w <= W && card.y + card.h <= rp_app::CONTENT.y + rp_app::CONTENT.h);
+        for (i, k) in keys.iter().enumerate() {
+            assert!(
+                k.x >= card.x
+                    && k.y >= card.y
+                    && k.x + k.w <= card.x + card.w
+                    && k.y + k.h <= card.y + card.h,
+                "key {i}"
+            );
+            for o in &keys[i + 1..] {
+                assert_eq!(k.intersect(o).w, 0, "keys overlap");
+            }
+        }
+        let mut f = Frame::new();
+        s.frame(&mut f);
+        // Each key, pressed and let go elsewhere, answers nothing.
+        let k = keys[0];
+        s.input(Input::PenDown {
+            x: k.x + 2,
+            y: k.y + 2,
+        });
+        s.input(Input::PenUp {
+            x: card.x + 2,
+            y: card.y + card.h - 2,
+        });
+        assert!(s.reminder_shown());
+    }
+}
+
+/// A task ticked done, or an appointment moved or deleted, while its
+/// banner shows: the card goes at once (it was left up, or blank and
+/// still catching touches).
+#[test]
+fn the_banner_follows_the_records() {
+    use rp_pim::store::{Kind, tag};
+    let (mut s, day) = reminders_shell();
+    let id = appointment(&mut s, day, 9, 0, &[0], None);
+    let at = (rp_pim::date::start_of(day) + 9 * 60).to_le_bytes();
+    let task = s
+        .pim()
+        .unwrap()
+        .put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Bank"), (tag::REMIND_AT, &at)],
+        )
+        .unwrap();
+    s.set_time(clock(9, 0));
+    assert_eq!(s.apps.n_due, 2);
+    s.pim().unwrap().change(task, &[(tag::DONE, &at)]).unwrap();
+    s.reminders_follow();
+    assert_eq!(s.apps.n_due, 1, "the done task's card gone");
+    // Moved to 11:00: its card goes; it reminds again at 11:00.
+    let later = (rp_pim::date::start_of(day) + 11 * 60).to_le_bytes();
+    s.pim()
+        .unwrap()
+        .change(id, &[(tag::START, &later)])
+        .unwrap();
+    s.reminders_follow();
+    assert!(!s.reminder_shown());
+    s.set_time(clock(11, 0));
+    assert!(s.reminder_shown());
+    s.pim().unwrap().remove(id).unwrap();
+    s.reminders_follow();
+    assert!(!s.reminder_shown(), "deleted: gone");
+}
+
+/// Today's calendar panel and tasks line from the store (calendar-rule0.md,
+/// tasks-rule0.md): what is left of today with its time, the tasks due and
+/// late on the top right; the panel opens Calendar and the line Tasks.
+#[test]
+fn todays_panel_shows_the_store_and_opens_calendar_and_tasks() {
+    use rp_pim::date::{self, Date};
+    use rp_pim::store::{Kind, tag};
+    let mut s = shell(true);
+    s.use_programs(true);
+    // Before the store is given: the panel says so, no sample lines.
+    let t = texts(&drawn(&mut s));
+    assert!(t.iter().any(|x| x == b"Calendar loading"));
+    assert!(!t.iter().any(|x| x == b"Team call" || x == b"sample data"));
+    s.give_apps(std::vec![0u8; crate::apps::MEMORY].leak());
+    s.set_year(2024);
+    s.set_time(Time {
+        hour: 10,
+        minute: 0,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+    let day = date::days_from(Date {
+        year: 2024,
+        month: 1,
+        day: 1,
+    });
+    {
+        let p = s.pim().unwrap();
+        p.load_start(None);
+        let at = |m: u32| (date::start_of(day) + m).to_le_bytes();
+        let (nine, three) = (at(9 * 60), at(15 * 60));
+        p.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Stand-up"), (tag::START, &nine)],
+        )
+        .unwrap();
+        p.put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &three)],
+        )
+        .unwrap();
+        let (today, late) = ((day as u32).to_le_bytes(), ((day - 2) as u32).to_le_bytes());
+        p.put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Pay rent"), (tag::DUE, &today)],
+        )
+        .unwrap();
+        p.put(
+            Kind::Task,
+            None,
+            &[(tag::TITLE, b"Taxes"), (tag::DUE, &late)],
+        )
+        .unwrap();
+    }
+    s.dirty(Rect::new(0, 0, W, H));
+    let t = texts(&drawn(&mut s));
+    // The stand-up ended at 10:00: the dentist is what is left.
+    assert!(t.iter().any(|x| x == b"Dentist"));
+    assert!(!t.iter().any(|x| x == b"Stand-up"));
+    assert!(t.iter().any(|x| x == b"3:00 PM"));
+    assert!(t.iter().any(|x| x == b"2 TASKS DUE"));
+    assert!(t.iter().any(|x| x.ends_with(b"1 LATE")));
+    assert_eq!(tap_t(&mut s, Target::TasksLine), Action::OpenProgram(2));
+    assert_eq!(tap_t(&mut s, Target::Agenda), Action::OpenProgram(0));
 }

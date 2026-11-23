@@ -71,7 +71,7 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Favourites grid of large photos or initials | apps-and-packs: favourites | built | apps/contacts/src/lib.rs |
 | Coloured initials for everyone without a photo | apps-and-packs: initials when there's no photo | built | apps/api/src/kit.rs, apps/contacts/src/lib.rs |
 | Photos: chosen from the avatar (the card's or the editor's) out of the pictures in the photos folder on the PC, over the dock; cropped to a circle and kept small (about 6.9 KB a person: the disc only, brightness at five bits, colour at a quarter of the resolution); shown on the card, the list and the favourites; removed by a key, and with the person | apps-and-packs: photos | built | apps/contacts/src/photo.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |
-| Photos from a picture file on the card, and from vCard PHOTO | apps-and-packs: photos | pending | |
+| Photos from a picture file on the card, and from vCard PHOTO | apps-and-packs: photos | built | shell/pim/src/jpeg.rs, apps/contacts/src/io.rs, apps/contacts/src/photo.rs, shell/today/src/cardfiles.rs, apps/contacts/src/tests.rs |
 | Search over every field with the match highlighted | apps-and-packs: Fast search | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | Letter strip with the large letter bubble | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | The card: the poster, the action row's Copy, and every line (three numbers, the e-mail, the address) copied by a tap or the D-pad with a COPIED mark | sheet | built | apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
@@ -81,12 +81,12 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Phone pad for phone fields; numbers formatted as typed for their country, stored as E.164 | apps-and-packs: phone numbers formatted as typed | built | shell/pim/src/phone.rs, shell/core/src/keyboard.rs |
 | Address suggestions while typing (Photon over any connection; ZIP table and past addresses offline) | apps-and-packs: address suggestions while typing | built | shell/pim/src/net.rs, apps/contacts/src/lib.rs, xtask/src/usb.rs |
 | Capitals at each word in names, companies and addresses; e-mail keyboard | apps-and-packs: capitals at each word in names and addresses | built | shell/core/src/lib.rs |
-| Structured address, + add for more phones and e-mails, custom labels, birthday, anniversary, website | sheet | pending | |
+| Structured address, + add for more phones and e-mails, custom labels, birthday, anniversary, website | sheet | built | shell/pim/src/contact.rs, apps/contacts/src/form.rs, apps/contacts/src/lib.rs, apps/contacts/src/tests.rs |
 | Map: the address on the radar's map tiles with a pin | sheet | built | apps/contacts/src/map.rs, apps/contacts/src/lib.rs, shell/core/src/prog_map.rs, shell/today/src/main.rs, shell/pim/src/net.rs, drivers/draw/src/lib.rs |
-| Duplicates offered as one merge | sheet | pending | |
-| vCard 3 and 4 import and export | apps-and-packs: vCard import/export | pending | |
+| Duplicates offered as one merge | sheet | built | shell/pim/src/contact.rs, shell/pim/src/vcard.rs, apps/contacts/src/io.rs, apps/contacts/src/tests.rs |
+| vCard 3 and 4 import and export | apps-and-packs: vCard import/export | built | shell/pim/src/vcard.rs, shell/pim/src/jpeg_out.rs, apps/contacts/src/io.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs |
 | CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |
-| Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
+| Birthdays feed Calendar's Birthdays calendar | sheet | built | shell/pim/src/birthdays.rs, shell/pim/src/contact.rs, apps/calendar/src/lib.rs, shell/core/src/today_feed.rs |
 | The Contacts button opens Contacts | sheet | built | shell/core/src/lib.rs, shell/core/src/tests.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
@@ -106,8 +106,51 @@ is kept on the record (`tag::GEO`); an address typed by hand is asked once
 when its map is first opened; an address changed any other way drops its
 place. The picture is 16-bit (`Cmd::Pic16`: at 32 bits it was past the 2D
 engine's 384 KiB picture cache). Offline with no kept map the page says so
-and shows the coordinates. R370: addresses outside ASCII don't reach the
-service yet.
+and shows the coordinates. Addresses of every script reach the service (R382,
+fixed 0adbd838).
+
+### Version 3 (2026-11-23): records and files, as built
+
+- **The fields:** the job title under the name; Mobile, Home and Work
+  kept where every older program reads them, and **+ Add a phone / + Add
+  an e-mail** under each kind for more, each with a label of its own (a
+  tap on the label types it, or the strip over the keyboard offers
+  Mobile, Main, Other / Home, Work, Other); the address in its five
+  parts (Photon's city line split into city, state and ZIP); birthday and
+  anniversary typed as digits the region's way (12/10 or 12/10/1815 in
+  the US, the day first elsewhere), a day that isn't one said on its row
+  ("NOT A DAY") and nothing kept until it is; a website. The store keeps
+  the extras packed in one field (`tag::MORE`), so a record never runs
+  out of its 16 fields; the birthday is one number whose year 0004 means
+  "no year" (`rp_pim::contact::Day`), what Calendar's Birthdays reads.
+- **The card:** a line per number, e-mail (with their own labels), the
+  address on two lines, the birthday with the age at the next one
+  ("turns 211 next"), the anniversary, the website and the note's first
+  line; more than fit go on over the page by the D-pad or a drag, with
+  "1-6 of 11" on the band.
+- **Import and export** (the key with three dots beside the search):
+  the .vcf files on the card (its root and RetroPane folder) and the PC
+  (Documents\RetroPane, Downloads, the Desktop) listed together; vCard
+  2.1, 3.0 and 4.0 read with every writer's labels (Apple's groups and
+  1604 years, Outlook's 2.1 quoted-printable and Latin-1); what the device
+  doesn't keep counted and said; export of everyone as 3.0 (Outlook
+  reads no 4.0) or 4.0, to the card or the PC, written a piece at a time,
+  each picture as a baseline JPEG of the kept disc (about 4 KB, read a
+  pixel at a time from its pages: `rp_pim::jpeg_out`), so a picture
+  survives a round trip through any phone or Outlook.
+- **Pictures:** from a vCard's PHOTO and from a JPEG on the card (the
+  chooser lists the card's pictures beside the PC's), read with
+  `rp_pim::jpeg`: a camera's own Exif thumbnail when it covers the
+  square (a 12-megapixel photo without reading its 4 MB), else decoded
+  straight to the size needed from the DCT's lowest frequencies,
+  box-filtered and turned upright, in pieces; checked against Pillow on
+  six kinds of file.
+- **Duplicates:** after an import, and from the tools page, people with
+  a number or an e-mail in common are offered one pair at a time: the
+  two side by side, what they share, what the one card keeps ("As one: 3
+  numbers, 2 e-mails, address"); **Merge into one** keeps every field of
+  both (the picture the kept one lacks moved over), **Keep both** is
+  remembered and never asked again.
 
 ## What would overturn it
 

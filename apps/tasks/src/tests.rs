@@ -930,3 +930,134 @@ fn a_touch_on_a_task_opens_its_time_keys() {
     tap(&mut t, &cx, circle);
     assert_eq!(t.revealed, None);
 }
+
+/// tasks-rule0.md's repeats as typed: every N, weekdays named (not taken
+/// as the due date), and after done.
+#[test]
+fn the_typed_line_reads_every_kind_of_repeat() {
+    use rp_pim::repeat::{Every, Rule};
+    let pim = store();
+    let cx = ctx(pim);
+    let mut t = opened(19_723);
+    t.show(View::List(None));
+    draw(&mut t, &cx);
+    typed(&mut t, &cx, b"water plants every 3 days after done");
+    typed(&mut t, &cx, b"gym every tue and thu");
+    typed(&mut t, &cx, b"bins every other week fri");
+    let all = tasks(pim);
+    assert_eq!(all.len(), 3);
+    let rule =
+        |k: usize| Rule::unpack(all[k].4.expect("a repeat"), all[k].2.unwrap() as i32).unwrap();
+    assert_eq!(all[0].0, b"Water plants");
+    assert_eq!(all[0].2, Some(19_723));
+    let r = rule(0);
+    assert_eq!((r.every, r.n, r.after), (Every::Day, 3, true));
+    // Tuesday and Thursday: due the first of them, Tuesday the 2nd.
+    assert_eq!(all[1].0, b"Gym");
+    assert_eq!(all[1].2, Some(19_724));
+    let r = rule(1);
+    assert_eq!((r.every, r.days), (Every::Week, 0b1010));
+    // A date after the repeat still reads as the due date.
+    assert_eq!(all[2].0, b"Bins");
+    assert_eq!(all[2].2, Some(19_727));
+    assert_eq!((rule(2).every, rule(2).n), (Every::Week, 2));
+}
+
+/// A repeating task ticked moves to its next day (no copy made), the day
+/// it was done counted in its log, its steps opened again; once its rule
+/// has ended a tick completes it.
+#[test]
+fn a_repeating_task_ticked_moves_on_and_counts_the_day() {
+    use rp_pim::repeat::{Every, Rule};
+    let pim = store();
+    let cx = ctx(pim);
+    let today = 19_723;
+    let daily = Rule {
+        every: Every::Day,
+        n: 1,
+        days: 0,
+        until: Some(today + 1),
+        after: false,
+    }
+    .pack(today - 2)
+    .to_le_bytes();
+    let id = {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        // Due two days ago: ticked today, it comes back tomorrow.
+        let id = s
+            .put(
+                Kind::Task,
+                None,
+                &[
+                    (tag::TITLE, b"Stretch"),
+                    (tag::DUE, &((today - 2) as u32).to_le_bytes()),
+                    (tag::REPEAT, &daily),
+                    (
+                        tag::REMIND_AT,
+                        &(date::start_of(today - 2) + 450).to_le_bytes(),
+                    ),
+                ],
+            )
+            .unwrap();
+        s.put(
+            Kind::Task,
+            None,
+            &[
+                (tag::TITLE, b"Neck"),
+                (tag::PARENT, &id.to_le_bytes()),
+                (tag::DONE, &1u32.to_le_bytes()),
+            ],
+        )
+        .unwrap();
+        id
+    };
+    let mut t = opened(today);
+    draw(&mut t, &cx);
+    t.tick(&cx, id);
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        assert_eq!(s.all(Kind::Task).count(), 2, "no copy made");
+        let r = s.get(id).unwrap();
+        assert_eq!(r.num(tag::DONE), None);
+        assert_eq!(r.num(tag::DUE), Some((today + 1) as u32));
+        // Its time went with it, and its end is the same day.
+        assert_eq!(r.num(tag::REMIND_AT), Some(date::start_of(today + 1) + 450));
+        // Tomorrow is its last day: a plain task then.
+        assert_eq!(r.num(tag::REPEAT), None);
+        assert!(Log::of(r.text(tag::DONE_LOG)).has(today));
+        let step = s
+            .all(Kind::Task)
+            .find(|c| c.num(tag::PARENT) == Some(id))
+            .unwrap();
+        assert_eq!(step.num(tag::DONE), None, "its step opened again");
+    }
+    // The home counts today's completion from the log.
+    draw(&mut t, &cx);
+    let done_today = t
+        .tasks
+        .iter()
+        .flatten()
+        .filter(|x| x.log.has(today))
+        .count();
+    assert_eq!(done_today, 1);
+    // Tomorrow is its last day: ticked then, it is done.
+    let mut cx2 = cx;
+    cx2.now.day = today + 1;
+    t.tick(&cx2, id);
+    let g = pim.borrow();
+    let r = g.as_ref().unwrap().get(id).unwrap();
+    assert!(r.num(tag::DONE).is_some());
+}
+
+/// The log keeps the newest days and drops the oldest past its size.
+#[test]
+fn the_done_log_keeps_the_newest_days() {
+    let mut log = Log::default();
+    for d in 0..40 {
+        let (b, n) = log.with(1000 + d);
+        log = Log::of(&b[..n]);
+    }
+    assert!(log.has(1039) && log.has(1008) && !log.has(1007));
+}

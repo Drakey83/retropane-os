@@ -74,8 +74,13 @@ const WEEK: [Sample; 12] = [
 /// The shell's store given and loaded (empty), then the four calendars
 /// and the sample week put in it, as the app keeps them.
 pub fn sample_week(s: &mut rp_shell::Shell) {
-    use rp_pim::store::{Kind, tag};
     crate::emu::empty_organiser(s);
+    put_week(s);
+}
+
+/// The sample calendars and week put in the shell's store as it is.
+fn put_week(s: &mut rp_shell::Shell) {
+    use rp_pim::store::{Kind, tag};
     let Some(store) = s.pim() else { return };
     let n = |v: u32| v.to_le_bytes();
     let mut ids = Vec::new();
@@ -115,6 +120,9 @@ pub fn sample_week(s: &mut rp_shell::Shell) {
     }
     s.pim_loaded();
 }
+
+/// The agenda's first row, where a tap opens it in the editor.
+const EDIT_TAP_Y: u16 = 278;
 
 fn calendar(view: View, line: &[u8]) -> Calendar {
     let mut c = Calendar::new(&CALS, TODAY);
@@ -233,6 +241,87 @@ fn map_page(s: &mut rp_shell::Shell) {
     }
 }
 
+/// The sample people, Ada with every field of version 3 (a job, a
+/// number and an e-mail of their own labels, the address in its parts, her
+/// birthday, a website) and Grace twice (the double the merge offers).
+pub fn sample_people_v3(s: &mut rp_shell::Shell) {
+    use rp_pim::store::{Kind, tag};
+    sample_people(s);
+    let Some(store) = s.pim() else { return };
+    let ada = store
+        .all(Kind::Contact)
+        .find(|r| r.text(tag::FIRST) == b"Ada")
+        .map(|r| r.id);
+    let mut more = [0u8; 200];
+    let mut n = 0;
+    for (kind, label, value) in [
+        (
+            rp_pim::contact::Kind::Phone,
+            &b"Cabin"[..],
+            &b"+13605550199"[..],
+        ),
+        (
+            rp_pim::contact::Kind::Email,
+            b"School",
+            b"ada@school.example",
+        ),
+    ] {
+        n = rp_pim::contact::push_entry(
+            &mut more,
+            n,
+            rp_pim::contact::Entry { kind, label, value },
+        )
+        .expect("fits");
+    }
+    let bday = rp_pim::contact::Day {
+        year: Some(1815),
+        month: 12,
+        day: 10,
+    }
+    .field()
+    .expect("a day");
+    if let Some(id) = ada {
+        let _ = store.change(
+            id,
+            &[
+                (tag::JOB, b"Programmer"),
+                (tag::HOME, b"+12065550143"),
+                (tag::EMAIL, b"ada@example.com"),
+                (tag::MORE, &more[..n]),
+                (tag::ADDRESS, b"12 St James Sq\nSeattle\nWA\n98101\n"),
+                (tag::BIRTHDAY, &bday),
+                (tag::WEBSITE, b"ada.example"),
+            ],
+        );
+    }
+    let _ = store.put(
+        Kind::Contact,
+        None,
+        &[
+            (tag::FIRST, b"G."),
+            (tag::LAST, b"Hopper"),
+            (tag::EMAIL, b"Grace@Example.org"),
+            (tag::HOME, b"+17035550190"),
+        ],
+    );
+}
+
+/// The Today screen at noon on the previews' Monday with the sample week
+/// and tasks in the store, the tasks line in place `t`.
+fn today_panel(s: &mut rp_shell::Shell, t: rp_shell::TodayTasks) {
+    sample_tasks(s);
+    put_week(s);
+    s.set_year(2024);
+    s.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 0,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+    s.set_today_tasks(t);
+}
+
 fn contacts(view: rp_app_contacts::View) -> Contacts {
     let mut c = Contacts::new();
     c.show(view);
@@ -306,6 +395,7 @@ pub fn sample_tasks(s: &mut rp_shell::Shell) {
             n: 1,
             days: 0,
             until: None,
+            after: false,
         }
         .pack(TODAY));
         let mut fields: Vec<(u8, &[u8])> = vec![(tag::TITLE, title), (tag::LIST, &li)];
@@ -417,7 +507,91 @@ fn notes(s: &mut rp_shell::Shell, view: rp_app_notes::View) -> Notes {
     n
 }
 
-/// The sample notes, as written.
+/// A stroke packed with widths from its own speed (a step's length, as the
+/// pen filter gives them): the sample's handwriting.
+fn packed(st: &[(i16, i16)], style: u8, block: u8, out: &mut Vec<u8>) {
+    let mut w = Vec::with_capacity(st.len());
+    let mut last = st[0];
+    for &p in st {
+        let d = (p.0 - last.0).abs() + (p.1 - last.1).abs();
+        w.push((11 - d / 2).clamp(5, 11) as u8);
+        last = p;
+    }
+    let widths = (style & rp_app_notes::MARKER == 0).then_some(&w[..]);
+    let mut buf = [0u8; 1024];
+    let n = rp_app_notes::encode_stroke(st, widths, style, block, &mut buf).expect("a stroke fits");
+    out.extend_from_slice(&buf[..n]);
+}
+
+/// The blocks sample: "Saturday market" with an ink block, a paragraph, a
+/// checklist and a second ink block (a sketch with a marker band), in look
+/// `design`, with the preview's tool, menu row and typing.
+fn block_note(
+    s: &mut rp_shell::Shell,
+    design: u8,
+    tool: u8,
+    menu: Option<u8>,
+    typing: Option<usize>,
+) -> Notes {
+    use rp_pim::store::{Kind, tag};
+    crate::emu::empty_organiser(s);
+    let mut ink = Vec::new();
+    packed(&cursive(40, 20, 230), 0, 0, &mut ink);
+    packed(&cursive(40, 256, 380), 0, 0, &mut ink);
+    packed(&cursive(96, 20, 170), 1, 0, &mut ink);
+    let circle: Vec<(i16, i16)> = (0..=40i16)
+        .map(|k| {
+            let a = f32::from(k) * 0.165;
+            (
+                (300.0 + 46.0 * a.cos()) as i16,
+                (80.0 + 36.0 * a.sin()) as i16,
+            )
+        })
+        .collect();
+    packed(&circle, 2, 1, &mut ink);
+    packed(&[(40, 96), (210, 98)], rp_app_notes::MARKER, 1, &mut ink);
+    packed(&cursive(90, 40, 200), 0, 1, &mut ink);
+    packed(&[(206, 70), (240, 76), (252, 80)], 2, 1, &mut ink);
+    packed(&[(240, 70), (254, 80), (240, 90)], 2, 1, &mut ink);
+    let text: &[u8] = b"\x01\nBring the big basket and cash for the bakery; they don't take cards.\n[ ] Tomatoes\n[x] Honey\n[ ] Flowers for Mom\n\x01!";
+    // (Typing: a word half written, for the suggestions.)
+    let typed: Vec<u8> = if typing.is_some() {
+        let mut t = text.to_vec();
+        let at = t.windows(6).position(|w| w == b"cards.").expect("the line") + 6;
+        t.splice(at..at, b" Ask if they open tomor".iter().copied());
+        t
+    } else {
+        text.to_vec()
+    };
+    if let Some(store) = s.pim() {
+        store
+            .put(
+                Kind::Note,
+                None,
+                &[
+                    (tag::TITLE, b"Saturday market"),
+                    (tag::TEXT, &typed),
+                    (tag::INK, &ink),
+                    (tag::COLOUR, &5u32.to_le_bytes()),
+                ],
+            )
+            .expect("the sample fits");
+    }
+    s.pim_loaded();
+    let mut n = Notes::new(&[]);
+    n.show(rp_app_notes::View::Note(0));
+    n.design = design;
+    n.preview(tool, menu, typing);
+    if let Some(store) = s.pim()
+        && let Some(r) = store.all(Kind::Note).next()
+    {
+        let id = r.id;
+        n.suggest_in(store, id);
+    }
+    n
+}
+
+/// The sample notes, as written./// The sample notes, as written.
 fn sample_notes() -> &'static [Note] {
     let ink = ink();
     let blocks = |b: Vec<Block>| -> &'static [Block] { Box::leak(b.into_boxed_slice()) };
@@ -614,8 +788,52 @@ pub fn mocks() -> Vec<Mock> {
     all
 }
 
+/// A reminder due at 12:15 on the previews' Monday, the banner
+/// (docs/design/notifications.md: the owner's pick, look A), over
+/// Calendar's agenda (Lunch with Sam, 12:30, 15 minutes before) or over
+/// Tasks (a task at 12:15).
+fn banner(s: &mut rp_shell::Shell, task: bool) {
+    use rp_pim::store::{Kind, tag};
+    if task {
+        sample_tasks(s);
+        let at = (rp_pim::date::start_of(TODAY) + 12 * 60 + 15).to_le_bytes();
+        if let Some(p) = s.pim() {
+            let _ = p.put(
+                Kind::Task,
+                None,
+                &[
+                    (tag::TITLE, b"Call the bank about the card"),
+                    (tag::REMIND_AT, &at),
+                ],
+            );
+        }
+        open(s, tasks(rp_app_tasks::View::Home, b""));
+    } else {
+        sample_week(s);
+        open(s, calendar(View::Agenda, b""));
+    }
+    s.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 15,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+}
+
 fn base() -> Vec<Mock> {
     vec![
+        // The reminder banner (docs/design/notifications.md).
+        Mock {
+            name: "notify-banner",
+            what: "The reminder banner: a glass card under the title bar, what and when over four keys (5 MIN, 15 MIN, DISMISS, OPEN), over Calendar",
+            prepare: Box::new(|s| banner(s, false)),
+        },
+        Mock {
+            name: "notify-banner-task",
+            what: "The reminder banner over Tasks: a task due now",
+            prepare: Box::new(|s| banner(s, true)),
+        },
         // Half-Life's two screens for the owner's pick (hl_mockups.rs).
         Mock {
             name: "hl-files-steps",
@@ -667,6 +885,23 @@ fn base() -> Vec<Mock> {
             name: "v3-contacts",
             what: "Version 3 concept, Contacts: favourites as big glossy avatars, the last person spoken to, grouped cards",
             prepare: Box::new(|s| open(s, crate::design_v3::ContactsHome::default())),
+        },
+        // Today's calendar panel from the store, the tasks line in each of
+        // its three places for the owner's pick (tasks-rule0.md).
+        Mock {
+            name: "today-tasks-a-header",
+            what: "Today's calendar panel from the store, A: the tasks line on the panel's top line, right of TODAY",
+            prepare: Box::new(|s| today_panel(s, rp_shell::TodayTasks::Header)),
+        },
+        Mock {
+            name: "today-tasks-b-row",
+            what: "Today's calendar panel from the store, B: the tasks as the panel's second row (one appointment row left)",
+            prepare: Box::new(|s| today_panel(s, rp_shell::TodayTasks::Row)),
+        },
+        Mock {
+            name: "today-tasks-c-extra",
+            what: "Today's calendar panel from the store, C: a third row for the tasks, the panel 28 px taller",
+            prepare: Box::new(|s| today_panel(s, rp_shell::TodayTasks::Extra)),
         },
         Mock {
             name: "app-calendar-home",
@@ -751,6 +986,49 @@ fn base() -> Vec<Mock> {
             }),
         },
         Mock {
+            name: "v2-calendar-edit-rule",
+            what: "Calendar: the editor with a repeat its chip says only in part, the whole rule in words beside REPEAT (R375)",
+            prepare: Box::new(|s| {
+                use rp_pim::repeat::{Every, Rule};
+                use rp_pim::store::{Kind, tag};
+                sample_week(s);
+                if let Some(store) = s.pim() {
+                    let at = rp_pim::date::start_of(TODAY) + 8 * 60 + 30;
+                    let rule = Rule {
+                        every: Every::Week,
+                        n: 2,
+                        days: 1 | 1 << 2 | 1 << 4,
+                        until: Some(TODAY + 61),
+                        after: false,
+                    };
+                    store
+                        .put(
+                            Kind::Appointment,
+                            None,
+                            &[
+                                (tag::TITLE, b"Team standup"),
+                                (tag::START, &at.to_le_bytes()),
+                                (tag::MINUTES, &15u32.to_le_bytes()),
+                                (tag::REPEAT, &rule.pack(TODAY).to_le_bytes()),
+                            ],
+                        )
+                        .expect("the standup fits");
+                }
+                open(s, calendar(View::Agenda, b""));
+                // The agenda drawn once (its rows are where it drew them),
+                // then its row, the day's first, as a tap.
+                s.frame(&mut Box::new(rp_draw::Frame::new()));
+                s.input(rp_shell::Input::PenDown {
+                    x: 240,
+                    y: EDIT_TAP_Y,
+                });
+                s.input(rp_shell::Input::PenUp {
+                    x: 240,
+                    y: EDIT_TAP_Y,
+                });
+            }),
+        },
+        Mock {
             name: "v2-calendar-calendars",
             what: "Calendar: the calendars, a Google one got through its private link and synced",
             prepare: Box::new(|s| calendar_synced(s, View::Calendars)),
@@ -814,6 +1092,159 @@ fn base() -> Vec<Mock> {
                 c.set_places_from(include_bytes!(
                     "../../shell/weather/tests/data/photon-410-pi.json"
                 ));
+                open(s, c);
+            }),
+        },
+        // Version 3, group A (2026-11-23): the records and files rows.
+        Mock {
+            name: "v3-contacts-card",
+            what: "Contacts: the card with a job title, numbers and e-mails of their own labels, the birthday and the website, a page at a time",
+            prepare: Box::new(|s| {
+                sample_people_v3(s);
+                open(s, contacts(rp_app_contacts::View::Card(1)));
+            }),
+        },
+        Mock {
+            name: "v3-contacts-editor-more",
+            what: "Contacts: + Add under the phones and e-mails, each extra with its own label",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Edit(EditField::Extra(0)));
+                c.typed(b"Ada", b"2065550142", b"");
+                c.typed_field(EditField::Home, b"2065550143");
+                c.typed_extra(true, b"Cabin", b"3605550199");
+                c.typed_extra(false, b"School", b"ada@school.example");
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-editor-label",
+            what: "Contacts: an extra number's label typed, or picked from the strip over the keyboard",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Edit(EditField::Label(0)));
+                c.typed(b"Ada", b"2065550142", b"");
+                c.typed_extra(true, b"Cab", b"3605550199");
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-editor-address",
+            what: "Contacts: the address in its parts, the days typed the region's way, the website",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Edit(EditField::Anniversary));
+                c.typed(b"Ada", b"2065550142", b"12 St James Sq");
+                for (f, t) in [
+                    (EditField::City, &b"Seattle"[..]),
+                    (EditField::Region, b"WA"),
+                    (EditField::Postal, b"98101"),
+                    (EditField::Birthday, b"12/10/1815"),
+                ] {
+                    c.typed_field(f, t);
+                }
+                c.typed_bad_day(EditField::Anniversary, b"02/30");
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-tools",
+            what: "Contacts: import and export (vCard 3.0 or 4.0, the card or the PC) and the doubles found",
+            prepare: Box::new(|s| {
+                sample_people_v3(s);
+                open(s, contacts(rp_app_contacts::View::Tools));
+            }),
+        },
+        Mock {
+            name: "v3-contacts-import",
+            what: "Contacts: the .vcf files on the card and the PC, to import",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::List);
+                c.ask_import();
+                let cx = mock_ctx();
+                let _ = rp_app::Program::card_ask(&mut c);
+                rp_app::Program::net_answer(
+                    &mut c,
+                    true,
+                    b"0|people.vcf\n1|From my old phone.vcf\n",
+                    &cx,
+                );
+                let _ = rp_app::Program::net_ask(&mut c);
+                rp_app::Program::net_answer(
+                    &mut c,
+                    true,
+                    b"0|Outlook contacts.vcf\n1|Google contacts.vcf\n",
+                    &cx,
+                );
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-merge",
+            what: "Contacts: a double offered as one: the two side by side, what they share, what the one card keeps",
+            prepare: Box::new(|s| {
+                sample_people_v3(s);
+                open(s, contacts(rp_app_contacts::View::Merge));
+            }),
+        },
+        Mock {
+            name: "v3-calendar-calendars",
+            what: "Calendar: the time zone's row (from the PC, or chosen) and Import / Export .ics",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                s.set_utc_offset(-480);
+                open(s, calendar(View::Calendars, b""));
+            }),
+        },
+        Mock {
+            name: "v3-calendar-zones",
+            what: "Calendar: the time zone chosen from every zone on Earth, by typing a city",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                s.set_utc_offset(-480);
+                open(s, calendar(View::Zones, b""));
+            }),
+        },
+        Mock {
+            name: "v3-calendar-import",
+            what: "Calendar: the .ics files on the card and the PC, to import into a calendar of their own",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Calendars, b"");
+                let cx = mock_ctx();
+                let k = rp_app_calendar::IMPORT_KEY_FOR_PREVIEW;
+                let _ = rp_app::Program::event(
+                    &mut c,
+                    rp_app::Event::PenUp {
+                        x: k.x + 20,
+                        y: k.y + 20,
+                    },
+                    &cx,
+                );
+                let _ = rp_app::Program::card_ask(&mut c);
+                rp_app::Program::net_answer(&mut c, true, b"0|Work.ics\n1|School year.ics\n", &cx);
+                let _ = rp_app::Program::net_ask(&mut c);
+                rp_app::Program::net_answer(&mut c, true, b"0|US holidays 2027.ics\n", &cx);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-calendar-export",
+            what: "Calendar: every appointment written as one .ics, to the card or the PC",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Calendars, b"");
+                let cx = mock_ctx();
+                let k = rp_app_calendar::EXPORT_KEY_FOR_PREVIEW;
+                let _ = rp_app::Program::event(
+                    &mut c,
+                    rp_app::Event::PenUp {
+                        x: k.x + 20,
+                        y: k.y + 20,
+                    },
+                    &cx,
+                );
                 open(s, c);
             }),
         },
@@ -888,6 +1319,64 @@ fn base() -> Vec<Mock> {
             what: "Notes: text, a checklist and handwriting in one note on ruled paper",
             prepare: Box::new(|s| {
                 let n = notes(s, rp_app_notes::View::Note(0));
+                open(s, n);
+            }),
+        },
+        // Group D (2026-11-23): a note as blocks, in the three looks the
+        // owner picks from, and the ink tools.
+        Mock {
+            name: "v3-notes-blocks-a-open",
+            what: "Notes blocks, look A (open sheet): ink, a paragraph, a checklist and a second ink block on one ruled sheet, the ink blocks unmarked like paper",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 0, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-blocks-b-framed",
+            what: "Notes blocks, look B (framed pads): each ink block a sunken pad of the paper a shade deeper",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 1, 0, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-blocks-c-margin",
+            what: "Notes blocks, look C (margin marks): each ink block marked by a bar in the note's colour in the margin",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 2, 0, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-ink-marker",
+            what: "Notes ink tools: the marker chosen, its see-through band over each colour well, an orange hue picked",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 1, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-ink-eraser",
+            what: "Notes ink tools: the stroke eraser part way along its path (its trail and the ring where it is)",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 2, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-export",
+            what: "Notes: Menu, Export: text, Markdown, SVG or PNG to RetroPane\\Notes on the card",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 0, Some(1), None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-typing",
+            what: "Notes: typing a paragraph, the caret at its end, word suggestions on the keyboard's strip",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 0, None, Some(1));
                 open(s, n);
             }),
         },

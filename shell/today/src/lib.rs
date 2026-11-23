@@ -86,6 +86,7 @@ const _: () = assert!({
     n <= 160
 });
 
+pub mod cardfiles;
 pub mod clock;
 pub mod fonts;
 pub mod kept;

@@ -17,7 +17,6 @@
 //! any other as a single event.
 
 use crate::date::{self, Date};
-use crate::repeat::{Every, Rule};
 
 /// A field's text, cut to `N` bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,10 +32,13 @@ impl<const N: usize> Default for Short<N> {
 }
 
 impl<const N: usize> Short<N> {
-    const fn new() -> Self {
+    /// No text.
+    #[must_use]
+    pub const fn new() -> Self {
         Self { b: [0; N], n: 0 }
     }
-    fn push(&mut self, s: &[u8]) {
+    /// `s` added, as much as fits.
+    pub fn push(&mut self, s: &[u8]) {
         for &c in s {
             if self.n < N {
                 self.b[self.n] = c;
@@ -48,6 +50,20 @@ impl<const N: usize> Short<N> {
     #[must_use]
     pub fn get(&self) -> &[u8] {
         &self.b[..self.n]
+    }
+    /// Whether it holds nothing.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+    /// Emptied (its bytes too: two empty texts are equal).
+    pub const fn clear(&mut self) {
+        *self = Self::new();
+    }
+    /// Whether it is full (a longer text was cut).
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        self.n == N
     }
 }
 
@@ -360,316 +376,9 @@ fn iso_day(s: &[u8]) -> Option<i32> {
     date::valid(d).then(|| date::days_from(d))
 }
 
-// ---- iCalendar ----------------------------------------------------------
+// ---- iCalendar ---------------------------------------------------------
 
-/// One event read from an iCalendar file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Event {
-    /// SUMMARY.
-    pub title: Short<64>,
-    /// LOCATION.
-    pub place: Short<64>,
-    /// The start, local minutes from 1970 (a UTC time moved by
-    /// `utc_offset` minutes).
-    pub start: u32,
-    /// Minutes long (0 for all-day: one day).
-    pub minutes: u32,
-    /// All day.
-    pub all_day: bool,
-    /// How it repeats, when its RRULE is one the store keeps.
-    pub rule: Option<Rule>,
-}
-
-/// The file's lines unfolded (RFC 5545 3.1: a line starting with a space
-/// or a tab continues the one before), one at a time, into `buf`.
-struct Lines<'a> {
-    text: &'a [u8],
-    at: usize,
-}
-
-impl Lines<'_> {
-    fn next_into<'b>(&mut self, buf: &'b mut [u8; 256]) -> Option<&'b [u8]> {
-        if self.at >= self.text.len() {
-            return None;
-        }
-        let mut n = 0;
-        loop {
-            let rest = &self.text[self.at..];
-            let end = rest.iter().position(|&c| c == b'\n').unwrap_or(rest.len());
-            let mut line = &rest[..end];
-            if line.last() == Some(&b'\r') {
-                line = &line[..line.len() - 1];
-            }
-            let take = line.len().min(256 - n);
-            buf[n..n + take].copy_from_slice(&line[..take]);
-            n += take;
-            self.at += end + 1;
-            match self.text.get(self.at) {
-                Some(b' ' | b'\t') => self.at += 1,
-                _ => break,
-            }
-        }
-        Some(&buf[..n])
-    }
-}
-
-/// "20240101T153000Z" or "20240101": the local minutes from 1970 (a UTC
-/// time moved by `utc_offset`), and whether it was a date alone. A date
-/// before 1970 (a birthday) is moved to the same day of 1970: the caller
-/// keeps it only when it repeats yearly ([`ics_early`]).
-fn ics_time(v: &[u8], utc_offset: i32) -> Option<(u32, bool)> {
-    let num = |a: &[u8]| {
-        a.iter().try_fold(0i32, |v, &c| {
-            c.is_ascii_digit().then(|| v * 10 + i32::from(c - b'0'))
-        })
-    };
-    let mut d = Date {
-        year: num(v.get(0..4)?)?,
-        month: num(v.get(4..6)?)? as u8,
-        day: num(v.get(6..8)?)? as u8,
-    };
-    if !date::valid(d) {
-        return None;
-    }
-    if d.year < 1970 {
-        d.year = 1970;
-        // 29 February of a leap year before 1970 has no 1970 day.
-        if !date::valid(d) {
-            d.day = 28;
-        }
-    }
-    let day = date::days_from(d);
-    if v.len() < 15 || v[8] != b'T' {
-        return Some((date::start_of(day), true));
-    }
-    let m = num(v.get(9..11)?)? * 60 + num(v.get(11..13)?)?;
-    let utc = v.get(15) == Some(&b'Z');
-    let t = date::start_of(day) as i64 + i64::from(m) + if utc { i64::from(utc_offset) } else { 0 };
-    u32::try_from(t).ok().map(|t| (t, false))
-}
-
-/// Whether a DTSTART's date is before 1970.
-fn ics_early(v: &[u8]) -> bool {
-    v.get(0..4)
-        .and_then(|y| {
-            y.iter().try_fold(0i32, |a, &c| {
-                c.is_ascii_digit().then(|| a * 10 + i32::from(c - b'0'))
-            })
-        })
-        .is_some_and(|y| y < 1970)
-}
-
-/// "PT1H30M" or "P1D" as minutes.
-fn ics_duration(v: &[u8]) -> Option<u32> {
-    let (mut total, mut n) = (0u32, 0u32);
-    for &c in v.get(1..)? {
-        match c {
-            b'0'..=b'9' => n = n.checked_mul(10)?.checked_add(u32::from(c - b'0'))?,
-            b'W' => (total, n) = (total + n * 7 * 1440, 0),
-            b'D' => (total, n) = (total + n * 1440, 0),
-            b'H' => (total, n) = (total + n * 60, 0),
-            b'M' => (total, n) = (total + n, 0),
-            b'S' | b'T' => n = 0,
-            _ => return None,
-        }
-    }
-    Some(total)
-}
-
-/// An RRULE's value onto the store's rule; `None` for one it doesn't keep
-/// (the event is then kept once).
-fn ics_rule(v: &[u8], start_day: i32, utc_offset: i32) -> Option<Rule> {
-    let mut every = None;
-    let mut n = 1u8;
-    let mut days = 0u8;
-    let mut until = None;
-    let mut count: Option<u32> = None;
-    let mut by_month_weekday = false;
-    for part in v.split(|&c| c == b';') {
-        let (k, val) = match part.iter().position(|&c| c == b'=') {
-            Some(i) => (&part[..i], &part[i + 1..]),
-            None => continue,
-        };
-        match k {
-            b"FREQ" => {
-                every = Some(match val {
-                    b"DAILY" => Every::Day,
-                    b"WEEKLY" => Every::Week,
-                    b"MONTHLY" => Every::MonthDate,
-                    b"YEARLY" => Every::Year,
-                    _ => return None,
-                });
-            }
-            b"INTERVAL" => {
-                n = val.iter().try_fold(0u8, |v, &c| {
-                    c.is_ascii_digit()
-                        .then(|| v.saturating_mul(10).saturating_add(c - b'0'))
-                })?;
-            }
-            b"BYDAY" => {
-                for d in val.split(|&c| c == b',') {
-                    // "2TU" (the 2nd Tuesday) makes a monthly rule by weekday.
-                    let name = &d[d.len().saturating_sub(2)..];
-                    if d.len() > 2 {
-                        by_month_weekday = true;
-                    }
-                    let k = [&b"MO"[..], b"TU", b"WE", b"TH", b"FR", b"SA", b"SU"]
-                        .iter()
-                        .position(|w| *w == name)?;
-                    days |= 1 << k;
-                }
-            }
-            b"UNTIL" => until = ics_time(val, utc_offset).map(|(t, _)| date::day_of(t)),
-            b"COUNT" => {
-                count = val.iter().try_fold(0u32, |v, &c| {
-                    c.is_ascii_digit().then(|| v * 10 + u32::from(c - b'0'))
-                })
-            }
-            // Rules the store can't say keep the event single.
-            b"BYSETPOS" | b"BYWEEKNO" | b"BYYEARDAY" | b"BYHOUR" | b"BYMINUTE" => return None,
-            _ => {}
-        }
-    }
-    let mut every = every?;
-    if every == Every::MonthDate && by_month_weekday {
-        every = Every::MonthWeekday;
-        days = 0;
-    }
-    let mut rule = Rule {
-        every,
-        n: n.max(1),
-        days: if every == Every::Week { days } else { 0 },
-        until,
-    };
-    // COUNT becomes the day of its last occurrence (walked, at most 3
-    // years ahead).
-    if let Some(c) = count {
-        let mut seen = 0;
-        let mut d = start_day;
-        while d < start_day + 3 * 366 {
-            if rule.occurs(start_day, d) {
-                seen += 1;
-                if seen == c {
-                    rule.until = Some(d);
-                    break;
-                }
-            }
-            d += 1;
-        }
-    }
-    Some(rule)
-}
-
-/// The events of an iCalendar file, into `out`: how many (see
-/// [`ics_each`]).
-pub fn ics(text: &[u8], utc_offset: i32, out: &mut [Event]) -> usize {
-    let mut n = 0;
-    ics_each(text, utc_offset, |e| {
-        if n < out.len() {
-            out[n] = *e;
-            n += 1;
-            true
-        } else {
-            false
-        }
-    });
-    n
-}
-
-/// Each event of an iCalendar file handed to `take` as it is read (no
-/// array of them: a program's stack is the shell's, and 160 events were
-/// 27 KB), until it answers false. Times in UTC are moved by `utc_offset`
-/// minutes to the device's zone; a TZID'd time is taken as local (the
-/// zone database is a later item).
-pub fn ics_each(text: &[u8], utc_offset: i32, mut take: impl FnMut(&Event) -> bool) {
-    let mut lines = Lines { text, at: 0 };
-    let mut buf = [0u8; 256];
-    let mut cur: Option<Event> = None;
-    let (mut end, mut dur, mut rrule) = (None::<u32>, None::<u32>, Short::<128>::new());
-    let mut early = false;
-    while let Some(line) = lines.next_into(&mut buf) {
-        let Some(colon) = line.iter().position(|&c| c == b':') else {
-            continue;
-        };
-        let (name, value) = (&line[..colon], &line[colon + 1..]);
-        let key = &name[..name.iter().position(|&c| c == b';').unwrap_or(name.len())];
-        match key {
-            b"BEGIN" if value == b"VEVENT" => {
-                cur = Some(Event {
-                    title: Short::new(),
-                    place: Short::new(),
-                    start: 0,
-                    minutes: 60,
-                    all_day: false,
-                    rule: None,
-                });
-                (end, dur, rrule) = (None, None, Short::new());
-                early = false;
-            }
-            b"END" if value == b"VEVENT" => {
-                if let Some(mut e) = cur.take()
-                    && (e.start != 0 || early)
-                {
-                    e.minutes = match (end, dur) {
-                        (Some(t), _) if t > e.start => t - e.start,
-                        (_, Some(m)) => m,
-                        _ if e.all_day => 1440,
-                        _ => 60,
-                    };
-                    if !rrule.get().is_empty() {
-                        e.rule = ics_rule(rrule.get(), date::day_of(e.start), utc_offset);
-                    }
-                    // Before 1970 only a yearly repeat (a birthday) is kept,
-                    // from its 1970 day.
-                    if (!early || e.rule.is_some_and(|r| r.every == Every::Year)) && !take(&e) {
-                        return;
-                    }
-                }
-            }
-            b"SUMMARY" => {
-                if let Some(e) = cur.as_mut() {
-                    e.title.push(unescape(value).get());
-                }
-            }
-            b"LOCATION" => {
-                if let Some(e) = cur.as_mut() {
-                    e.place.push(unescape(value).get());
-                }
-            }
-            b"DTSTART" => {
-                if let (Some(e), Some((t, all))) = (cur.as_mut(), ics_time(value, utc_offset)) {
-                    e.start = t;
-                    e.all_day = all;
-                    early = ics_early(value);
-                }
-            }
-            b"DTEND" => end = ics_time(value, utc_offset).map(|(t, _)| t),
-            b"DURATION" => dur = ics_duration(value),
-            b"RRULE" => {
-                rrule = Short::new();
-                rrule.push(value);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// RFC 5545's text escapes (`\,` `\;` `\n` `\\`) undone, cut to 64 bytes.
-fn unescape(v: &[u8]) -> Short<64> {
-    let mut out = Short::new();
-    let mut esc = false;
-    for &c in v {
-        if esc {
-            out.push(&[if c == b'n' || c == b'N' { b' ' } else { c }]);
-            esc = false;
-        } else if c == b'\\' {
-            esc = true;
-        } else {
-            out.push(&[c]);
-        }
-    }
-    out
-}
+pub use crate::ics::{Event, ics, ics_each};
 
 #[cfg(test)]
 mod tests {
@@ -771,56 +480,6 @@ mod tests {
         assert_eq!(day, Some(19_724));
         for cut in 0..ECB.len() {
             let _ = ecb(&ECB[..cut], &mut out);
-        }
-    }
-
-    const ICS: &[u8] = b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Dentist\\, Dr. Lee\r\nLOCATION:410 Pine St\r\nDTSTART:20240102T230000Z\r\nDTEND:20240103T000000Z\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Mum's bir\r\n thday\r\nDTSTART;VALUE=DATE:19600315\r\nRRULE:FREQ=YEARLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Stand-up\r\nDTSTART:20240101T093000\r\nDURATION:PT15M\r\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=6\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-
-    #[test]
-    fn icalendar_events_with_folds_escapes_zones_and_rules() {
-        let mut out = [Event {
-            title: Short::new(),
-            place: Short::new(),
-            start: 0,
-            minutes: 0,
-            all_day: false,
-            rule: None,
-        }; 8];
-        // Seattle in winter: UTC-8.
-        let n = ics(ICS, -480, &mut out);
-        assert_eq!(n, 3);
-        assert_eq!(out[0].title.get(), b"Dentist, Dr. Lee");
-        assert_eq!(out[0].place.get(), b"410 Pine St");
-        // 23:00 UTC on the 2nd is 15:00 in Seattle.
-        assert_eq!(out[0].start, date::start_of(19_724) + 15 * 60);
-        assert_eq!(out[0].minutes, 60);
-        assert_eq!(out[1].title.get(), b"Mum's birthday");
-        assert!(out[1].all_day);
-        assert_eq!(out[1].rule.map(|r| r.every), Some(Every::Year));
-        assert_eq!(out[2].minutes, 15);
-        let r = out[2].rule.expect("weekly kept");
-        assert_eq!(r.days, 0b10101);
-        // Six meetings from Monday 1 January: the 6th is Friday the 12th.
-        assert_eq!(r.until, Some(19_734));
-    }
-
-    #[test]
-    fn icalendar_junk_and_cuts_never_panic() {
-        let mut out = [Event {
-            title: Short::new(),
-            place: Short::new(),
-            start: 0,
-            minutes: 0,
-            all_day: false,
-            rule: None,
-        }; 8];
-        assert_eq!(ics(b"", 0, &mut out), 0);
-        assert_eq!(
-            ics(b"BEGIN:VEVENT\nDTSTART:2024XX01\nEND:VEVENT\n", 0, &mut out),
-            0
-        );
-        for cut in 0..ICS.len() {
-            let _ = ics(&ICS[..cut], 0, &mut out);
         }
     }
 }

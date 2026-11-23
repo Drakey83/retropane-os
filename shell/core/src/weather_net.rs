@@ -102,6 +102,9 @@ pub struct Question {
     /// A tile's place: the rain frame (`None`: the map), the tile's index
     /// in the view's 3 x 3 grid, and the view.
     pub tile: Option<(Option<u8>, u8, rp_weather::tiles::View)>,
+    /// The bytes of the open program's body that follow the line (a
+    /// `PUT`), sent a piece at a time from [`Shell::program_body`].
+    pub stream: usize,
 }
 
 impl Question {
@@ -141,7 +144,7 @@ impl Question {
     /// and ` -',.#/` as they are; a letter of any other script (Zürich,
     /// Málaga, Kraków, 東京) as its UTF-8 bytes in `%XX`, whole or not at all,
     /// room for the line's end kept; anything else left out. The relay
-    /// decodes them and checks them as letters again (R370: only ASCII
+    /// decodes them and checks them as letters again (R382: only ASCII
     /// went, so "Zürich" was asked as "Zrich": the international rule).
     fn push_arg(&mut self, arg: &[u8]) {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -208,6 +211,18 @@ impl Shell {
                 n: 0,
                 body: None,
                 tile: None,
+                // `PUT <length> <name>`: the program's body follows the
+                // line ([`Shell::program_body`]).
+                stream: if ask.what == b"PUT" {
+                    ask.arg
+                        .get()
+                        .split(|&c| c == b' ')
+                        .next()
+                        .and_then(|w| core::str::from_utf8(w).ok()?.parse().ok())
+                        .unwrap_or(0)
+                } else {
+                    0
+                },
             };
             q.push(b"RPNET ");
             // Its name and argument as the relay checks them: letters (of
@@ -244,6 +259,7 @@ impl Shell {
             n: 0,
             body: None,
             tile: None,
+            stream: 0,
         };
         q.push(b"RPNET ");
         match a {
@@ -1043,6 +1059,7 @@ mod tests {
             n: 0,
             body: None,
             tile: None,
+            stream: 0,
         };
         let mut q = q0(Ask::Tempest);
         q.push(b"RPNET TEMPEST abcd-1234\n");

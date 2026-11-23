@@ -14,7 +14,7 @@
 //! whole screen, 650 blits and ~278k blended pixels: 55.5 ms measured, 59
 //! priced; the Start menu, 191 blits: 18.2 ms measured) the price runs a
 //! little high: a frame priced under 33 ms is under it on the device. The
-//! device's own times come with the next device run (reminder R369).
+//! device's own times come with the next device run (reminder R381).
 
 use rp_draw::{Frame, Renderer};
 use rp_mbx_render::model::{self, Bus, Mem};

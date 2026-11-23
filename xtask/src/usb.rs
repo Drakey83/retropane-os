@@ -1683,7 +1683,7 @@ mod tests {
     /// The relay takes every frame number RainViewer's two hours give
     /// (R184 step 2: 13 frames; a one-digit check refused 10-12 and the
     /// newest frames showed dry, run today-0054), and keeps all of them.
-    /// The relay's address check (R370), run in PowerShell as the relay
+    /// The relay's address check (R382), run in PowerShell as the relay
     /// runs it: every script's letters come as %XX and are taken; anything
     /// that isn't an address, or isn't UTF-8, is refused. Skipped where no
     /// PowerShell is installed.
@@ -2289,7 +2289,7 @@ function Fetch($url) {{
     $r = Invoke-WebRequest -UseBasicParsing -UserAgent $ua $url
     [Text.Encoding]::UTF8.GetBytes($r.Content)
 }}
-# An address as the device sends it (R370): ASCII letters, digits and
+# An address as the device sends it (R382): ASCII letters, digits and
 # ` ,.'#/-` as they are, every other script's letters as their UTF-8 bytes
 # in %XX. Decoded strictly (a byte sequence that isn't UTF-8 is refused),
 # then held to letters (any script, with their marks), digits and those
@@ -2315,6 +2315,15 @@ function Photo-Files {{
     $dirs | ForEach-Object {{ Get-ChildItem $_ -File -Recurse -Depth 2 -ErrorAction SilentlyContinue }} |
         Where-Object {{ $_.Extension -match '^\.(jpe?g|png|bmp|gif)$' }} |
         Sort-Object LastWriteTime -Descending | Select-Object -First 250
+}}
+# The PC's files of a kind ('vcf', 'ics'): Documents\RetroPane, Downloads
+# and the Desktop, the newest first, 40 at most.
+function Pc-Files($kind) {{
+    $home2 = [Environment]::GetFolderPath('UserProfile')
+    $dirs = @((Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'RetroPane'), (Join-Path $home2 'Downloads'), [Environment]::GetFolderPath('Desktop')) | Where-Object {{ $_ -and (Test-Path $_) }}
+    $dirs | ForEach-Object {{ Get-ChildItem $_ -File -ErrorAction SilentlyContinue }} |
+        Where-Object {{ $_.Extension -eq ".$kind" }} |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 40
 }}
 # A position the device sent: a number in range, three decimals at most.
 function Degrees($v, $max) {{
@@ -2365,7 +2374,7 @@ while ($true) {{
                 # Photon, OpenStreetMap's search built for typing (Nominatim's
                 # public server forbids as-you-type use). Raw GeoJSON: the
                 # device reads it (rp_pim::net::photon), as it will over Wi-Fi.
-                # Any country's (R370): letters of every script come as %XX.
+                # Any country's (R382): letters of every script come as %XX.
                 $q = Address-Text $line.Substring(11)
                 if ($null -eq $q) {{ Refuse 400 'not an address'; continue }}
                 if ($canned) {{ Answer ([IO.File]::ReadAllBytes("$data\photon-410-pi.json")); continue }}
@@ -2490,6 +2499,12 @@ while ($true) {{
                 $from = (Get-Date).Year - 1
                 $keep = New-Object Text.StringBuilder
                 [void]$keep.Append("BEGIN:VCALENDAR`r`n")
+                # The file's zones first: the device matches each to its
+                # tzdata name (an Outlook "Pacific Standard Time" too).
+                foreach ($tz in [regex]::Matches($text, '(?s)BEGIN:VTIMEZONE.*?END:VTIMEZONE')) {{
+                    if ($keep.Length + $tz.Value.Length -gt 20000) {{ break }}
+                    [void]$keep.Append($tz.Value + "`r`n")
+                }}
                 foreach ($ev in [regex]::Matches($text, '(?s)BEGIN:VEVENT.*?END:VEVENT')) {{
                     $v = $ev.Value
                     $y = [regex]::Match($v, 'DTSTART[^:]*:(\d{{4}})')
@@ -2502,6 +2517,55 @@ while ($true) {{
                 $b = [Text.Encoding]::UTF8.GetBytes($keep.ToString())
                 "ICAL ${{n}}: $($b.Length) bytes"
                 Answer $b
+            }}
+            'FILES' {{
+                # The PC's files of a kind for an import (contacts-rule0.md
+                # vCard, calendar-rule0.md .ics): Documents\RetroPane first,
+                # then Downloads and the Desktop, the newest first, by name
+                # and number only (no path crosses the cable).
+                if ($w.Length -lt 3 -or $w[2] -notmatch '^(vcf|ics)$') {{ Refuse 400 'not a kind of file'; continue }}
+                $out = ''
+                $all = @(Pc-Files $w[2])
+                for ($i = 0; $i -lt $all.Count; $i++) {{
+                    $n = ($all[$i].Name -replace '[^A-Za-z0-9 _.()-]', '')
+                    if ($n.Length -gt 40) {{ $n = $n.Substring(0, 40) }}
+                    $out += "$i|$n`n"
+                }}
+                "FILES $($w[2]): $($all.Count)"
+                Answer ([Text.Encoding]::ASCII.GetBytes($out))
+            }}
+            'FILE' {{
+                # File n of that kind's list, whole (240 KB at most: the
+                # device's answer room).
+                if ($w.Length -lt 4 -or $w[2] -notmatch '^[0-9]{{1,2}}$' -or $w[3] -notmatch '^(vcf|ics)$') {{ Refuse 400 'not a file number'; continue }}
+                $all = @(Pc-Files $w[3])
+                if ([int]$w[2] -ge $all.Count) {{ Refuse 404 'no such file'; continue }}
+                $f = $all[[int]$w[2]]
+                if ($f.Length -gt 240000) {{ Refuse 413 'too big for the device'; continue }}
+                $b = [IO.File]::ReadAllBytes($f.FullName)
+                "FILE $($w[2]): $($b.Length) bytes"
+                Answer $b
+            }}
+            'PUT' {{
+                # An export (a .vcf or .ics the device wrote) kept in
+                # Documents\RetroPane: a plain name only, 4 MB at most.
+                if ($w.Length -lt 4 -or $w[2] -notmatch '^[0-9]{{1,7}}$') {{ Refuse 400 'no length'; continue }}
+                $n = [int]$w[2]
+                # "RPNET PUT <length> <name>": the name is all past the length.
+                $name = $line.Substring($line.IndexOf(' ', 10) + 1).Trim()
+                # (The body is read whatever the answer, so the port stays
+                # in step.)
+                $b = New-Object byte[] $n
+                $got = 0
+                $sp.ReadTimeout = 5000
+                try {{ while ($got -lt $n) {{ $got += $sp.Read($b, $got, $n - $got) }} }} finally {{ $sp.ReadTimeout = 500 }}
+                if ($n -gt 4000000) {{ Refuse 413 'too big'; continue }}
+                if ($name -notmatch '^[A-Za-z0-9 _.-]{{1,36}}\.(vcf|ics)$' -or $name.StartsWith('.')) {{ Refuse 400 'not a name an export may have'; continue }}
+                $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'RetroPane'
+                New-Item -ItemType Directory -Force -Path $dir | Out-Null
+                [IO.File]::WriteAllBytes((Join-Path $dir $name), $b)
+                "PUT ${{name}}: $n bytes"
+                Answer @()
             }}
             'HERE' {{
                 # The PC's own location service (Windows), named by

@@ -159,6 +159,37 @@ pub mod tag {
     pub const HIDDEN: u8 = 37;
     /// Note: its paper (0 ruled, 1 plain, 2 grid).
     pub const PAPER: u8 = 38;
+    /// Task, repeating: the days it was done, two bytes each (days from
+    /// 1970, little-endian), newest last, [`DONE_LOG_MAX`] at most. The
+    /// task itself moves on to its next day ([`crate::repeat::Rule::next_after`]),
+    /// so the log is what counts its past completions.
+    pub const DONE_LOG: u8 = 40;
+    /// The completions [`DONE_LOG`] keeps.
+    pub const DONE_LOG_MAX: usize = 32;
+
+    // Contacts and calendar version 3 (2026-11-23, tags 50-59; a reader of
+    // version 2 skips them). [`BIRTHDAY`] and [`ANNIVERSARY`] are the day
+    // count from 1970 as a little-endian i32, the year 0004 when the year
+    // is unknown ([`crate::contact::Day`]).
+    /// Contact: the anniversary, kept as [`BIRTHDAY`] is.
+    pub const ANNIVERSARY: u8 = 50;
+    /// Contact: a web address.
+    pub const WEBSITE: u8 = 51;
+    /// Contact: the phones and e-mails past the first ones, each with its
+    /// own label ([`crate::contact::entries`]).
+    pub const MORE: u8 = 52;
+    /// Contact: the job title.
+    pub const JOB: u8 = 53;
+    /// Appointment: the time zone its [`START`] is the wall time of
+    /// (an IANA name: `rp_pim::zone`); absent: the device's own (it
+    /// moves with it).
+    pub const ZONE: u8 = 54;
+
+    /// A page of a note's text (a [`super::Kind::Ink`] record holding
+    /// [`TEXT`] and this): where it goes among the note's pages, lowest
+    /// first after the note's own text (`rp_app_notes::doc`). Tags 60-64
+    /// are Notes' (group D, 2026-11-23).
+    pub const ORDER: u8 = 60;
 
     // Group E's (70-72; group A owns 50-59, group D 60-64).
     /// Contact: where its address is, latitude then longitude, millionths

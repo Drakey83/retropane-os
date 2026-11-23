@@ -90,7 +90,7 @@ pub const LOW_MEMORY: u8 = 1;
 /// 3D view: R282); `kit.txt` and the emulator's check carry the same line.
 #[must_use]
 pub fn args() -> String {
-    with_extra(
+    quiet_tests(with_extra(
         format!(
             "+map {} -rpfps -rpend {} -rplimit {} -rpendshot -rpsample -rpfloat -rpbase /{FOLDER}/game -rodir /Ports -rpclock {} -console +cl_nopred 0 +cl_lw 1 +rp_defaults {LAYOUT}",
             map(),
@@ -99,7 +99,27 @@ pub fn args() -> String {
             clock()
         ),
         std::env::var(EXTRA).ok().as_deref(),
-    )
+    ))
+}
+
+/// The owner, 2026-11-23: "lower the volume on all of these test you keep
+/// running to 5%": a test kit (any line without `-rpplay`, the owner's
+/// play) sets the codec's level (`-rpvol`, the runner: the hardware volume,
+/// nothing the CPU does changes) to [`TEST_LEVEL`], unless the line names a
+/// level.
+/// 5% of full amplitude: the codec's audio taper makes level `l` an
+/// amplitude of `(l / 100)^2`, so 22 is 4.8% (-26 dB). Level 5 (-49 dB, the
+/// first try) was silent on the X51v's speaker: the owner, "i said 5% not
+/// 0%".
+pub const TEST_LEVEL: u32 = 22;
+
+fn quiet_tests(line: String) -> String {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.contains(&"-rpplay") || words.contains(&"-rpvol") {
+        line
+    } else {
+        format!("{line} -rpvol {TEST_LEVEL}")
+    }
 }
 
 /// The owner's button layout (2026-11-15, the mock-up hl-controls-doomgles;
@@ -495,21 +515,22 @@ pub fn sram_ranges(elf: &Path) -> Result<Option<(Vec<u8>, String)>, String> {
 ///
 /// # Errors
 /// A file could not be written, or the game's background is damaged.
-/// The runner's command line: 32 words with the program's name, its file
-/// at most 511 bytes (`rp_hal_cabi::ARGS`; the runner refuses a longer
-/// `args.txt` at its step 1: run 279's extra words made 32 and the X51v
-/// ran nothing). Checked when the kit is built, not on the device.
+/// The runner's command line: 64 words with the program's name, its file
+/// at most 1,023 bytes (`rp_hal_cabi::ARGS`, the runner's `ARGS_ROOM`,
+/// both raised for R360's A/B switches; the runner refuses a longer
+/// `args.txt` at its step 1: run 279's extra words past the old 32 made
+/// the X51v run nothing). Checked when the kit is built, not on the device.
 ///
 /// # Errors
 ///
 /// The line, its word count and its bytes, when it does not fit.
 pub fn args_fit(line: &str) -> Result<(), String> {
     let words = line.split_whitespace().count();
-    if words < 32 && line.len() < 512 {
+    if words < 64 && line.len() < 1024 {
         Ok(())
     } else {
         Err(format!(
-            "the kit's command line is {words} words and {} bytes; the runner holds 31 words and 511 bytes (drop words from {EXTRA}): {line}",
+            "the kit's command line is {words} words and {} bytes; the runner holds 63 words and 1,023 bytes (drop words from {EXTRA}): {line}",
             line.len()
         ))
     }
@@ -718,15 +739,31 @@ engine c
     }
 
     #[test]
-    fn a_line_past_the_runners_31_words_is_refused_at_build() {
-        let line = with_extra(
-            base_for_test(),
-            Some("-a -b -c -d -e -f -g -h -i -j -k -l -m -n -o -p"),
-        );
-        assert!(args_fit(&line).is_err());
-        let long = format!("+map {}", "x".repeat(520));
+    fn a_line_past_the_runners_63_words_is_refused_at_build() {
+        // the base's 26 words and 37 more: 63 fit, 64 do not
+        let words = |n: usize| {
+            (0..n)
+                .map(|k| format!("-w{k}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(args_fit(&with_extra(base_for_test(), Some(&words(37)))).is_ok());
+        assert!(args_fit(&with_extra(base_for_test(), Some(&words(38)))).is_err());
+        let long = format!("+map {}", "x".repeat(1020));
         assert!(args_fit(&long).is_err());
+        assert!(args_fit(&format!("+map {}", "x".repeat(1018))).is_ok());
         assert!(args_fit("+map c1a0 -rpfps").is_ok());
+    }
+
+    /// The owner, 2026-11-23: test kits run at 5%, the play kit at the
+    /// runner's own level, a named level kept.
+    #[test]
+    fn test_kits_are_quiet_and_the_play_kit_is_not() {
+        assert!(quiet_tests(base_for_test()).ends_with(" -rpvol 22"));
+        let play = with_extra(base_for_test(), Some("+rp_emit 2 -rpplay"));
+        assert_eq!(quiet_tests(play.clone()), play);
+        let named = with_extra(base_for_test(), Some("-rpvol 40"));
+        assert_eq!(quiet_tests(named.clone()), named);
     }
 
     fn base_for_test() -> String {
