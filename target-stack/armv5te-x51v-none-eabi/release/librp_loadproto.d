@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_loadproto.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\loadproto\src\b64.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\loadproto\src\lib.rs

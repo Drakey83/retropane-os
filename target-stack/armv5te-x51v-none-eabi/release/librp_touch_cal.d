@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_touch_cal.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\drivers\touch-cal\src\lib.rs

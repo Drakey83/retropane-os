@@ -59,10 +59,22 @@ fn rgb(raw: &[u8], x: usize, y: usize) -> (i32, i32, i32) {
 /// The square `raw` ([`RAW`] bytes) packed and handed to `keep` a page
 /// at a time ([`PAGE`] bytes, the last one shorter): `None` for an answer
 /// of another size, else whether every page was kept.
-pub fn encode(raw: &[u8], mut keep: impl FnMut(&[u8]) -> bool) -> Option<bool> {
+pub fn encode(raw: &[u8], keep: impl FnMut(&[u8]) -> bool) -> Option<bool> {
     if raw.len() != RAW {
         return None;
     }
+    Some(encode_with(&|x, y| rgb(raw, x, y), keep))
+}
+
+/// [`encode`] from any source of the square's pixels (red, green, blue
+/// 0-255 at x, y): a picture read from a JPEG file into picture memory.
+/// Whether every page was kept.
+pub fn encode_with(
+    px: &dyn Fn(usize, usize) -> (i32, i32, i32),
+    mut keep: impl FnMut(&[u8]) -> bool,
+) -> bool {
+    let rgb = |_: &[u8], x: usize, y: usize| px(x, y);
+    let raw: &[u8] = &[];
     let mut out = [0u8; PAGE];
     let mut n = 0;
     let mut kept = true;
@@ -117,7 +129,7 @@ pub fn encode(raw: &[u8], mut keep: impl FnMut(&[u8]) -> bool) -> Option<bool> {
     if n > 0 {
         kept &= keep(&out[..n]);
     }
-    Some(kept)
+    kept
 }
 
 /// The kept picture in `pages` (as [`encode`] handed them, in order)

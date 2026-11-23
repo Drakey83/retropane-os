@@ -223,3 +223,66 @@ fn the_same_number_or_mail_however_it_was_written() {
     assert!(!same_name(b"", b"", b"", b""));
     assert!(!same_name(b"Ada", b"Lovelace", b"Ada", b"Byron"));
 }
+
+#[test]
+fn records_sharing_a_number_or_a_mail_share_a_key() {
+    use crate::store::{Kind as K, Store, tag};
+    let mut m = std::vec![0u8; 16 * 1024 + crate::store::INDEX_BYTES];
+    let mut s = Store::sized(&mut m, 32);
+    s.load_start(None);
+    let mut more = [0u8; 128];
+    let n = push_entry(
+        &mut more,
+        0,
+        Entry {
+            kind: Kind::Email,
+            label: b"Work",
+            value: b"ADA@Work.example",
+        },
+    )
+    .unwrap();
+    let a = s
+        .put(
+            K::Contact,
+            None,
+            &[
+                (tag::FIRST, b"Ada"),
+                (tag::MOBILE, b"+12065550142"),
+                (tag::MORE, &more[..n]),
+            ],
+        )
+        .unwrap();
+    let b = s
+        .put(
+            K::Contact,
+            None,
+            &[(tag::FIRST, b"A."), (tag::EMAIL, b" ada@work.example")],
+        )
+        .unwrap();
+    let c = s
+        .put(
+            K::Contact,
+            None,
+            &[(tag::FIRST, b"Bo"), (tag::HOME, b"(206) 555-0142")],
+        )
+        .unwrap();
+    let d = s
+        .put(
+            K::Contact,
+            None,
+            &[(tag::FIRST, b"Cy"), (tag::HOME, b"+12065550999")],
+        )
+        .unwrap();
+    let keys = |id| {
+        let mut k = [0u64; 16];
+        let n = keys(&s.get(id).unwrap(), &mut k);
+        k[..n].to_vec()
+    };
+    let common = |x: &[u64], y: &[u64]| x.iter().any(|k| y.contains(k));
+    let (ka, kb, kc, kd) = (keys(a), keys(b), keys(c), keys(d));
+    assert_eq!(ka.len(), 2);
+    assert!(common(&ka, &kb), "the same mail, case and spaces apart");
+    assert!(common(&ka, &kc), "the same number, written two ways");
+    assert!(!common(&ka, &kd));
+    assert!(!common(&kb, &kc));
+}

@@ -210,6 +210,59 @@ pub fn sample_people(s: &mut rp_shell::Shell) {
     s.pim_loaded();
 }
 
+/// The sample people, Ada with every field of version 3 (a job, a
+/// number and an e-mail of their own labels, the address in its parts, her
+/// birthday, a website) and Grace twice (the double the merge offers).
+pub fn sample_people_v3(s: &mut rp_shell::Shell) {
+    use rp_pim::store::{Kind, tag};
+    sample_people(s);
+    let Some(store) = s.pim() else { return };
+    let ada = store
+        .all(Kind::Contact)
+        .find(|r| r.text(tag::FIRST) == b"Ada")
+        .map(|r| r.id);
+    let mut more = [0u8; 200];
+    let mut n = 0;
+    for (kind, label, value) in [
+        (rp_pim::contact::Kind::Phone, &b"Cabin"[..], &b"+13605550199"[..]),
+        (rp_pim::contact::Kind::Email, b"School", b"ada@school.example"),
+    ] {
+        n = rp_pim::contact::push_entry(&mut more, n, rp_pim::contact::Entry { kind, label, value })
+            .expect("fits");
+    }
+    let bday = rp_pim::contact::Day {
+        year: Some(1815),
+        month: 12,
+        day: 10,
+    }
+    .field()
+    .expect("a day");
+    if let Some(id) = ada {
+        let _ = store.change(
+            id,
+            &[
+                (tag::JOB, b"Programmer"),
+                (tag::HOME, b"+12065550143"),
+                (tag::EMAIL, b"ada@example.com"),
+                (tag::MORE, &more[..n]),
+                (tag::ADDRESS, b"12 St James Sq\nSeattle\nWA\n98101\n"),
+                (tag::BIRTHDAY, &bday),
+                (tag::WEBSITE, b"ada.example"),
+            ],
+        );
+    }
+    let _ = store.put(
+        Kind::Contact,
+        None,
+        &[
+            (tag::FIRST, b"G."),
+            (tag::LAST, b"Hopper"),
+            (tag::EMAIL, b"Grace@Example.org"),
+            (tag::HOME, b"+17035550190"),
+        ],
+    );
+}
+
 fn contacts(view: rp_app_contacts::View) -> Contacts {
     let mut c = Contacts::new();
     c.show(view);
@@ -754,6 +807,135 @@ fn base() -> Vec<Mock> {
                 c.set_places_from(include_bytes!(
                     "../../shell/weather/tests/data/photon-410-pi.json"
                 ));
+                open(s, c);
+            }),
+        },
+        // Version 3, group A (2026-11-23): the records and files rows.
+        Mock {
+            name: "v3-contacts-card",
+            what: "Contacts: the card with a job title, numbers and e-mails of their own labels, the birthday and the website, a page at a time",
+            prepare: Box::new(|s| {
+                sample_people_v3(s);
+                open(s, contacts(rp_app_contacts::View::Card(1)));
+            }),
+        },
+        Mock {
+            name: "v3-contacts-editor-more",
+            what: "Contacts: + Add under the phones and e-mails, each extra with its own label",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Edit(EditField::Extra(0)));
+                c.typed(b"Ada", b"2065550142", b"");
+                c.typed_field(EditField::Home, b"2065550143");
+                c.typed_extra(true, b"Cabin", b"3605550199");
+                c.typed_extra(false, b"School", b"ada@school.example");
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-editor-label",
+            what: "Contacts: an extra number's label typed, or picked from the strip over the keyboard",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Edit(EditField::Label(0)));
+                c.typed(b"Ada", b"2065550142", b"");
+                c.typed_extra(true, b"Cab", b"3605550199");
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-editor-address",
+            what: "Contacts: the address in its parts, the days typed the region's way, the website",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::Edit(EditField::Anniversary));
+                c.typed(b"Ada", b"2065550142", b"12 St James Sq");
+                for (f, t) in [
+                    (EditField::City, &b"Seattle"[..]),
+                    (EditField::Region, b"WA"),
+                    (EditField::Postal, b"98101"),
+                    (EditField::Birthday, b"12/10/1815"),
+                ] {
+                    c.typed_field(f, t);
+                }
+                c.typed_bad_day(EditField::Anniversary, b"02/30");
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-tools",
+            what: "Contacts: import and export (vCard 3.0 or 4.0, the card or the PC) and the doubles found",
+            prepare: Box::new(|s| {
+                sample_people_v3(s);
+                open(s, contacts(rp_app_contacts::View::Tools));
+            }),
+        },
+        Mock {
+            name: "v3-contacts-import",
+            what: "Contacts: the .vcf files on the card and the PC, to import",
+            prepare: Box::new(|s| {
+                sample_people(s);
+                let mut c = contacts(rp_app_contacts::View::List);
+                c.ask_import();
+                let cx = mock_ctx();
+                let _ = rp_app::Program::card_ask(&mut c);
+                rp_app::Program::net_answer(&mut c, true, b"0|people.vcf\n1|From my old phone.vcf\n", &cx);
+                let _ = rp_app::Program::net_ask(&mut c);
+                rp_app::Program::net_answer(&mut c, true, b"0|Outlook contacts.vcf\n1|Google contacts.vcf\n", &cx);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-contacts-merge",
+            what: "Contacts: a double offered as one: the two side by side, what they share, what the one card keeps",
+            prepare: Box::new(|s| {
+                sample_people_v3(s);
+                open(s, contacts(rp_app_contacts::View::Merge));
+            }),
+        },
+        Mock {
+            name: "v3-calendar-calendars",
+            what: "Calendar: the time zone's row (from the PC, or chosen) and Import / Export .ics",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                s.set_utc_offset(-480);
+                open(s, calendar(View::Calendars, b""));
+            }),
+        },
+        Mock {
+            name: "v3-calendar-zones",
+            what: "Calendar: the time zone chosen from every zone on Earth, by typing a city",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                s.set_utc_offset(-480);
+                open(s, calendar(View::Zones, b""));
+            }),
+        },
+        Mock {
+            name: "v3-calendar-import",
+            what: "Calendar: the .ics files on the card and the PC, to import into a calendar of their own",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Calendars, b"");
+                let cx = mock_ctx();
+                let k = rp_app_calendar::IMPORT_KEY_FOR_PREVIEW;
+                let _ = rp_app::Program::event(&mut c, rp_app::Event::PenUp { x: k.x + 20, y: k.y + 20 }, &cx);
+                let _ = rp_app::Program::card_ask(&mut c);
+                rp_app::Program::net_answer(&mut c, true, b"0|Work.ics\n1|School year.ics\n", &cx);
+                let _ = rp_app::Program::net_ask(&mut c);
+                rp_app::Program::net_answer(&mut c, true, b"0|US holidays 2027.ics\n", &cx);
+                open(s, c);
+            }),
+        },
+        Mock {
+            name: "v3-calendar-export",
+            what: "Calendar: every appointment written as one .ics, to the card or the PC",
+            prepare: Box::new(|s| {
+                sample_week(s);
+                let mut c = calendar(View::Calendars, b"");
+                let cx = mock_ctx();
+                let k = rp_app_calendar::EXPORT_KEY_FOR_PREVIEW;
+                let _ = rp_app::Program::event(&mut c, rp_app::Event::PenUp { x: k.x + 20, y: k.y + 20 }, &cx);
                 open(s, c);
             }),
         },

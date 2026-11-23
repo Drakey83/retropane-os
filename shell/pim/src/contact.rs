@@ -398,6 +398,55 @@ pub fn same_name(first_a: &[u8], last_a: &[u8], first_b: &[u8], last_b: &[u8]) -
     !(fa.is_empty() && la.is_empty()) && fa.eq_ignore_ascii_case(fb) && la.eq_ignore_ascii_case(lb)
 }
 
+/// A contact record's matching keys (a phone's last ten digits, an
+/// e-mail's FNV-1a hash, case ignored), up to `out`'s room: how many. Two
+/// records with a key in common are offered as one person
+/// ([`same_email`], [`phone_key`]).
+#[must_use]
+pub fn keys(r: &crate::store::Rec<'_>, out: &mut [u64; 16]) -> usize {
+    use crate::store::tag;
+    let mut n = 0;
+    let mut add = |k: u64| {
+        if n < out.len() && !out[..n].contains(&k) {
+            out[n] = k;
+            n += 1;
+        }
+    };
+    let phone = |v: &[u8]| {
+        phone_key(v).map(|k| {
+            k.iter()
+                .fold(0u64, |a, &d| a * 10 + u64::from(d.wrapping_sub(b'0')))
+        })
+    };
+    let mail = |v: &[u8]| {
+        let v = trim(v);
+        v.contains(&b'@').then(|| {
+            // Phones' keys are under 10^10; a mail's hash is kept above.
+            v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &c| {
+                (h ^ u64::from(c.to_ascii_lowercase())).wrapping_mul(0x100_0000_01b3)
+            }) | 1 << 63
+        })
+    };
+    for t in [tag::MOBILE, tag::HOME, tag::WORK] {
+        if let Some(k) = phone(r.text(t)) {
+            add(k);
+        }
+    }
+    if let Some(k) = mail(r.text(tag::EMAIL)) {
+        add(k);
+    }
+    for e in entries(r.text(tag::MORE)) {
+        let k = match e.kind {
+            Kind::Phone => phone(e.value),
+            Kind::Email => mail(e.value),
+        };
+        if let Some(k) = k {
+            add(k);
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 #[path = "contact_tests.rs"]
 mod tests;

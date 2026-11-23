@@ -56,9 +56,9 @@ impl<const N: usize> Short<N> {
     pub const fn is_empty(&self) -> bool {
         self.n == 0
     }
-    /// Emptied.
+    /// Emptied (its bytes too: two empty texts are equal).
     pub const fn clear(&mut self) {
-        self.n = 0;
+        *self = Self::new();
     }
     /// Whether it is full (a longer text was cut).
     #[must_use]

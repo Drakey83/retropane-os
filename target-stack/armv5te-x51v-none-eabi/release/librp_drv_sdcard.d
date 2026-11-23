@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_drv_sdcard.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\drivers\sdcard\src\lib.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\hal\api\src\lib.rs

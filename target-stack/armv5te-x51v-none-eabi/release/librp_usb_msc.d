@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_usb_msc.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\drivers\usb-msc\src\lib.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\hal\api\src\lib.rs

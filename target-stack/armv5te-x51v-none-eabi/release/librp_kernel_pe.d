@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_kernel_pe.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\kernel\pe\src\build.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\kernel\pe\src\lib.rs

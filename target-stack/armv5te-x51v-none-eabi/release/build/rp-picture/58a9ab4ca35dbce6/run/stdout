@@ -1,0 +1,5 @@
+cargo:rerun-if-changed=../link.x
+cargo:rerun-if-env-changed=RP_LOCAL_INPUTS
+cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\picture\../../local/concept/picture.rgb565
+cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\picture\../..
+cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\picture/../link.x

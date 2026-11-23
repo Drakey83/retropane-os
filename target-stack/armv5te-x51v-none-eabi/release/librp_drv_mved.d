@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_drv_mved.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\drivers\mved\src\lib.rs

@@ -128,6 +128,25 @@ impl Card {
         }
     }
 
+    /// Emptied, in place.
+    pub fn clear(&mut self) {
+        self.first.clear();
+        self.last.clear();
+        self.company.clear();
+        self.job.clear();
+        self.n_phones = 0;
+        self.n_emails = 0;
+        for a in &mut self.address {
+            a.clear();
+        }
+        self.birthday = None;
+        self.anniversary = None;
+        self.url.clear();
+        self.note.clear();
+        self.photo = None;
+        self.skipped = 0;
+    }
+
     /// Whether anything was read into it (a card of only a VERSION line is
     /// none).
     #[must_use]
@@ -538,7 +557,7 @@ fn each_dyn(text: &[u8], card: &mut Card, take: &mut dyn FnMut(&Card) -> bool) -
         };
         let name = h.name();
         if name == b"BEGIN" && contains_nocase(line, b"VCARD") {
-            *card = Card::new();
+            card.clear();
             inside = true;
             fname.clear();
             have_n = false;
@@ -708,33 +727,76 @@ fn each_dyn(text: &[u8], card: &mut Card, take: &mut dyn FnMut(&Card) -> bool) -
 /// when it isn't base64 or doesn't fit.
 #[must_use]
 pub fn photo_bytes(text: &[u8], p: Photo, out: &mut [u8]) -> Option<usize> {
-    let raw = text.get(p.start..p.end)?;
-    let raw = match raw.iter().position(|&c| c == b',') {
-        Some(k) if raw.len() > 5 && raw[..5].eq_ignore_ascii_case(b"data:") => &raw[k + 1..],
-        _ => raw,
-    };
+    let mut r = PhotoBytes::of(text, p)?;
     let mut n = 0;
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for &c in raw {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => break,
-            b' ' | b'\t' | b'\r' | b'\n' => continue,
-            _ => return None,
+    for b in r.by_ref() {
+        *out.get_mut(n)? = b;
+        n += 1;
+    }
+    (n > 0 && !r.bad).then_some(n)
+}
+
+/// A located picture's bytes one at a time (its base64 read in place:
+/// a picture is decoded as it is read, never held whole).
+pub struct PhotoBytes<'a> {
+    raw: &'a [u8],
+    at: usize,
+    acc: u32,
+    bits: u32,
+    /// A character base64 doesn't have was met (the bytes stop there).
+    pub bad: bool,
+}
+
+impl<'a> PhotoBytes<'a> {
+    /// The picture at `p` of `text`, past a `data:...;base64,` head.
+    #[must_use]
+    pub fn of(text: &'a [u8], p: Photo) -> Option<Self> {
+        let raw = text.get(p.start..p.end)?;
+        let raw = match raw.iter().position(|&c| c == b',') {
+            Some(k) if raw.len() > 5 && raw[..5].eq_ignore_ascii_case(b"data:") => &raw[k + 1..],
+            _ => raw,
         };
-        acc = acc << 6 | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            *out.get_mut(n)? = (acc >> bits) as u8;
-            n += 1;
+        Some(Self {
+            raw,
+            at: 0,
+            acc: 0,
+            bits: 0,
+            bad: false,
+        })
+    }
+}
+
+impl Iterator for PhotoBytes<'_> {
+    type Item = u8;
+    fn next(&mut self) -> Option<u8> {
+        loop {
+            if self.bits >= 8 {
+                self.bits -= 8;
+                return Some((self.acc >> self.bits) as u8);
+            }
+            let c = *self.raw.get(self.at)?;
+            self.at += 1;
+            let v = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                b'=' => {
+                    self.at = self.raw.len();
+                    return None;
+                }
+                b' ' | b'\t' | b'\r' | b'\n' => continue,
+                _ => {
+                    self.bad = true;
+                    self.at = self.raw.len();
+                    return None;
+                }
+            };
+            self.acc = self.acc << 6 | u32::from(v);
+            self.bits += 6;
         }
     }
-    (n > 0).then_some(n)
 }
 
 // ---- Writing ----------------------------------------------------------
@@ -1190,9 +1252,18 @@ impl Scratch {
 /// A kept contact as a card (to write as a vCard, or to merge).
 #[must_use]
 pub fn card_of(r: &crate::store::Rec<'_>) -> Card {
+    let mut c = Card::new();
+    read_into(r, &mut c);
+    c
+}
+
+/// [`card_of`] into a card the caller holds (a program's: a card is 2 KB,
+/// half a frame of the stack rule).
+#[inline(never)]
+pub fn read_into(r: &crate::store::Rec<'_>, c: &mut Card) {
     use crate::contact::{Kind, entries};
     use crate::store::tag;
-    let mut c = Card::new();
+    c.clear();
     c.first.push(r.text(tag::FIRST));
     c.last.push(r.text(tag::LAST));
     c.company.push(r.text(tag::COMPANY));
@@ -1226,7 +1297,6 @@ pub fn card_of(r: &crate::store::Rec<'_>) -> Card {
     c.anniversary = Day::of_field(r.text(tag::ANNIVERSARY));
     c.url.push(r.text(tag::WEBSITE));
     c.note.push(r.text(tag::NOTE));
-    c
 }
 
 /// Whether two cards are one person: a phone number or an e-mail in

@@ -109,15 +109,20 @@ pub fn list<D: BlockDevice>(
     Ok(at)
 }
 
-/// File `n` of `kind`'s list into `out`: its length.
+/// File `n` of `kind`'s list into `out`: its length. A vCard or a
+/// calendar is read whole (a part of one would lose people); a picture a
+/// piece at a time from `offset`, after four bytes of the file's size
+/// (little-endian), so a camera's 4 MB file is read in the pieces its
+/// reader asks for.
 ///
 /// # Errors
-/// The card not readable, no such file, or bigger than `out`.
+/// The card not readable, no such file, or a whole file bigger than `out`.
 pub fn read<D: BlockDevice>(
     card: D,
     start: u32,
     kind: &[u8],
     n: usize,
+    offset: u64,
     out: &mut [u8],
 ) -> Result<usize, &'static str> {
     let mut vol = AnyVolume::mount(card, start).map_err(|_| "the card not readable")?;
@@ -136,19 +141,29 @@ pub fn read<D: BlockDevice>(
         }
     });
     let (len, size) = found.ok_or("no such file")?;
-    if size > out.len() as u64 {
+    let piece = kind == b"pic";
+    let (head, offset) = if piece {
+        let s = u32::try_from(size).unwrap_or(u32::MAX).to_le_bytes();
+        out.get_mut(..4).ok_or("no room")?.copy_from_slice(&s);
+        (4, offset.min(size))
+    } else if size > out.len() as u64 || offset != 0 {
         return Err("too big to read");
-    }
+    } else {
+        (0, 0)
+    };
+    let want = (size - offset).min((out.len() - head) as u64);
     let path = core::str::from_utf8(&path[..len]).map_err(|_| "a name that isn't text")?;
     let mut scratch = [0u8; 1024];
-    let mut at = 0usize;
-    vol.read_range(path, 0, size, &mut scratch, &mut |c| {
-        if let Some(o) = out.get_mut(at..at + c.len()) {
-            o.copy_from_slice(c);
-        }
-        at += c.len();
-    })
-    .map_err(|_| "not readable")?;
+    let mut at = head;
+    if want > 0 {
+        vol.read_range(path, offset, want, &mut scratch, &mut |c| {
+            if let Some(o) = out.get_mut(at..at + c.len()) {
+                o.copy_from_slice(c);
+            }
+            at += c.len();
+        })
+        .map_err(|_| "not readable")?;
+    }
     Ok(at.min(out.len()))
 }
 
@@ -306,15 +321,15 @@ mod tests {
             let names: Vec<&str> = l.lines().collect();
             assert!(names.last().unwrap().ends_with("|contacts.vcf"), "{l}");
             let k = names.len() - 1;
-            let n = read(&mut card, start, b"vcf", k, &mut out).unwrap();
+            let n = read(&mut card, start, b"vcf", k, 0, &mut out).unwrap();
             // Written in place of the first: the second's bytes.
             assert_eq!(&out[..n], b"BEGIN:VCARD\r\nFN:Bo\r\nEND:VCARD\r\n");
             assert_eq!(
-                read(&mut card, start, b"vcf", 99, &mut out),
+                read(&mut card, start, b"vcf", 99, 0, &mut out),
                 Err("no such file")
             );
             assert_eq!(
-                read(&mut card, start, b"vcf", k, &mut [0u8; 4]),
+                read(&mut card, start, b"vcf", k, 0, &mut [0u8; 4]),
                 Err("too big to read")
             );
             // Other kinds aren't listed as these.
@@ -328,8 +343,15 @@ mod tests {
         assert_eq!(text(&out[..n]), "0|WORK.ICS\n");
         let n = list(&mut card, start, b"pic", &mut out).unwrap();
         assert_eq!(text(&out[..n]), "0|ADA.JPG\n");
-        let n = read(&mut card, start, b"pic", 0, &mut out).unwrap();
-        assert_eq!(&out[..n], &[0xFF, 0xD8, 0xFF, 0xD9]);
+        // A picture: its size first, then from the offset asked.
+        let n = read(&mut card, start, b"pic", 0, 0, &mut out).unwrap();
+        assert_eq!(&out[..n], &[4, 0, 0, 0, 0xFF, 0xD8, 0xFF, 0xD9]);
+        let n = read(&mut card, start, b"pic", 0, 2, &mut out).unwrap();
+        assert_eq!(&out[..n], &[4, 0, 0, 0, 0xFF, 0xD9]);
+        let n = read(&mut card, start, b"pic", 0, 9, &mut out).unwrap();
+        assert_eq!(&out[..n], &[4, 0, 0, 0]);
+        let n = read(&mut card, start, b"pic", 0, 0, &mut out[..6]).unwrap();
+        assert_eq!(&out[..n], &[4, 0, 0, 0, 0xFF, 0xD8]);
     }
 
     #[test]

@@ -93,14 +93,41 @@ not.
 | Tasks on their due days in the agenda | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Today screen's calendar panel fed from the store | sheet | pending | |
 | Search in Calendar | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
-| .ics import and export (a file from the PC or the card) | sheet | pending | |
-| Time zones: events kept in UTC with their zone; shown in the device's zone | sheet | pending | |
+| .ics import and export (a file from the PC or the card) | sheet | built | shell/pim/src/ics.rs, apps/calendar/src/files.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs, apps/calendar/src/tests.rs |
+| Time zones: events kept in UTC with their zone; shown in the device's zone | sheet | built | shell/pim/src/zone.rs, shell/pim/src/zone_table.rs, tools/zones/gen.py, shell/pim/src/ics.rs, apps/calendar/src/files.rs, apps/calendar/src/lib.rs |
 | Week starts on the region's day (Sunday in the US) | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | The Calendar button cycles the views | sheet | built | shell/core/src/lib.rs, apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/calendar/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | blocked: owner 2026-11-15 sign off without it: internal storage waits on the flash driver; the card stands in, same code and format | |
+
+### Version 3 (2026-11-23): files and zones, as built
+
+- **Time zones:** an appointment keeps the wall time of its own zone with
+  the zone's tzdata name (`tag::ZONE`), RFC 5545's and Google's way, not
+  bare UTC as the row first said: a weekly 9 AM meeting stays at 9 AM
+  across a clock change, which a time kept in UTC gets wrong half the
+  year (a time from a file in UTC is kept as UTC, its zone "UTC"). Every
+  view shows it in the device's zone: the one chosen on the calendars'
+  screen (a search over every zone on Earth by city), else guessed from
+  the dock PC's offset, a US zone first. A new appointment is kept in the
+  device's zone, so it keeps its moment if the device moves; the editor
+  says where a time from elsewhere is kept ("KEPT AS 9:00 AM IN NEW
+  YORK"). The zones' rules from now on: 526 names, 63 rules, 7.8 KB
+  (tools/zones/gen.py from tzdata 2026e); Outlook's own zone names
+  ("Pacific Standard Time") matched rule for rule from the file's
+  VTIMEZONE.
+- **.ics import and export:** the calendars' screen's **Import .ics**
+  lists the card's (root and RetroPane folder) and the PC's
+  (Documents\RetroPane, Downloads, the Desktop) calendar files together;
+  the one chosen is read into a calendar of its own named after the file
+  (its own colour: shown, hidden or deleted as one), an appointment
+  already kept (the same title, start and zone) left out and counted.
+  **Export .ics** writes every appointment, with its notes, repeat, first
+  alarm and a VTIMEZONE for each zone used (Outlook needs them), to the
+  card or the PC, a piece at a time; a calendar link's VTIMEZONEs now
+  reach the device too.
 
 ## What would overturn it
 

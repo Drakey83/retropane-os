@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\target-stack\armv5te-x51v-none-eabi\release\librp_cab.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\personality\ce\cab\src\inflate.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\personality\ce\cab\src\lib.rs

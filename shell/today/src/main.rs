@@ -3084,8 +3084,15 @@ mod image {
                         rp_today::cardfiles::list(&mut *c, *start, words, net_buf)
                     }
                     (Some((c, start)), b"CARDFILE", Some(k)) => {
+                        // "n kind [offset]".
+                        let mut w = rest.split(|&c| c == b' ');
+                        let kind = w.next().unwrap_or(&[]);
+                        let offset = w
+                            .next()
+                            .and_then(|o| core::str::from_utf8(o).ok()?.parse::<u64>().ok())
+                            .unwrap_or(0);
                         rp_hal_x51v::cardsink::settle();
-                        rp_today::cardfiles::read(&mut *c, *start, rest, k, net_buf)
+                        rp_today::cardfiles::read(&mut *c, *start, kind, k, offset, net_buf)
                     }
                     (Some((c, start)), b"CARDPUT", _) if len + 4096 <= net_buf.len() => {
                         // The body a piece at a time from the app, then

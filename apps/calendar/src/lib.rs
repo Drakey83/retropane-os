@@ -20,6 +20,11 @@ use rp_pim::store::{Kind, tag};
 
 mod files;
 
+/// The calendars' screen's Import and Export keys (the previews tap them).
+pub const IMPORT_KEY_FOR_PREVIEW: Rect = files::IMPORT_KEY;
+/// See [`IMPORT_KEY_FOR_PREVIEW`].
+pub const EXPORT_KEY_FOR_PREVIEW: Rect = files::EXPORT_KEY;
+
 /// Appointments a view holds (a repeat's days count each).
 pub const MAX: usize = 96;
 /// The days a view's list covers, from a week before the chosen day.
@@ -477,22 +482,12 @@ fn hour(h: u16) -> Buf<6> {
     b
 }
 
-impl Calendar {
-    /// A calendar on `today` showing the store's calendars, `cals` until
-    /// the store holds one.
-    #[must_use]
-    pub fn new(cals: &'static [Cal], today: i32) -> Self {
-        let mut rows = [CalRow {
-            id: 0,
-            name: Text::EMPTY,
-            colour: kit::IDENTITY[0],
-            hidden: false,
-        }; 8];
-        for (r, c) in rows.iter_mut().zip(cals) {
-            r.name = Text::of(c.name);
-            r.colour = c.colour;
-        }
-        Self {
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for [`Calendar::new`] and
+/// [`Calendar::new_in`].
+macro_rules! calendar_start {
+    ($rows:expr, $n_cals:expr, $today:expr; $($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Calendar {
             queue: [0; 8],
             n_queue: 0,
             cal_rows: [(Rect::new(0, 0, 0, 0), 0); 8],
@@ -517,12 +512,12 @@ impl Calendar {
             asked: Asked::Nothing,
             status: b"",
             synced: 0,
-            cals: rows,
-            n_cals: cals.len().clamp(1, 8),
-            appts: [None; MAX],
+            cals: $rows,
+            n_cals: $n_cals,
+            appts: @each None,
             seen: None,
             view: View::Home,
-            day: today,
+            day: $today,
             line: [0; 64],
             line_n: 0,
             ring: None,
@@ -532,7 +527,53 @@ impl Calendar {
             under: View::Home,
             io: files::Io::new(),
             status_text: Text::EMPTY,
+        })
+    };
+}
+
+impl Calendar {
+    /// A calendar on `today` showing the store's calendars, `cals` until
+    /// the store holds one.
+    #[must_use]
+    pub fn new(cals: &'static [Cal], today: i32) -> Self {
+        let mut rows = [CalRow {
+            id: 0,
+            name: Text::EMPTY,
+            colour: kit::IDENTITY[0],
+            hidden: false,
+        }; 8];
+        for (r, c) in rows.iter_mut().zip(cals) {
+            r.name = Text::of(c.name);
+            r.colour = c.colour;
         }
+        calendar_start!(rows, cals.len().clamp(1, 8), today; value)
+    }
+
+    /// [`Calendar::new`] made straight into `slot` (the program's, in
+    /// `.bss`), a field at a time: made on the stack and moved it was a
+    /// 22 KB frame (the stack rule, P6: 4 KB).
+    pub fn new_in<'s>(
+        slot: &'s mut core::mem::MaybeUninit<Self>,
+        cals: &'static [Cal],
+        today: i32,
+    ) -> &'s mut Self {
+        let rows = Self::rows_of(cals);
+        calendar_start!(rows, cals.len().clamp(1, 8), today; slot,)
+    }
+
+    /// The calendars' rows before the store has any.
+    fn rows_of(cals: &'static [Cal]) -> [CalRow; 8] {
+        let mut rows = [CalRow {
+            id: 0,
+            name: Text::EMPTY,
+            colour: kit::IDENTITY[0],
+            hidden: false,
+        }; 8];
+        for (r, c) in rows.iter_mut().zip(cals) {
+            r.name = Text::of(c.name);
+            r.colour = c.colour;
+        }
+        rows
     }
 
     /// The list made again from the store when its records changed or
@@ -2479,6 +2520,11 @@ pub static FIRST_CALS: [Cal; 1] = [Cal {
 #[must_use]
 pub fn opened(today: i32) -> Calendar {
     Calendar::new(&FIRST_CALS, today)
+}
+
+/// [`opened`] made straight into the program's slot.
+pub fn opened_in(slot: &mut core::mem::MaybeUninit<Calendar>, today: i32) -> &mut Calendar {
+    Calendar::new_in(slot, &FIRST_CALS, today)
 }
 
 impl Program for Calendar {

@@ -1,0 +1,8 @@
+cargo:rerun-if-changed=../link.x
+cargo:rerun-if-env-changed=RP_LOCAL_INPUTS
+cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\looks\../../local/wallpapers/pier/pier.yuv
+cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\looks\../..
+cargo:rerun-if-env-changed=RP_LOCAL_INPUTS
+cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\looks\../../local/wallpapers/milkyway/milkyway.yuv
+cargo:rerun-if-changed=C:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\looks\../..
+cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-a-records-6fdd03\boot\looks/../link.x

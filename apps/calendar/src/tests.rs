@@ -993,3 +993,14 @@ fn the_time_zone_is_guessed_from_the_pc_chosen_from_the_list_and_moves_times() {
     c.open_edit(&cx, None);
     assert_eq!(c.edit.unwrap().zone.get(), b"Asia/Tokyo");
 }
+
+#[test]
+fn made_in_its_slot_it_is_the_same_app() {
+    let pim = store();
+    let cx = ctx(pim);
+    let mut slot = Box::new(core::mem::MaybeUninit::<Calendar>::uninit());
+    let c = opened_in(&mut slot, 19_723);
+    draw(c, &cx);
+    assert_eq!(c.day, 19_723);
+    assert_eq!(c.view, View::Home);
+}
