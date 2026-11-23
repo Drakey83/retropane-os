@@ -227,4 +227,53 @@ mod tests {
             "RAM isn't a device"
         );
     }
+
+    /// Every HAL module that names a peripheral by its physical address and
+    /// reaches it through a raw pointer goes through [`va`]: under the
+    /// kernel's map the physical address is not mapped (2026-11-23, Game
+    /// Mode G7a: `dma.rs` wrote `DCSR` at `0x40000000` and the kernel took a
+    /// data abort; the bring-up map's identity had hidden it in every image).
+    #[test]
+    fn raw_peripheral_registers_go_through_the_device_map() {
+        extern crate std;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut checked = 0;
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            // Code only: a comment naming `devmap::va` proves nothing.
+            let text = std::fs::read_to_string(&path).unwrap();
+            let src: std::string::String = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .flat_map(|l| {
+                    [
+                        l, "
+",
+                    ]
+                })
+                .collect();
+            let names_peripheral = src.lines().any(|l| {
+                let l = l.trim_start();
+                (l.starts_with("const ") || l.starts_with("pub const "))
+                    && l.contains(": usize = 0x4")
+            });
+            let raw = src.contains(" as *mut u32).write_volatile")
+                || src.contains(" as *const u32).read_volatile");
+            if names_peripheral && raw {
+                checked += 1;
+                assert!(
+                    src.contains("devmap::va(") || src.contains("use crate::devmap::va;"),
+                    "{} reaches peripheral registers by raw pointer without devmap::va",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            checked >= 2,
+            "the scan found {checked} modules: the pattern went stale"
+        );
+    }
 }

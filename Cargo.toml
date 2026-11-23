@@ -88,6 +88,7 @@ members = [
     "boot/threads",
     "boot/quantum",
     "services/display-host",
+    "ports/game-probe",
     "services/mode",
     "services/graphics",
     "services/audio",
@@ -188,6 +189,10 @@ opt-level = "s"
 opt-level = "s"
 # Driver hosts are cold code: calls and button presses (ADR-0005 rule 8).
 [profile.release.package.rp-display-host]
+opt-level = "s"
+# Game Mode's test game (G7a): a check program, cold, embedded in the test
+# kernel, whose PE cache holds 8 pages.
+[profile.release.package.rp-game-probe]
 opt-level = "s"
 # The loader is cold code too (it waits on the PC); the generic drivers and
 # file systems it links are compiled here, in its crate, so this is what

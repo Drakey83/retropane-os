@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-const USER_IMAGES: &[&str] = &["rp-display-host"];
+const USER_IMAGES: &[&str] = &["rp-display-host", "rp-game-probe"];
 
 fn main() {
     println!("cargo:rerun-if-changed=../link.x");

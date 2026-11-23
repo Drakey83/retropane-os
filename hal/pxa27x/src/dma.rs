@@ -118,14 +118,15 @@ pub struct Dma {
 }
 
 fn write(addr: usize, v: u32) {
-    // SAFETY: a DMA controller register (PXA27x memory map, identity-mapped
-    // device memory); only the one `Dma` writes them.
-    unsafe { (addr as *mut u32).write_volatile(v) }
+    // SAFETY: a DMA controller register (PXA27x memory map), at its address
+    // in the map in use (`devmap::va`: identity under the bring-up map, the
+    // kernel's window under the kernel's); only the one `Dma` writes them.
+    unsafe { (crate::devmap::va(addr) as *mut u32).write_volatile(v) }
 }
 
 fn read(addr: usize) -> u32 {
     // SAFETY: as in `write`.
-    unsafe { (addr as *const u32).read_volatile() }
+    unsafe { (crate::devmap::va(addr) as *const u32).read_volatile() }
 }
 
 impl Dma {

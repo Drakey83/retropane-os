@@ -89,6 +89,32 @@ pub fn clean_invalidate_range(mva: u32, len: u32) {
     drain_write_buffer();
 }
 
+/// Discards the D-cache lines of `mva..mva + len` without writing them back,
+/// after a device wrote that memory (Linux's `dma_unmap` for a device's
+/// writes does the same on ARM): a dirty line would otherwise overwrite
+/// what the device wrote. A line the range covers only in part is written
+/// back first (its other bytes may be the caller's newer data), as Linux
+/// does at the edges.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn invalidate_range(mva: u32, len: u32) {
+    let end = mva.saturating_add(len);
+    let mut line = mva & !(LINE - 1);
+    while line < end {
+        let whole = line >= mva && line.saturating_add(LINE) <= end;
+        // SAFETY: a whole line's bytes are the range's, which the device
+        // has just written to memory; a partial line is cleaned first, so
+        // nothing outside the range is lost.
+        unsafe {
+            if !whole {
+                core::arch::asm!("mcr p15, 0, {}, c7, c10, 1", in(reg) line, options(nostack));
+            }
+            core::arch::asm!("mcr p15, 0, {}, c7, c6, 1", in(reg) line, options(nostack));
+        }
+        line += LINE;
+    }
+    drain_write_buffer();
+}
+
 /// Writes back (without discarding) the D-cache lines of `va..va + len`:
 /// for memory the kernel wrote through one address that the MMU or another
 /// address will read.

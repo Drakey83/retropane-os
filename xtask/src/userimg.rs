@@ -19,6 +19,8 @@ pub const BASE: u32 = 0x0001_0000;
 /// The programs packaged, by crate name (`target/.../release/<name>.pe`).
 pub const IMAGES: &[&str] = &[
     "rp-display-host",
+    // Game Mode's test game (G7a), embedded in the test kernel.
+    "rp-game-probe",
     // The organiser's app programs (docs/design/app-scope.md): loaded by
     // the shell when opened, released when left.
     "rp-app-calendar",

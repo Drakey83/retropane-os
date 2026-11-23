@@ -612,6 +612,14 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC driver host served OK",
     "IPC driver host restarted OK",
     "TRACE ring OK",
+    // Game Mode G7a: the test game in user mode with its large region in
+    // sections, its cache and DMA calls (a copy across a megabyte edge by
+    // its channel, the chain in its own addresses), four refusals, and
+    // everything it held taken back.
+    "GAMEMODE game program OK",
+    // Every kernel thread stack kept a margin never written (an overflow
+    // corrupts a neighbour silently: G7a, 2026-11-23).
+    "VM kernel stacks OK",
 ];
 
 /// After the kernel's marker: the emulator presses the power button and the
@@ -734,7 +742,11 @@ pub fn boot_loader_kernel(root: &Path) -> Result<(), String> {
     }
     let card = joined_card_log(&sd, &cf, "kernel", 1)
         .map_err(|e| format!("kernel under the loader: the card log: {e}"))?;
-    for want in ["GAMEMODE full tier OK", KERNEL_MARKER] {
+    for want in [
+        "GAMEMODE full tier OK",
+        "GAMEMODE game program OK",
+        KERNEL_MARKER,
+    ] {
         if !card.contains(want) {
             return Err(format!(
                 "kernel under the loader: no `{want}` in the card log:{card}"

@@ -1,0 +1,15 @@
+[package]
+name = "rp-game-probe"
+description = "Game Mode's test game (G7a): started by the test kernel as Game Mode's one program, it checks the large region, the clock window, the cache and DMA system calls and their refusals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-user = { path = "../../hal/user", features = ["runtime"] }
+
+[lints]
+workspace = true

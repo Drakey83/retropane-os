@@ -177,7 +177,19 @@ pub const BUDGETS: &[Budget] = &[
         // back with every link checked, handles rehomed) and its emulator
         // check with a RAM stand-in for the card. 128,984 B measured
         // (121,328 after G4). Measured 126.0 KiB + ~8%.
-        max_load: 136 * 1024,
+        // Raised 136 -> 152 KiB on 2026-11-23, G7a: **+13.4 KB in one step,
+        // over the standing rule's 8 KB, so the owner's yes is asked for
+        // (R388); until he answers, this raise is provisional.** Game Mode's
+        // one program, its cache and DMA calls (a chain read from the game's
+        // own memory, checked, split and translated, the channel started;
+        // the game's way out taking it all back), the embedded test game
+        // (1.5 KB), the kernel stacks' guard and check, and the DMA HAL now
+        // linked into the kernel. Trimmed first (147,240 -> 143,592 B): the
+        // channel's stop read as one bit, not the HAL's streaming `done`;
+        // one copy of the chain splitter; the channel kept out of `RUN`, so
+        // that record went back to `.bss`. 130,176 B before (138ddc6f),
+        // 143,592 B measured. Measured 140.2 KiB + ~8%.
+        max_load: 152 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame
@@ -203,6 +215,16 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-display-host",
         max_load: 1280,
+        max_zero: 256,
+        device: OnDevice::NeverReturns,
+    },
+    // Game Mode's test game (G7a), embedded in the test kernel and started
+    // there as Game Mode's one program. First budget = measured + ~10%
+    // (992 B of code, no data; its stack and large region are the kernel's
+    // mappings, not the image's).
+    Budget {
+        image: "rp-game-probe",
+        max_load: 1088,
         max_zero: 256,
         device: OnDevice::NeverReturns,
     },

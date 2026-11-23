@@ -32,6 +32,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+/// A game's DMA chains and cache calls, checked and translated (G7a).
+pub mod dma;
 pub mod tier;
 
 /// The reserve's size: 256 KiB (the owner's ceiling, design B).
