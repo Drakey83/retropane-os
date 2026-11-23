@@ -173,6 +173,7 @@ impl<D: BlockDevice> Volume<D> {
     /// than the guard can record or the FATs aren't mirrored (a PC then
     /// writes only the active one).
     #[inline(never)]
+    #[optimize(size)]
     pub fn guard(&mut self, names: &[&str]) -> Result<Guard, Error> {
         if !self.mirrored && self.fats > 1 {
             return Err(Error::Corrupt);
@@ -246,6 +247,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// The MBR's partition table, when the volume has an MBR before it.
+    #[optimize(size)]
     fn partition_table(&mut self) -> Result<[u8; PARTITIONS.end - PARTITIONS.start], Error> {
         let mut t = [0; PARTITIONS.end - PARTITIONS.start];
         if self.base != 0 {
@@ -256,6 +258,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// The file `path` names, or else the folder.
+    #[optimize(size)]
     pub(crate) fn find_file_or_folder(&mut self, path: &str) -> Result<crate::File, Error> {
         match self.find(path) {
             Err(Error::NotFound) => {

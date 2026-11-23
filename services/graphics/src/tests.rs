@@ -93,7 +93,7 @@ impl RegisterBus for Both {
     }
 }
 
-// Each test's own clock (R384): a static shared by the tests let one
+// Each test's own clock (R389): a static shared by the tests let one
 // test's reads move another's time (libtest runs them on parallel threads,
 // one thread a test).
 std::thread_local! {

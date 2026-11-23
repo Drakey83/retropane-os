@@ -35,6 +35,30 @@ pub const SYS_EXIT: u32 = 5;
 pub const SYS_IRQ_WAIT: u32 = 7;
 /// A test program's report (`r0`-`r3`); its thread then ends.
 pub const SYS_REPORT: u32 = 8;
+/// Game Mode's game only (G7): a cache operation on its own memory (`r0`
+/// the operation: 0 clean, 1 discard, 2 clean then discard, 3 drain the
+/// write buffer; `r1` the address, `r2` the length, at most 64 KiB).
+pub const SYS_CACHE: u32 = 9;
+/// Game Mode's game only (G7): start DMA channel `r0` (one the game holds)
+/// on the chain at `r1`, `r2` descriptors of [`DmaDesc`], in its own
+/// addresses; the kernel checks and translates it and starts the channel.
+/// The descriptors the channel runs (a descriptor splits where its pages
+/// aren't physically contiguous), or an error code.
+pub const SYS_DMA: u32 = 10;
+
+/// A DMA descriptor as a game writes it for [`SYS_DMA`]: its own source
+/// and target addresses (a device side: an address in its granted window)
+/// and the PXA27x `DCMD` word (no interrupts, fly-by or compare).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct DmaDesc {
+    /// The source.
+    pub src: u32,
+    /// The target.
+    pub dst: u32,
+    /// `DCMD`.
+    pub cmd: u32,
+}
 
 /// The first error code: results at or above it are errors.
 pub const ERR: u32 = 0xFFFF_FF00;
@@ -102,6 +126,26 @@ pub fn report(a: u32, b: u32, c: u32, d: u32) -> ! {
     exit(ERR | 8)
 }
 
+/// A cache operation on this process's own memory ([`SYS_CACHE`]); 0 or an
+/// error code.
+#[must_use]
+pub fn cache(op: u32, addr: u32, len: u32) -> u32 {
+    arch::syscall(SYS_CACHE, op, addr, len, 0)
+}
+
+/// Starts DMA channel `channel` on `chain` ([`SYS_DMA`]): the descriptors
+/// the channel runs, or an error code.
+#[must_use]
+pub fn dma(channel: u32, chain: &[DmaDesc]) -> u32 {
+    arch::syscall(
+        SYS_DMA,
+        channel,
+        chain.as_ptr() as usize as u32,
+        chain.len() as u32,
+        0,
+    )
+}
+
 /// Ends the process.
 pub fn exit(code: u32) -> ! {
     arch::syscall(SYS_EXIT, code, 0, 0, 0);
@@ -120,6 +164,12 @@ pub const GRANT_VA: usize = 0x0060_0000;
 pub enum Device {
     /// PXA27x PWM0 (the X51v's backlight).
     Pwm0 = 0,
+    /// The OS timer's registers, read only (a game's clock: `OSCR0` at
+    /// offset 0x10, 3.25 MHz).
+    Ost = 1,
+    /// The DMA controller's first page, read only (a game reads its
+    /// channels' `DCSR`; it starts them through [`SYS_DMA`]).
+    DmaStatus = 2,
 }
 
 impl Device {
@@ -163,6 +213,55 @@ impl RegisterBus for Window {
     }
     fn write32(&mut self, offset: usize, value: u32) {
         // SAFETY: as above.
+        unsafe { self.at(offset).write_volatile(value) }
+    }
+}
+
+/// Where Game Mode's large region starts in the game's process (G4,
+/// `rp_kernel_mm::layout::LARGE_BASE`; the kernel checks they agree).
+pub const LARGE_BASE: u32 = 0x7800_0000;
+
+/// The game's part of Game Mode's large region (G7): `len` bytes from
+/// [`LARGE_BASE`] the kernel mapped in 1 MiB sections, read and written a
+/// word at a time by offset. A word outside the mapped part faults (the
+/// kernel ends the game): nothing else can be reached through it.
+pub struct Large {
+    len: usize,
+}
+
+impl Large {
+    /// The first `len` bytes of the region (what the kernel mapped).
+    #[must_use]
+    pub const fn new(len: usize) -> Self {
+        Self { len }
+    }
+
+    /// The address of byte `offset` (for a DMA descriptor or a cache call).
+    #[must_use]
+    pub const fn addr(&self, offset: usize) -> u32 {
+        LARGE_BASE + offset as u32
+    }
+
+    fn at(&self, offset: usize) -> *mut u32 {
+        assert!(
+            offset.is_multiple_of(4) && offset < self.len,
+            "outside the large region"
+        );
+        (LARGE_BASE as usize + offset) as *mut u32
+    }
+
+    /// The word at `offset`.
+    #[must_use]
+    pub fn read(&self, offset: usize) -> u32 {
+        // SAFETY: inside the mapped part (`at` checks), aligned; memory
+        // only this process maps and no Rust value lives in (it is outside
+        // the image), and a device may have written it: volatile.
+        unsafe { self.at(offset).read_volatile() }
+    }
+
+    /// Writes the word at `offset`.
+    pub fn write(&mut self, offset: usize, value: u32) {
+        // SAFETY: as in `read`.
         unsafe { self.at(offset).write_volatile(value) }
     }
 }

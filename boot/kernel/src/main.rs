@@ -68,6 +68,9 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_pxa_uart::PxaUart;
+    use rp_hal_api::DmaEngine;
+    use rp_hal_pxa27x::dma::Dma;
+    use rp_hal_pxa27x::dma_map;
     use rp_hal_pxa27x::mmu::{Memory, X51V_BRINGUP};
     use rp_hal_pxa27x::rt::IrqLine;
     use rp_hal_pxa27x::rt::{self, Global};
@@ -77,9 +80,10 @@ mod image {
     };
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{Mmio, cpu, devmap, diag, thread};
-    use rp_hal_user::{SYS_IRQ_WAIT, SYS_REPORT};
+    use rp_hal_user::{Device, SYS_CACHE, SYS_DMA, SYS_IRQ_WAIT, SYS_REPORT};
     use rp_hal_x51v::devices::take_trace_area;
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
+    use rp_kernel_gamemode::dma::{self as gdma, CacheOp, Desc, GameMemory};
     use rp_kernel_gamemode::tier::{Card, CardError, RUN_FRAMES, TierMap};
     use rp_kernel_ipc::{Error as IpcError, Handle, HandlePages, Ipc, PortId, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
@@ -142,6 +146,8 @@ mod image {
         /// The display host's view pages (its image is in the kernel's own
         /// read-only data: nothing to copy).
         host: [u32; PE_PAGES],
+        /// Game Mode's test game's view pages (the same: in read-only data).
+        game: [u32; PE_PAGES],
     }
 
     impl PageCache for RamFile {
@@ -159,6 +165,11 @@ mod image {
             {
                 self.pe_refs += 1;
                 Ok(phys)
+            } else if object == GAME_OBJECT
+                && let Some(&phys) = self.game.get(page as usize).filter(|&&p| p != 0)
+            {
+                self.pe_refs += 1;
+                Ok(phys)
             } else {
                 Err(IoError)
             }
@@ -173,7 +184,11 @@ mod image {
             }
         }
         fn holds(&self, phys: u32) -> bool {
-            phys != 0 && (phys == self.phys || self.pe.contains(&phys) || self.host.contains(&phys))
+            phys != 0
+                && (phys == self.phys
+                    || self.pe.contains(&phys)
+                    || self.host.contains(&phys)
+                    || self.game.contains(&phys))
         }
     }
 
@@ -307,7 +322,7 @@ mod image {
     const CLIENTS: usize = 2;
     /// Kernel stacks taken off the top of the pool (4 KiB each): the idle
     /// thread's and the clients'; the boot thread keeps its own.
-    const KSTACKS: usize = 1 + CLIENTS + SPAWN_STACKS + DISPLAY_THREADS;
+    const KSTACKS: usize = 1 + CLIENTS + SPAWN_STACKS + DISPLAY_THREADS + 1;
     /// The display host's thread, its client, the fault-test thread.
     const DISPLAY_THREADS: usize = 3;
     /// A short quantum (~150 us) so the clients are preempted many times,
@@ -341,6 +356,26 @@ mod image {
     const DISPLAY_CLIENT_SLOT: u32 = 10;
     static DISPLAY_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rp-display-host.pe"));
     const HOST_OBJECT: u32 = 3;
+    /// Game Mode's one program (G7a): the test game (`ports/game-probe`),
+    /// packaged by `cargo xtask` and embedded here, in the first free native
+    /// slot (the kernel records which: `State::game`), with its large region
+    /// and its grants: the OS timer and the DMA controller's status page,
+    /// both read only, and one DMA channel it starts through `SYS_DMA`.
+    static GAME_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rp-game-probe.pe"));
+    const GAME_OBJECT: u32 = 4;
+    /// The game's large region: the probe's `LARGE_LEN`.
+    const GAME_LARGE: u32 = 4 << 20;
+    /// Its DMA channel: the card's (in Game Mode the game holds the card).
+    const GAME_CHANNEL: u32 = dma_map::SD;
+    const OST_PHYS: u32 = 0x40A0_0000;
+    const DMA_PHYS: u32 = 0x4000_0000;
+    /// A refused game call: not the game, or not its memory or channel.
+    const ERR_NOT_YOURS: u32 = ERR | 0xFA;
+    /// An unknown cache operation, or a chain the kernel refused.
+    const ERR_BAD_CALL: u32 = ERR | 0xF9;
+    /// The channel is still running the last chain.
+    const ERR_BUSY: u32 = ERR | 0xF8;
+    const _: () = assert!(rp_hal_user::LARGE_BASE == layout::LARGE_BASE);
     /// The board's grants to the display host (ADR-0016 decision 5): PWM0's
     /// registers, one uncached page at `rp_hal_user::Device::Pwm0`'s
     /// address, and the power button's interrupt (GPIO0) as its line 0.
@@ -501,6 +536,11 @@ mod image {
         /// A display host restart didn't come back fresh (false: all
         /// zero, so this record stays in zeroed memory, not the image).
         display_dirty: bool,
+        /// The test game's entry, kernel stack, DMA channel (taken once,
+        /// lent to each game) and report.
+        game_entry: u32,
+        game_stack: Option<&'static mut [u32]>,
+        game_report: Option<[u32; 4]>,
     }
 
     static RUN: Global<Run> = Global::new(Run {
@@ -535,6 +575,9 @@ mod image {
         client_stack: None,
         button: Eid(0),
         display_dirty: false,
+        game_entry: 0,
+        game_stack: None,
+        game_report: None,
     });
 
     /// The power button's interrupt line (granted to the display host).
@@ -558,6 +601,14 @@ mod image {
         pe_prot: [Option<Protection>; PE_PAGES],
         /// The display host image's.
         host_prot: [Option<Protection>; PE_PAGES],
+        /// The test game's.
+        game_prot: [Option<Protection>; PE_PAGES],
+        /// The game's large region (G4), in its domain while it runs.
+        game_large: AddressSpace,
+        /// The slot the running game holds (0: no game). Who the game is
+        /// comes from here, never from a slot number fixed in advance: a
+        /// worker the manager starts may take any free native slot.
+        game: u32,
         domains: Domains,
         file: RamFile,
         pool: Option<&'static mut [u32]>,
@@ -608,6 +659,9 @@ mod image {
         ],
         pe_prot: [None; PE_PAGES],
         host_prot: [None; PE_PAGES],
+        game_prot: [None; PE_PAGES],
+        game_large: AddressSpace::large(domains::PARKED),
+        game: 0,
         file: RamFile {
             phys: 0,
             refs: 0,
@@ -616,6 +670,7 @@ mod image {
             pe_refs: 0,
             pe_loads: 0,
             host: [0; PE_PAGES],
+            game: [0; PE_PAGES],
         },
         pool: None,
         l1: 0,
@@ -712,7 +767,24 @@ mod image {
             Some(slot) if slot == s.pid => mva - layout::slot_base(slot),
             _ => addr,
         };
-        load_page(vm, s.pid, own);
+        // The game's large region (G4): its own space, in its domain.
+        if s.game != 0 && s.pid == s.game && (layout::LARGE_BASE..layout::LARGE_END).contains(&mva)
+        {
+            return vm.handle_fault(&s.game_large, mva, access);
+        }
+        // The image the running process maps: the display host's, the
+        // game's (the slot the kernel recorded for the game while it runs,
+        // never a number fixed in advance: G7a, 2026-11-23, a worker the
+        // manager started in the slot the game used later loaded a page of
+        // the game's image), or the test image.
+        let object = if s.pid == DISPLAY_SLOT || s.pid == DISPLAY_CLIENT_SLOT {
+            HOST_OBJECT
+        } else if s.game != 0 && s.pid == s.game {
+            GAME_OBJECT
+        } else {
+            PE_OBJECT
+        };
+        load_page(vm, object, own);
         space_of(s, s.pid).map_or(Err(rp_kernel_mm::space::FaultError::NoRegion), |sp| {
             vm.handle_fault(sp, mva, access)
         })
@@ -723,6 +795,17 @@ mod image {
     /// `write_str`: no `&str` Display (and its padding code) in the image
     /// (ADR-0005 rule 8).
     fn crash_note(w: &mut dyn Write) -> core::fmt::Result {
+        // How close the kernel threads' stacks came to their bottoms: an
+        // overflow corrupts a neighbour silently (G7a, 2026-11-23).
+        let least = (0..rp_kernel_sched::MAX_THREADS)
+            .filter_map(|t| thread::stack_free_words(t, 1024).map(|f| (f, t)))
+            .min();
+        if let Some((free, t)) = least {
+            writeln!(
+                w,
+                "kernel stacks: thread {t} has {free} of 1024 words never used"
+            )?;
+        }
         match STATE.with(|s| s.error) {
             Some(why) => {
                 w.write_str("page fault refused: ")?;
@@ -1283,6 +1366,7 @@ mod image {
                 s.host_prot[page as usize] = host.page_protection(page);
             }
             RUN.with(|r| r.display_entry = LOAD_BASE + host.entry);
+            game_image(s)?;
             for slot in [
                 PROC_SLOT,
                 SERVER_SLOT,
@@ -1421,6 +1505,7 @@ mod image {
                 *slot = kstacks.next();
             }
         });
+        RUN.with(|r| r.game_stack = kstacks.next());
         // The display host's grants: PWM0's clock on (a user process can't
         // reach the clock unit) and the power button's interrupt, signalled
         // to its event.
@@ -1443,6 +1528,8 @@ mod image {
         }
         ok &= report_clients(&mut uart, pe_pages);
         ok &= report_display(&mut uart);
+        ok &= game_program(&mut uart);
+        ok &= kernel_stacks(&mut uart);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -1752,6 +1839,7 @@ mod image {
             if let Some(b) = r.frames_before.get_mut(r.spawned) {
                 *b = FRAMES.with(|f| f.free_frames() as u32);
             }
+
             r.spawned += 1;
         });
         let slot = with_vm(|vm, s| -> Option<u32> {
@@ -1808,18 +1896,7 @@ mod image {
     fn exit_process(me: Tid, code: u32) -> ! {
         let slot = RUN.with(|r| r.slots[me.index()]);
         trace(Kind::Exit, u32::from(slot), code);
-        let _ = with_ipc(|i, hp| i.ipc.exit(hp, slot));
-        with_vm(|vm, s| {
-            let base = layout::slot_base(u32::from(slot));
-            if let Some(p) = s.procs.iter_mut().find(|p| p.slot == u32::from(slot)) {
-                let _ = vm.unmap(&mut p.space, base, layout::SLOT_SIZE);
-                // Its region-list pages too (ADR-0019): nothing outlives it.
-                p.space
-                    .reset_process(&mut vm.region_pages(), u32::from(slot), domains::PARKED);
-                p.slot = 0;
-            }
-            s.domains.release(u32::from(slot));
-        });
+        release_slot(slot);
         let left = with_ipc(|i, hp| (i.ipc.handle_count(hp, slot), i.ipc.ports_of(slot)));
         let free = FRAMES.with(|f| f.free_frames() as u32);
         RUN.with(|r| {
@@ -2097,7 +2174,10 @@ mod image {
             SYS_EXIT => exit_process(me, f.arg(0)),
             SYS_DONE => done(me, f),
             SYS_IRQ_WAIT => irq_wait(me, f),
+            SYS_REPORT if is_game() => end_game(me, f),
             SYS_REPORT => display_report(me, f),
+            SYS_CACHE => f.set_result(game_cache(f.arg(0), f.arg(1), f.arg(2))),
+            SYS_DMA => f.set_result(game_dma(f.arg(0), f.arg(1), f.arg(2))),
             _ => f.set_result(ERR | 0xFF),
         }
     }
@@ -2231,11 +2311,12 @@ mod image {
         build::write(file, &header, &sections).map(|_| ())
     }
 
-    /// The page cache's fill for the test image: if `addr` lies in it and
-    /// its view page isn't loaded, loads it into a new frame (filled from
+    /// The page cache's fill for `object`'s image (the test image, the
+    /// display host's or the game's): if `addr` lies in it and its view page
+    /// isn't loaded, loads it into a new frame (filled from
     /// the file and relocated, then written back from the cache so user
     /// mode reads and fetches it).
-    fn load_page(vm: &mut KernelVm<'_>, slot: u32, addr: u32) {
+    fn load_page(vm: &mut KernelVm<'_>, object: u32, addr: u32) {
         let Some(page) = addr
             .checked_sub(LOAD_BASE)
             .map(|o| o / 4096)
@@ -2243,25 +2324,32 @@ mod image {
         else {
             return;
         };
-        let host = slot == DISPLAY_SLOT || slot == DISPLAY_CLIENT_SLOT;
+        let host = object == HOST_OBJECT;
+        let game = object == GAME_OBJECT;
+        if !host && !game && object != PE_OBJECT {
+            return;
+        }
         let loaded = if host {
             vm.cache.host[page as usize]
+        } else if game {
+            vm.cache.game[page as usize]
         } else {
             vm.cache.pe[page as usize]
         };
-        if loaded != 0 || (!host && vm.cache.pe_file == 0) {
+        if loaded != 0 || (!host && !game && vm.cache.pe_file == 0) {
             return;
         }
         let Some(f) = FrameAlloc::alloc(vm.frames, 0) else {
             return;
         };
         let phys = BASE + f as u32 * 4096;
-        let ok = if host {
+        let ok = if host || game {
             let i = word(phys);
             let out = rp_hal_mem::words_as_bytes_mut(&mut vm.mem.pool[i..i + 1024]);
+            let file = if game { GAME_IMAGE } else { DISPLAY_IMAGE };
             out.try_into()
                 .ok()
-                .and_then(|out| load_from(DISPLAY_IMAGE, out, page))
+                .and_then(|out| load_from(file, out, page))
         } else {
             load_view_page(vm.mem.pool, vm.cache.pe_file, phys, page)
         };
@@ -2269,6 +2357,8 @@ mod image {
             cpu::clean_invalidate_range(phys, 4096);
             if host {
                 vm.cache.host[page as usize] = phys;
+            } else if game {
+                vm.cache.game[page as usize] = phys;
             } else {
                 vm.cache.pe[page as usize] = phys;
                 vm.cache.pe_loads += 1;
@@ -2829,6 +2919,354 @@ mod image {
             if pass { "OK" } else { "FAIL" }
         );
         let _ = writeln!(uart, "BENCH gm_section_walk {walk} {}", 4 * LEN / 4096);
+        pass
+    }
+
+    /// The test game's image read once at set-up (W^X and size, as any
+    /// image): its pages' rights and its entry. Its own frame, not `main`'s.
+    #[inline(never)]
+    fn game_image(s: &mut State) -> Result<(), &'static str> {
+        let game = Image::parse(GAME_IMAGE).map_err(|_| "no game image")?;
+        if game.writable_code() || game.pages() as usize > PE_PAGES {
+            return Err("game image refused");
+        }
+        for page in 0..game.pages() {
+            s.game_prot[page as usize] = game.page_protection(page);
+        }
+        RUN.with(|r| r.game_entry = LOAD_BASE + game.entry);
+        Ok(())
+    }
+
+    /// Kernel thread stacks are 4 KiB and migrating calls nest on them: the
+    /// one that came closest to its bottom must keep at least
+    /// `KSTACK_MARGIN` words never written (G7a, 2026-11-23: 275 measured
+    /// in the emulator; a 744-byte frame inlined into `on_syscall` left 60
+    /// and crashed a different way each run).
+    const KSTACK_MARGIN: usize = 128;
+
+    fn kernel_stacks(uart: &mut Tee) -> bool {
+        let least = (0..rp_kernel_sched::MAX_THREADS)
+            .filter_map(|t| thread::stack_free_words(t, 1024).map(|f| (f, t)))
+            .min();
+        let Some((free, t)) = least else {
+            let _ = writeln!(uart, "VM kernel stacks FAIL: none measured");
+            return false;
+        };
+        let pass = free >= KSTACK_MARGIN;
+        let _ = writeln!(
+            uart,
+            "VM kernel stacks {}: the closest, thread {t}'s, has {free} of 1024 words never written (at least {KSTACK_MARGIN})",
+            if pass { "OK" } else { "FAIL" }
+        );
+        let _ = writeln!(uart, "BENCH kstack_least_free {free} 1024");
+        pass
+    }
+
+    /// The chain a game's channel runs (G7a): the kernel's copy of the
+    /// game's chain, physical addresses only, 16-byte aligned (the
+    /// controller's rule); identity mapped, so its address is its physical
+    /// one. 1.5 KiB, `.bss`.
+    #[repr(C, align(16))]
+    struct GameChain([gdma::HwDesc; gdma::MAX_OUT]);
+    static GAME_CHAIN: Global<GameChain> = Global::new(GameChain([[0; 4]; gdma::MAX_OUT]));
+    /// The game's DMA channel (taken when a game first starts, lent to
+    /// each) and the descriptors started on it (`None`: nothing armed). Its
+    /// own static: `Option<Dma>`'s `None` isn't all zero, and in `RUN` it
+    /// moved that whole record from `.bss` into the image.
+    struct GameDma {
+        channel: Option<Dma>,
+        chain: Option<u8>,
+    }
+    static GAME_DMA: Global<GameDma> = Global::new(GameDma {
+        channel: None,
+        chain: None,
+    });
+
+    /// What the game reaches, for its DMA and cache calls: its own memory
+    /// (its slot's pages and its large region, as the page tables map them
+    /// for the user), never a device window.
+    struct GameView<'v, 'a> {
+        vm: &'v mut KernelVm<'a>,
+        slot: u32,
+    }
+
+    /// Whether the running process is the game.
+    fn is_game() -> bool {
+        STATE.with(|s| s.game != 0 && s.pid == s.game)
+    }
+
+    /// The modified address of the game's `va` (the game in `slot`): in its
+    /// slot (relocated) or its large region; `None` for anything else
+    /// (another slot's, the kernel's).
+    fn game_mva(va: u32, slot: u32) -> Option<u32> {
+        if va < layout::SLOT_SIZE {
+            Some(layout::mva(va, slot))
+        } else if (layout::LARGE_BASE..layout::LARGE_END).contains(&va) {
+            Some(va)
+        } else {
+            None
+        }
+    }
+
+    impl GameMemory for GameView<'_, '_> {
+        fn phys(&mut self, va: u32, write: bool) -> Option<u32> {
+            let (pa, a) = self
+                .vm
+                .tables
+                .translate(self.vm.mem, game_mva(va, self.slot)?)?;
+            let allowed = match a.ap {
+                Ap::UserWrite => true,
+                Ap::UserRead => !write,
+                _ => false,
+            };
+            (allowed && a.cache != Cache::Device).then_some(pa)
+        }
+        /// No window the test game holds is a DMA side (G7b grants the
+        /// runner's FIFOs).
+        fn device(&mut self, _: u32) -> Option<(u32, u32)> {
+            None
+        }
+    }
+
+    /// `SYS_CACHE` from the game: an operation on its own memory only.
+    /// Its own frame: inlined, its locals would sit in `on_syscall`'s frame,
+    /// which every nested migrating call keeps on a 4 KiB kernel stack (G7a,
+    /// 2026-11-23: 744 B a level overflowed it in the emulator).
+    #[inline(never)]
+    fn game_cache(op: u32, va: u32, len: u32) -> u32 {
+        if !is_game() {
+            return ERR_NOT_YOURS;
+        }
+        let Some(op) = CacheOp::from_u32(op) else {
+            return ERR_BAD_CALL;
+        };
+        let slot = STATE.with(|s| s.game);
+        if !with_vm(|vm, _| gdma::check_range(&mut GameView { vm, slot }, op, va, len)) {
+            return ERR_NOT_YOURS;
+        }
+        let mva = game_mva(va, slot).unwrap_or(0);
+        match op {
+            CacheOp::Clean => cpu::clean_range(mva, len),
+            CacheOp::Invalidate => cpu::invalidate_range(mva, len),
+            CacheOp::CleanInvalidate => cpu::clean_invalidate_range(mva, len),
+            CacheOp::Drain => cpu::drain_write_buffer(),
+        }
+        0
+    }
+
+    /// `SYS_DMA` from the game: `count` descriptors at `chain` (its own
+    /// addresses) read from its own memory only (the kernel reads with its
+    /// own rights, so never from an address the game names outside it),
+    /// checked and translated into the kernel's chain, and its channel
+    /// started on it. The descriptors the channel runs, or an error.
+    /// Its own frame: inlined, its locals would sit in `on_syscall`'s frame,
+    /// which every nested migrating call keeps on a 4 KiB kernel stack (G7a,
+    /// 2026-11-23: 744 B a level overflowed it in the emulator).
+    #[inline(never)]
+    fn game_dma(ch: u32, chain: u32, count: u32) -> u32 {
+        if !is_game() || ch != GAME_CHANNEL {
+            return ERR_NOT_YOURS;
+        }
+        let slot = STATE.with(|s| s.game);
+        let n = count as usize;
+        if n == 0 || n > gdma::MAX_IN || !chain.is_multiple_of(4) {
+            return ERR_BAD_CALL;
+        }
+        let mut descs = [Desc::default(); gdma::MAX_IN];
+        for (k, d) in descs[..n].iter_mut().enumerate() {
+            let mut w = [0u32; 3];
+            for (j, x) in (0u32..).zip(w.iter_mut()) {
+                let at = chain
+                    .checked_add(12 * k as u32 + 4 * j)
+                    .and_then(|va| game_mva(va, slot));
+                let Some(v) = at.and_then(|mva| rt::try_read(mva as usize)) else {
+                    return ERR_NOT_YOURS;
+                };
+                *x = v;
+            }
+            *d = Desc {
+                src: w[0],
+                dst: w[1],
+                cmd: w[2],
+            };
+        }
+        let started = GAME_DMA.with(|g| {
+            let dma = g.channel.as_mut().ok_or(ERR_BUSY)?;
+            // The last chain must have run to its end: `DCSR`'s stop bit
+            // (the HAL's `done` would bring its whole streaming-chain code
+            // into the kernel for this one bit).
+            if g.chain.is_some() {
+                if dma.registers()[0] & 1 << 3 == 0 {
+                    return Err(ERR_BUSY);
+                }
+                dma.abort();
+                g.chain = None;
+            }
+            let armed = GAME_CHAIN.with(|c| {
+                let base = c.0.as_ptr() as usize as u32;
+                let k = with_vm(|vm, _| {
+                    gdma::translate(&mut GameView { vm, slot }, &descs[..n], &mut c.0, base)
+                })
+                .map_err(|e| match e {
+                    gdma::DmaError::NotYours(_) | gdma::DmaError::NoGrant(_) => ERR_NOT_YOURS,
+                    _ => ERR_BAD_CALL,
+                })?;
+                if dma.arm_chain(c.0[..k].as_flattened()) {
+                    Ok(k)
+                } else {
+                    Err(ERR_BUSY)
+                }
+            });
+            let k = armed?;
+            g.chain = Some(k as u8);
+            Ok(k as u32)
+        });
+        started.unwrap_or_else(|e| e)
+    }
+
+    /// A process's slot given up: its ports and handles closed, its whole
+    /// address space unmapped (every frame and page-cache reference back),
+    /// its region pages, domain and record freed.
+    fn release_slot(slot: u8) {
+        let _ = with_ipc(|i, hp| i.ipc.exit(hp, slot));
+        with_vm(|vm, s| {
+            let base = layout::slot_base(u32::from(slot));
+            if let Some(p) = s.procs.iter_mut().find(|p| p.slot == u32::from(slot)) {
+                let _ = vm.unmap(&mut p.space, base, layout::SLOT_SIZE);
+                // Its region-list pages too (ADR-0019): nothing outlives it.
+                p.space
+                    .reset_process(&mut vm.region_pages(), u32::from(slot), domains::PARKED);
+                p.slot = 0;
+            }
+            s.domains.release(u32::from(slot));
+        });
+    }
+
+    /// The test game's report (`SYS_REPORT`) is its way out: everything it
+    /// held taken back (G6's revoke: its channel stopped, its large region,
+    /// grants and slot unmapped), the report kept, its thread ended.
+    /// Its own frame: inlined, its locals would sit in `on_syscall`'s frame,
+    /// which every nested migrating call keeps on a 4 KiB kernel stack (G7a,
+    /// 2026-11-23: 744 B a level overflowed it in the emulator).
+    #[inline(never)]
+    fn end_game(me: Tid, f: &mut Frame) -> ! {
+        let report = [f.r[0], f.r[1], f.r[2], f.r[3]];
+        GAME_DMA.with(|g| {
+            if g.chain.take().is_some()
+                && let Some(d) = g.channel.as_mut()
+            {
+                d.abort();
+            }
+        });
+        let slot = with_vm(|vm, s| {
+            let _ = vm.unmap(&mut s.game_large, layout::LARGE_BASE, GAME_LARGE);
+            s.game_large = AddressSpace::large(domains::PARKED);
+            core::mem::replace(&mut s.game, 0)
+        });
+        release_slot(slot as u8);
+        trace(Kind::Exit, slot, report[0]);
+        RUN.with(|r| {
+            r.slots[me.index()] = 0;
+            r.game_report = Some(report);
+        });
+        exit_thread(me, |_| {})
+    }
+
+    /// Game Mode's one program (G7a): the test game (`ports/game-probe`)
+    /// started in user mode in its own slot, with its large region in
+    /// sections and its grants; its report read; then everything it held
+    /// taken back and every frame counted back (but its image's pages,
+    /// which stay in the page cache as the other images' do).
+    /// Its own frame, not `main`'s (which would pass 4 KiB with it inlined).
+    #[inline(never)]
+    fn game_program(uart: &mut Tee) -> bool {
+        let free0 = FRAMES.with(|f| f.free_frames() as u32);
+        let entry = RUN.with(|r| r.game_entry);
+        let started = with_vm(|vm, s| -> Option<(u32, u32)> {
+            // A native slot no process holds, as `spawn` picks one.
+            let slot = (layout::FIRST_NATIVE_SLOT..=layout::LAST_NATIVE_SLOT)
+                .find(|&n| s.procs.iter().all(|p| p.slot != n))?;
+            let i = s.procs.iter().position(|p| p.slot == 0)?;
+            let a = s.domains.activate(slot);
+            let prot = s.game_prot;
+            {
+                let p = &mut s.procs[i];
+                p.slot = slot;
+                let mut rp = vm.region_pages();
+                p.space.reset_process(&mut rp, slot, a.domain);
+                map_process(&mut rp, &mut p.space, slot, GAME_OBJECT, &prot, false).ok()?;
+                let base = layout::slot_base(slot);
+                for (dev, phys) in [(Device::Ost, OST_PHYS), (Device::DmaStatus, DMA_PHYS)] {
+                    let window = Region {
+                        start: base + dev.va() as u32,
+                        len: 4096,
+                        prot: Prot::R,
+                        backing: Backing::Phys {
+                            base: phys,
+                            cache: Cache::Device,
+                        },
+                    };
+                    p.space.map(&mut rp, window).ok()?;
+                }
+            }
+            s.game_large = AddressSpace::large(a.domain);
+            s.game_large.set_pin_limit(GAME_LARGE);
+            let large = Region {
+                start: layout::LARGE_BASE,
+                len: GAME_LARGE,
+                prot: Prot::RW,
+                backing: Backing::Zero,
+            };
+            let sections = vm.map_sections(&mut s.game_large, large).ok()?.sections;
+            s.game = slot;
+            Some((slot, sections))
+        });
+        let stack = RUN.with(|r| r.game_stack.take());
+        // The game's channel, taken when a game first starts (the kernel
+        // holds it only for games; it is lent to each one and stopped when
+        // it ends).
+        GAME_DMA.with(|g| {
+            if g.channel.is_none() {
+                g.channel = rt::take_dma(GAME_CHANNEL);
+            }
+        });
+        let slot = started.map_or(0, |(slot, _)| slot);
+        let t = SCHED.with(|s| s.create(slot as u8, 100).ok());
+        let (Some((slot, sections)), Some(stack), Some(t)) = (started, stack, t) else {
+            let _ = writeln!(uart, "GAMEMODE game program FAIL: not started");
+            return false;
+        };
+        RUN.with(|r| r.slots[t.index()] = slot as u8);
+        thread::prepare(t.index(), stack, process_thread, entry as usize);
+        // Its report within ~2 s.
+        let mut waited = 0;
+        while RUN.with(|r| r.game_report.is_none()) && waited < 2000 {
+            nap(3_250);
+            waited += 1;
+        }
+        let Some([fail, drains, copy, ran]) = RUN.with(|r| r.game_report) else {
+            let _ = writeln!(uart, "GAMEMODE game program FAIL: no report");
+            return false;
+        };
+        let cached = STATE.with(|s| s.file.game.iter().filter(|&&p| p != 0).count() as u32);
+        let free = FRAMES.with(|f| f.free_frames() as u32);
+        let (pieces, refused) = (ran & 0xFF, ran >> 8 & 0xFF);
+        let back = free + cached == free0;
+        let pass = fail == 0 && back && sections == 4 && pieces >= 16 && refused == 4;
+        let _ = writeln!(
+            uart,
+            "GAMEMODE game program {}: user mode in slot {slot}, 4 MiB large region in {sections} sections; {} ns a cache call; 64 KiB by DMA across a megabyte edge in {} us, {pieces} descriptors for the game's 16; {refused} of 4 refused; failed checks {fail:#x}; {}",
+            if pass { "OK" } else { "FAIL" },
+            drains * 4000 / 13 / 256,
+            copy * 4 / 13,
+            if back {
+                "every frame back"
+            } else {
+                "frames missing"
+            },
+        );
+        let _ = writeln!(uart, "BENCH gm_game_cache_call {drains} 256");
+        let _ = writeln!(uart, "BENCH gm_game_dma_64k {copy} 1");
         pass
     }
 

@@ -347,7 +347,124 @@ service as a process in the emulator then; hold Power 3 s after R366.
 
 The runner (ADR-0039) started by the kernel into the large region, its
 modules in sections, measured against the bare test image (R270): frame
-time and translation misses. Waits on G4 and G5.
+time and translation misses. Waits on G4 and G5 (both done).
+
+**What the runner does that user mode can't (read from its source,
+2026-11-23):** it runs today as a bare test image, privileged, with the
+loader's 1:1 map, and its speed depends on that: device registers taken
+whole (`rt::take_*`: the card, DMA channels, I2S, SSP, keypad, GPIO, PWM,
+the 2700G's register blocks and its 16 MiB of memory, the CPLD); DMA by
+the buffer's address as its physical one (`hal/pxa27x/src/dma.rs`); cache
+maintenance (`cpu::clean_range`, `drain_write_buffer` at about 13 places,
+some each frame); hot code locked into the I-cache (`unlock_icache`);
+write-allocate sections (`rt::write_allocate_sections`); the CPU clock
+(624 MHz and past it, `clocks::change`) and the 2700G's divide-1 bus
+timing on CS3; a timer interrupt that pumps the screen (`set_tick_hook`,
+`PUMP_HZ`) with interrupts masked around what it shares
+(`irq_disable`); the cycle counter (`rt::cycles`, also the sound's
+clock); the profiler (timer and event sampling); iWMMXt; the run limit
+(`rp_image`).
+
+**What others do (findings):** Windows Mobile ran a game in its user slot
+with GAPI's frame buffer and keys; the 2700G's own GL ES library
+(`libGLES_CL`) ran inside the game's process with the chip's registers
+mapped in by `VirtualCopy`, and nothing took them back if the game died.
+The PSP runs every game in user mode, driving its GPU's command lists
+itself; cache write-back is a system call
+(`sceKernelDcacheWritebackRange`). Linux gives a device's registers to user
+space through UIO or DRM, and DMA addresses one buffer at a time from the
+kernel (`dma_map_single`); ARM Linux's cache flush is a system call too.
+
+**Ours (the plan):** the runner's own drivers run unchanged in the game's
+process, as `libGLES_CL` did and as a PSP game drives its GPU, but each
+device is a grant the kernel maps in and takes back (G6's revoke). What
+user mode can't do comes from the kernel in the cheapest form for each:
+
+| Need | Game Mode gives | Why this form |
+|---|---|---|
+| Device registers and the 2700G's memory | each granted window mapped into the game's domain, uncached (`Backing::Phys`), at the address the bare image uses where the layout allows | the drivers stay the bare image's code; a revoke is an unmap |
+| DMA | the game builds its chain in its own addresses and hands it over in one system call; the kernel checks every descriptor against the game's memory and grants, splits it where pages aren't contiguous, writes the chain the controller runs and starts the channel; the controller's status page is mapped read only | the PXA270 has no IOMMU: a game holding the controller could copy over the kernel or the frozen session (the hole WM's in-process drivers and Linux's UIO leave); Linux's `dma_map_single` pays a call a buffer, this one a chain (first planned as a read-only section map with the controller mapped in: dropped for this reason before it was built) |
+| Cache maintenance, write buffer drain | one system call (operation, address, length), checked against the game's own mappings | the PSP's and ARM Linux's form; the cost measured against the SWI's |
+| Write-allocate | the large region mapped write-allocate when the game asks (a cache policy, XScale's X bit) | no call at all; the bare image's measured gain kept |
+| I-cache lock | a system call locking the game's lines, unlocked by the kernel on every way out | a crashed game can't leave the cache locked |
+| CPU clock, CS3 timing | a system call naming a profile (the mode manager's, ADR-0035's ladder), never a raw register | the SDRAM controller is the kernel's; a game can't set a clock the self-test hasn't proven |
+| The screen pump's tick | a second game thread woken by a kernel timer; the masked sections become a lock between the game's threads | no game code in interrupt mode |
+| Cycle counter, profiler | the OS timer's counter mapped read-only; the kernel samples the game's PC for the profiler | CP14 is privileged; a read stays one load |
+| iWMMXt | the coprocessor enabled (CPAR) for the game's threads only, its registers saved on switch only when another thread uses it | Game Mode has one program, so almost never |
+| The run limit | G6's watchdog; exit by `SYS_EXIT` | one way out |
+
+**Why ours beats the originals:** WM's in-process driver had no revoke, so
+a crash left the 2700G half-programmed; ours takes every grant back. A
+game's DMA can reach only its own memory and its granted devices, which
+neither WM nor UIO gives, for one call a chain where Linux pays one a
+buffer. And the runner's code is the
+bare image's, so G7d's measurement isolates exactly what the kernel costs
+(sections, domains, FCSE, the tick). **For the owner (a result, not a
+decision; nothing waits on it):** when the display host exists (K2), the
+game keeps the 2700G directly under its grant, as above, rather than
+calling the host per draw: one call is 27.6 us on the X51v and a frame
+makes hundreds of draws.
+
+**Steps:**
+
+- **G7a (kernel side, emulator):** the game process with its large region
+  and grants, the cache and DMA calls, and a small test game
+  (`rp-game-probe`) started by `rp-kernel` that uses each and checks it.
+  **G7a-2:** the tick thread's timed wait, iWMMXt (the coprocessor on for
+  the game's threads, its registers saved on switch), the I-cache lock,
+  the clock-profile call, write-allocate sections, the profiler.
+- **G7b (the runner's user build):** `rp-hal-pxa27x`'s privileged calls
+  routed to these calls in a `user` build, the runner and its modules
+  linked into the large region. Planned with hl-40fps, which owns the
+  runner.
+- **G7c:** the kernel loads the runner and its modules from the card;
+  `emu-xash` under the kernel.
+- **G7d (R270):** the X51v: frame time and translation misses against the
+  bare image, the same map and settings.
+
+**As built (G7a, first part, 2026-11-23):** `rp-kernel-gamemode::dma`
+(pure, host-tested): `translate` checks a game's chain in two passes (every
+descriptor checked and split first, so a refusal anywhere writes nothing),
+refuses interrupts, fly-by and compare, needs every memory byte to be the
+game's (writable for a target) and every FIFO address inside a granted
+window, splits at non-contiguous pages, links the kernel's chain and ends
+it with STOP; `check_range` holds a cache call to the game's own pages (a
+discard needs write access, at most 64 KiB a call). `rp-hal-user` gains
+`SYS_CACHE`, `SYS_DMA`, `DmaDesc`, `Large` and the `Ost` and `DmaStatus`
+windows; `rp-hal-pxa27x::cpu::invalidate_range` discards lines without
+writing them back (edges cleaned first, as Linux does). `rp-kernel` starts
+`rp-game-probe` in its own native slot after every other check, with 4 MiB
+of large region in sections, the OS timer and the DMA status page read
+only, and the card's channel; reads its chain a word at a time from its
+own memory only; ends it on its report, taking everything back (the
+channel aborted, the large region and slot unmapped). Host tests 10 in the
+DMA module, 10 mutants caught. `emu-kernel` (rp-v0.34.0): `GAMEMODE game
+program OK`, user mode in its slot, 4 sections, a cache call ~4 us in the
+emulator (not the X51v's figure), the 64 KiB copy across a megabyte edge
+~2.4 ms with every word right, 4 of 4 refused, every frame back;
+`emu-kernel-loader` needs the line on both cards' logs too. Two faults of
+the same class found on the way, each fixed as a class: **(1)** the DMA
+HAL reached its registers by physical address without `devmap::va` (the
+kernel had never used DMA; the bring-up map's identity hid it in every
+image): fixed, and a host test now fails for any HAL module that names a
+peripheral and reaches it by raw pointer without `va` (proven against the
+unfixed file); **(2)** the kernel told the game apart by a slot number
+fixed in advance, and the manager's workers take the first free native
+slot, the same one: a worker loaded a page of the game's image, and could
+have passed as the game in its calls. Now the kernel records the slot the
+running game holds, takes it as `spawn` does, and every check (the calls,
+the large region's faults, the image's pages) asks that record. **(3)** the
+kernel's thread stacks are 4 KiB and a migrating call keeps
+`on_syscall`'s frame at every nesting level: with `game_dma` inlined that
+frame was 744 bytes (236 without), a client's stack came within 60 words
+of its bottom, and the emulator crashed a different way each run (garbage
+contexts, `not a process slot`, re-entered globals; first mistaken for two
+other causes, R385 and R387, both closed by rerunning them with the fix).
+The game's calls now keep their own frames, `rp-hal-pxa27x::thread` fills
+every prepared stack with a guard word (checked at each switch, and the
+depth read back), and `emu-kernel` fails unless the closest stack keeps
+128 words never written (275 measured). **Still open:** G7a-2, then the
+device run.
 
 ### G8. The full tier
 

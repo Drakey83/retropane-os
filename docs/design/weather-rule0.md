@@ -156,8 +156,10 @@ soft you lose all of the detail". He chose C, without a loader change:
   loaded); Hourly's graph one store picture on both paths (MAX_CMDS 256 ->
   208). P7's radar half (b23caa98): a refresh keeps frames by their time,
   9 tiles asked, not 81. The X51v run: docs/design/option-c-device-run.md.
-  Open: P4 (R153, after the run's start measurement), P5 (R154, the
-  owner's eye), P7's forecast half (R155).
+  Open: P4 (R153), P5 (R154), P7's forecast half (R155): their sheet,
+  from the X51v runs' measurements (today-0048 and on), waits on the
+  owner: [weather-p4-p5-p7.md](../research/sheets/weather-p4-p5-p7.md),
+  with the one device run that covers them.
 - **Hourly's card picture at 160 px** (the owner's pick of three drawn
   sizes, docs/design/mockups/hourly-card-picture-sizes.png), the text
   moved right; built 2026-10-31, the picture shown at 160 once the store

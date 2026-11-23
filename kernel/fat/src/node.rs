@@ -406,6 +406,7 @@ fn cursor_unpack(c: u64) -> (u32, usize, u32) {
 
 impl<D: BlockDevice> Volume<D> {
     /// The directory sector after `lba` in its directory, if any.
+    #[optimize(size)]
     fn dir_after(&mut self, lba: u32) -> Result<Option<u32>, Error> {
         if self.root_sectors > 0
             && (self.root_lba..self.root_lba + self.root_sectors).contains(&lba)
@@ -425,6 +426,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Whether `lba` can hold directory entries (the fixed root, or a data
     /// cluster).
+    #[optimize(size)]
     fn dir_sector_ok(&self, lba: u32) -> bool {
         let fixed = self.root_sectors > 0
             && (self.root_lba..self.root_lba + self.root_sectors).contains(&lba);
@@ -435,6 +437,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// The first cluster of folder `dir` (a location, or [`ROOT`]); the
     /// fixed root is 0.
+    #[optimize(size)]
     fn folder_cluster(&mut self, dir: u64) -> Result<u32, Error> {
         if dir == ROOT {
             return Ok(self.root_cluster);
@@ -451,6 +454,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Reads an entry set from its first entry at `loc` into `out` (its
     /// short entry's place in `out.entry`). Deleted, half or mismatched
     /// sets are [`Error::NotFound`].
+    #[optimize(size)]
     fn read_set(&mut self, loc: u64, out: &mut Node) -> Result<(), Error> {
         let (mut lba, slot) = split(loc);
         if !self.dir_sector_ok(lba) {
@@ -504,6 +508,7 @@ impl<D: BlockDevice> Volume<D> {
         Err(Error::NotFound)
     }
 
+    #[optimize(size)]
     fn fill_node(&self, e: &[u8; 32], loc: u64, entry: u64, out: &mut Node) {
         out.loc = loc;
         out.entry = entry;
@@ -523,6 +528,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// [`Error::NotFound`] when `loc` isn't the start of a whole entry set.
+    #[optimize(size)]
     pub fn node_stat(&mut self, loc: u64, out: &mut Node) -> Result<(), Error> {
         if loc == ROOT {
             return Err(Error::NotFound);
@@ -536,6 +542,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// The folder is gone or damaged, or the card failed.
+    #[optimize(size)]
     pub fn node_child(
         &mut self,
         dir: u64,
@@ -623,6 +630,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Whether folder `dir_cluster` holds an entry named `name` (long or
     /// short name, any case), the temporary entries of writes in progress
     /// apart.
+    #[optimize(size)]
     fn name_taken(&mut self, dir_cluster: u32, name: &[u16]) -> Result<bool, Error> {
         let (mut lba, _) = self.dir_unit(dir_cluster);
         let mut i = 0;
@@ -678,6 +686,7 @@ impl<D: BlockDevice> Volume<D> {
     /// The short name for `name` in folder `dir_cluster`: its own 8.3 form
     /// when it is one (with Windows NT's case flags), else `BASIS~N.EXT`
     /// with long-name entries.
+    #[optimize(size)]
     fn short_for(&mut self, dir_cluster: u32, name: &[u16]) -> Result<([u8; 11], u8, bool), Error> {
         let mut ascii = [0u8; NAME_UNITS];
         let mut all_ascii = true;
@@ -706,6 +715,7 @@ impl<D: BlockDevice> Volume<D> {
     /// entries in order, the short entry last, so it exists only once
     /// whole); returns its location and how many clusters the folder grew.
     #[allow(clippy::too_many_arguments)]
+    #[optimize(size)]
     fn add_set16(
         &mut self,
         dir_cluster: u32,
@@ -761,6 +771,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// `need` consecutive free slots in `dir`, growing it when it has none
     /// (as `free_slots`, for sets of up to 21 entries).
+    #[optimize(size)]
     fn free_slots16(
         &mut self,
         dir: u32,
@@ -818,6 +829,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Marks the entry set starting at `loc` deleted: the short entry
     /// first, so the object vanishes at once, then its long-name entries.
+    #[optimize(size)]
     fn delete_set(&mut self, loc: u64) -> Result<(), Error> {
         let mut n = Node::default();
         self.read_set(loc, &mut n)?;
@@ -853,6 +865,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::BadName`], [`Error::Exists`], [`Error::NoRoom`], or the
     /// folder is gone.
+    #[optimize(size)]
     pub fn node_create(
         &mut self,
         dir: u64,
@@ -909,6 +922,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::NoRoom`] (the space isn't there: nothing is changed),
     /// [`Error::Fragmented`] never; the folder is gone.
+    #[optimize(size)]
     pub fn node_reserve(
         &mut self,
         dir: u64,
@@ -982,6 +996,7 @@ impl<D: BlockDevice> Volume<D> {
         })
     }
 
+    #[optimize(size)]
     fn add_temp(
         &mut self,
         first: u32,
@@ -1020,6 +1035,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Free clusters, counted from the FAT (for a refusal before anything
     /// changes).
+    #[optimize(size)]
     fn free_clusters(&mut self, scratch: &mut [u8]) -> Result<u32, Error> {
         let _ = scratch;
         let mut free = 0;
@@ -1037,6 +1053,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// Past the reservation, an offset off a sector, or the card failed.
+    #[optimize(size)]
     pub fn node_write(
         &mut self,
         r: &mut Reservation,
@@ -1097,6 +1114,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// A bad or taken name (the reservation stays, to retry or abandon),
     /// or the card failed.
+    #[optimize(size)]
     pub fn node_commit(
         &mut self,
         r: &Reservation,
@@ -1135,6 +1153,7 @@ impl<D: BlockDevice> Volume<D> {
         Ok(loc)
     }
 
+    #[optimize(size)]
     fn set_temp_state(&mut self, temp: u64, state: u8) -> Result<(), Error> {
         let (lba, slot) = split(temp);
         self.dev.read_blocks(lba, &mut self.buf)?;
@@ -1147,6 +1166,7 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    #[optimize(size)]
     fn kill_temp(&mut self, temp: u64) -> Result<(), Error> {
         let (lba, slot) = split(temp);
         self.dev.read_blocks(lba, &mut self.buf)?;
@@ -1162,6 +1182,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// The card failed.
+    #[optimize(size)]
     pub fn node_abandon(&mut self, r: &Reservation) -> Result<(), Error> {
         self.kill_temp(r.temp)?;
         self.free_chain(r.first)
@@ -1174,6 +1195,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// The card failed or is damaged.
+    #[optimize(size)]
     pub fn node_recover(&mut self) -> Result<u32, Error> {
         // At most 200 (two digits per name: 100 pending or committing).
         for fixed in 0..200 {
@@ -1217,6 +1239,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// [`Error::NotEmpty`], [`Error::NotFound`], or the card failed.
+    #[optimize(size)]
     pub fn node_delete(&mut self, loc: u64) -> Result<(), Error> {
         let mut n = Node::default();
         self.node_stat(loc, &mut n)?;
@@ -1236,6 +1259,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// The cluster of folder `dir`, checked to hold the entry at `entry`
     /// (a location from the PC is checked against the folder it says).
+    #[optimize(size)]
     fn holding_folder(&mut self, dir: u64, entry: u64) -> Result<u32, Error> {
         let dc = self.folder_cluster(dir)?;
         let (lba, _) = split(entry);
@@ -1254,6 +1278,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Whether the chain from `head` (a directory, so at most its largest
     /// size) holds cluster `c`.
+    #[optimize(size)]
     fn chain_holds(&mut self, head: u32, c: u32) -> Result<bool, Error> {
         let mut k = head;
         for _ in 0..self.dir_clusters_max() {
@@ -1275,6 +1300,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::BadName`], [`Error::Exists`], `loc` not in `dir`, or the
     /// card failed.
+    #[optimize(size)]
     pub fn node_rename(
         &mut self,
         dir: u64,
@@ -1300,6 +1326,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Writes `n`'s entry under `name` in folder `dc` (its attributes,
     /// cluster, size and dates kept) and deletes its old set.
+    #[optimize(size)]
     fn reentry(
         &mut self,
         n: &Node,
@@ -1344,6 +1371,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::Exists`] (the name is taken there, or a folder would go
     /// into itself), `loc` not in `from`, or the card failed.
+    #[optimize(size)]
     pub fn node_move(
         &mut self,
         from: u64,
@@ -1381,6 +1409,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Whether folder cluster `c` lies under folder cluster `top` (by `..`).
+    #[optimize(size)]
     fn is_below(&mut self, mut c: u32, top: u32) -> Result<bool, Error> {
         for _ in 0..64 {
             if c == top {
@@ -1402,6 +1431,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// The card failed or the chain is damaged.
+    #[optimize(size)]
     pub fn node_read(
         &mut self,
         n: &Node,
@@ -1428,6 +1458,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Errors
     /// The card failed.
+    #[optimize(size)]
     pub fn node_space(&mut self, scratch: &mut [u8]) -> Result<(u64, u64), Error> {
         let cb = self.cluster_bytes() as u64;
         let mut free = None;
@@ -1449,6 +1480,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// The largest file the volume holds: 4 GiB - 1 (FAT's 32-bit size).
     #[must_use]
+    #[optimize(size)]
     pub fn node_max_file(&self) -> u64 {
         u64::from(u32::MAX)
     }

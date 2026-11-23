@@ -40,3 +40,52 @@ lossless where a decoder is affordable; assets streamed from storage.
   goes to the owner as the alternative, with photos of both.
 - Host tests: unpacked bytes equal the original; damaged or short input
   stops cleanly with an error, never past the output; a fuzz run.
+
+## Amendment, 2026-11-23 (R208): context modelling in place of PNG's way
+
+The five app groups merged (66c6bb2f) put rp-today at 986,296 B, past its
+933,888 B budget and the 950,272 B image area. Two cuts, nothing visible
+given up; 917,824 B after them (16,064 B left), and the look check's
+build (R237) 929,196 B, inside the budget again.
+
+**The wallpaper, 138,807 -> 97,794 B, the same pixels.**
+- Original / Dell: a JPEG on the file system (lossy, not the approved
+  pixels); the wallpaper as a card file is ruled out by ADR-0018 ("anything
+  the screen shows must not depend on the card") without the owner.
+- Textbook (what this sheet chose first): PNG's Paeth filter and deflate.
+  Our own deflate also measured 12.5 KB worse than `zlib -9` on it.
+- Modern: JPEG-LS (LOCO-I), CALIC, FFV1, JPEG XL's modular mode: a
+  median edge predictor and statistics kept per neighbourhood. JPEG XL's
+  decoder is far too big for a resident image.
+- Ours (`rp_inflate::plane`, `RPPL`): LOCO-I's median predictor, eleven
+  contexts by local activity (log scale), an adaptive binary range coder
+  (LZMA's, 11-bit probabilities), and two things fitted at build to this
+  picture: the adaptation rate (tried 3-6, the smallest kept) and each
+  plane's low bits that are always clear (the sunset's planes are 6-bit:
+  coded without them, fewer decisions a byte). Measured: conditional
+  entropy of the residuals ~98 KB, the coder 97,794 B; two more contexts
+  (mantissa by activity, the last difference's size) gave under 100 B and
+  were left out. About 2 KB of decoder.
+- Cost: unpacking is 2.2x the old way's time on the PC (7.1 against 3.2
+  ms); the X51v took 85 ms the old way. Not measured on the X51v yet
+  (reminder row, device-run): the "wallpaper unpacked" line decides.
+- **What overturns it:** over 200 ms on the X51v (this sheet's own rule)
+  -> a faster binarisation or the old way back for the 39 KB.
+
+**The card code built for size where it lands.** Code 665,320 -> 636,964 B
+(the new decoder's ~2 KB in); data 320,976 -> 280,852 B. ADR-0005
+rule 8 builds cold crates at opt-level `s` (rp-fat, rp-drv-sdcard), but a
+generic instance is compiled at the opt-level of the crate that uses it:
+rp-today's 3. Each generic function in rp-fat and rp-drv-sdcard, and in
+rp-today's own card files (`kept`, `cardfiles`), now says
+`#[optimize(size)]` itself (minsize: LLVM calls the EABI's unaligned
+helpers, `__aeabi_uread4` and kin, now in rp-hal-pxa27x, the runtime every X51v image links; only mount, mkdir
+and directory entries use them, the data moves by DMA). A test
+(`generic_card_code_is_built_for_size_wherever_it_lands`) refuses an
+unmarked one. Siblings checked: rp-drv-pxa-mmc's instances are 960 B;
+rp-shell, rp-weather and rp-pim compile in their own crates.
+
+Not taken: rp-today whole at `s` (-102 KB, but the 2D renderer's draw and
+the graphics service's poll, the hot paths, shrink with it); the zone
+names (Today's feed shows another zone's appointment in the device's);
+`Debug` in log lines (run-log parsers read them).

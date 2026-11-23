@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(Format::code(0xC), Format::BPP32);
     }
 
-    // Each test's own clock (R384): a static shared by the tests let one
+    // Each test's own clock (R389): a static shared by the tests let one
     // test's reads move another's time (libtest runs them on parallel
     // threads, one thread a test), and a 20 ms limit ran out in another
     // test's ticks (6 of 300 runs). Starts just short of the wrap: timeouts

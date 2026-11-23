@@ -249,9 +249,9 @@ mod image {
     const CHIME_AMPLITUDE: u16 = 12_000;
     const CHIME_RING: usize = 8192;
 
-    /// The wallpaper, packed by the build (sheet today-image-room.md: 460
-    /// KB of planes in ~140 KB); unpacked at start into the RAM pool.
-    static WALLPAPER_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.zz"));
+    /// The wallpaper, packed by the build (R208, `rp_inflate::plane`: 460
+    /// KB of planes in ~98 KB); unpacked at start into the RAM pool.
+    static WALLPAPER_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.rppl"));
 
     /// The plane path (sheet weather-gpu-movement.md, "The plane path
     /// build, as built"; ADR-0034 C4 as changed, L2): the Weather pages on

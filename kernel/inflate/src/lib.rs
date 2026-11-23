@@ -1,7 +1,8 @@
 //! Deflate (RFC 1951) and zlib (RFC 1950) decoding, clean-room from the
 //! RFCs, for assets packed on the PC and unpacked once on the device (the
 //! test image's wallpaper: sheet `docs/research/sheets/today-image-room.md`),
-//! and [`unpaeth`], PNG's Paeth predictor undone.
+//! and [`unpaeth`], PNG's Paeth predictor undone; and [`plane`], lossless
+//! picture planes by context modelling (the wallpaper since R208).
 //!
 //! - **Safe and bounded:** any input, however damaged, either decodes into
 //!   `dst` or returns an [`Error`]; never a panic, never a write past
@@ -17,6 +18,8 @@
 
 #[cfg(any(test, feature = "pack"))]
 pub mod pack;
+pub mod plane;
+pub use plane::unpack_planes;
 
 /// Why data couldn't be decoded.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -198,3 +198,97 @@ fn what_the_packer_makes_decodes_to_the_original() {
     // Packs: the filtered plane well under half.
     assert!(pack::zlib(&filtered).len() * 2 < filtered.len());
 }
+
+/// Planes for the `RPPL` tests: a photo-like gradient with noise, every
+/// byte value, a flat plane, single rows and columns (the edges' rules).
+fn rppl_cases() -> Vec<(Vec<u8>, usize, usize)> {
+    let photo: Vec<u8> = (0..97 * 61)
+        .map(|i: usize| ((i % 97) * 2 + (i / 97) + ((i * 2_654_435_761) >> 28) % 7) as u8)
+        .collect();
+    let every: Vec<u8> = (0..=255u8).cycle().take(256 * 3).collect();
+    // Worst case for the differences: +-128 jumps.
+    let jumps: Vec<u8> = (0..40 * 40)
+        .map(|i| if (i / 40 + i) % 2 == 0 { 0 } else { 128 })
+        .collect();
+    vec![
+        (photo, 97, 61),
+        (every, 256, 3),
+        (vec![200; 33 * 17], 33, 17),
+        (jumps, 40, 40),
+        ((0..50).map(|i| (i * 37) as u8).collect(), 50, 1),
+        ((0..50).map(|i| (i * 91) as u8).collect(), 1, 50),
+        (vec![255], 1, 1),
+    ]
+}
+
+/// Every case packed alone and all together decodes byte for byte, and
+/// the photo-like plane packs well under half.
+#[test]
+fn rppl_planes_decode_to_the_original() {
+    let cases = rppl_cases();
+    for (k, (px, w, h)) in cases.iter().enumerate() {
+        let z = plane::pack::pack_planes(&[(px, *w, *h)]);
+        let mut out = vec![0u8; w * h];
+        assert_eq!(
+            unpack_planes(&z, &[(*w, *h)], &mut out),
+            Ok(w * h),
+            "case {k}"
+        );
+        assert_eq!(&out, px, "case {k}");
+    }
+    let all: Vec<(&[u8], usize, usize)> = cases[..4]
+        .iter()
+        .map(|(p, w, h)| (&p[..], *w, *h))
+        .collect();
+    let dims: Vec<(usize, usize)> = all.iter().map(|&(_, w, h)| (w, h)).collect();
+    let z = plane::pack::pack_planes(&all);
+    let total: usize = dims.iter().map(|&(w, h)| w * h).sum();
+    let mut out = vec![0u8; total + 9];
+    assert_eq!(unpack_planes(&z, &dims, &mut out), Ok(total));
+    let want: Vec<u8> = all
+        .iter()
+        .flat_map(|&(p, _, _)| p.iter().copied())
+        .collect();
+    assert_eq!(&out[..total], &want[..]);
+    assert_eq!(out[total..], [0u8; 9], "nothing written past the planes");
+    let photo = &cases[0].0;
+    assert!(plane::pack::pack_planes(&[(photo, 97, 61)]).len() * 2 < photo.len());
+}
+
+/// Damage anywhere is an error or (a flipped bit the coder never needed)
+/// the original exactly, never a panic, wrong pixels or a write past
+/// `dst`: each byte flipped, every cut short, sizes the caller didn't ask
+/// for, a `dst` too small.
+#[test]
+fn rppl_damage_is_refused() {
+    let (px, w, h) = rppl_cases().swap_remove(0);
+    let z = plane::pack::pack_planes(&[(&px, w, h)]);
+    let mut out = vec![0u8; w * h];
+    for i in 0..z.len() {
+        let mut bad = z.clone();
+        bad[i] ^= 0x41;
+        match unpack_planes(&bad, &[(w, h)], &mut out) {
+            Err(_) => {}
+            Ok(n) => assert!(n == w * h && out == px, "byte {i} flipped: wrong pixels"),
+        }
+    }
+    for n in 0..z.len() {
+        assert!(
+            unpack_planes(&z[..n], &[(w, h)], &mut out).is_err(),
+            "cut at {n}"
+        );
+    }
+    assert_eq!(unpack_planes(&z, &[(h, w)], &mut out), Err(Error::Header));
+    assert_eq!(
+        unpack_planes(&z, &[(w, h), (1, 1)], &mut out),
+        Err(Error::Header)
+    );
+    assert_eq!(
+        unpack_planes(&z, &[(w, h)], &mut out[..w * h - 1]),
+        Err(Error::Full)
+    );
+    // Random bytes behind a good header: refused, no panic.
+    let mut junk = z[..15].to_vec();
+    junk.extend((0..4000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8));
+    assert!(unpack_planes(&junk, &[(w, h)], &mut out).is_err());
+}

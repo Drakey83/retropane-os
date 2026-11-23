@@ -26,6 +26,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+// The card files' code (`kept`, `cardfiles`) built for size where its
+// generics land, as rp-fat's (R208, ADR-0005 rule 8).
+#![feature(optimize_attribute)]
 
 /// The picture store's slots (side, count): the shell's sizes
 /// (`rp_shell::Size`), as many of each as the screens show at once
@@ -744,22 +747,18 @@ pub fn radar_into(
 /// Bytes of the wallpaper's planes (4:2:0, `W` x `H`).
 pub const WALLPAPER_BYTES: usize = W * H * 3 / 2;
 
-/// Unpacks the image's packed wallpaper (zlib of the Paeth-filtered Y, U
-/// and V planes, made by the build: sheet today-image-room.md) into `dst`
+/// Unpacks the image's packed wallpaper (its Y, U and V planes as one
+/// `RPPL` stream, `rp_inflate::plane`, made by the build: R208) into `dst`
 /// ([`WALLPAPER_BYTES`]; the image's is in the RAM pool). The checksum is
 /// checked; damage is an error, never a fault.
 ///
 /// # Errors
 /// `packed` damaged, or `dst` the wrong size.
 pub fn unpack_wallpaper(packed: &[u8], dst: &mut [u8]) -> Result<(), rp_inflate::Error> {
-    if rp_inflate::zlib(packed, dst)? != WALLPAPER_BYTES || dst.len() != WALLPAPER_BYTES {
+    if dst.len() != WALLPAPER_BYTES {
         return Err(rp_inflate::Error::Bad);
     }
-    let (y, uv) = dst.split_at_mut(W * H);
-    let (u, v) = uv.split_at_mut(W * H / 4);
-    rp_inflate::unpaeth(y, W, H);
-    rp_inflate::unpaeth(u, W / 2, H / 2);
-    rp_inflate::unpaeth(v, W / 2, H / 2);
+    rp_inflate::unpack_planes(packed, &[(W, H), (W / 2, H / 2), (W / 2, H / 2)], dst)?;
     Ok(())
 }
 
@@ -1779,7 +1778,7 @@ mod tests {
     /// from, byte for byte; damage is refused.
     #[test]
     fn the_packed_wallpaper_unpacks_to_its_planes() {
-        let packed = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.zz"));
+        let packed = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.rppl"));
         let raw = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
         let mut out = vec![0u8; WALLPAPER_BYTES];
         assert_eq!(unpack_wallpaper(packed, &mut out), Ok(()));

@@ -12,6 +12,11 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+// ADR-0005 rule 8 (cold code built for size) where this crate's generics
+// land: an instance is compiled at the opt-level of the crate that uses
+// it (rp-today's 3), not this crate's `s`, so each generic function says
+// so itself (R208: 25 KB of card code at opt-level 3 in rp-today).
+#![feature(optimize_attribute)]
 
 use rp_hal_api::{BlockDevice, BlockError};
 
@@ -273,12 +278,14 @@ pub struct SdCard<H> {
 
 impl<H: SdHost> SdCard<H> {
     /// Identifies and selects the card.
+    #[optimize(size)]
     pub fn init(host: H) -> Result<Self, Error> {
         Self::try_init(host).map_err(|(e, _)| e)
     }
 
     /// Like [`SdCard::init`], but a failure gives the host back, so a card
     /// inserted later can be initialised on it (hot swap).
+    #[optimize(size)]
     pub fn try_init(mut host: H) -> Result<Self, (Error, H)> {
         match Self::identify(&mut host) {
             Ok((rca, high_capacity, wide, blocks)) => Ok(Self {
@@ -309,6 +316,7 @@ impl<H: SdHost> SdCard<H> {
     /// cardlog`), as [`SdCard::identity`] described it: no command is sent,
     /// so the card stays as it was (transfer state, its bus width and
     /// clock), and the host is told of the 4-bit bus.
+    #[optimize(size)]
     pub fn adopt(mut host: H, id: Identity) -> Self {
         if id.wide {
             host.set_wide_bus();
@@ -336,6 +344,7 @@ impl<H: SdHost> SdCard<H> {
 
     /// What [`SdCard::adopt`] needs to take this card over.
     #[must_use]
+    #[optimize(size)]
     pub fn identity(&self) -> Identity {
         Identity {
             rca: self.rca,
@@ -345,6 +354,7 @@ impl<H: SdHost> SdCard<H> {
         }
     }
 
+    #[optimize(size)]
     fn identify(host: &mut H) -> Result<(u16, bool, bool, u32), Error> {
         host.set_clock(INIT_HZ);
         host.command(Command {
@@ -396,48 +406,56 @@ impl<H: SdHost> SdCard<H> {
 
     /// Capacity in 512-byte blocks (0 if the CSD was unreadable).
     #[must_use]
+    #[optimize(size)]
     pub fn blocks(&self) -> u32 {
         self.blocks
     }
 
     /// The card error behind the last [`BlockDevice`] failure, if any.
     #[must_use]
+    #[optimize(size)]
     pub fn last_error(&self) -> Option<Error> {
         self.last_error
     }
 
     /// Read commands issued so far (a multiple-block read counts once).
     #[must_use]
+    #[optimize(size)]
     pub fn reads(&self) -> u32 {
         self.reads
     }
 
     /// Reads that needed a retry and then succeeded.
     #[must_use]
+    #[optimize(size)]
     pub fn read_retries(&self) -> u32 {
         self.read_retries
     }
 
     /// Whether the 4-bit data bus is in use.
     #[must_use]
+    #[optimize(size)]
     pub fn is_wide(&self) -> bool {
         self.wide
     }
 
     /// Whether the card is SDHC/SDXC (block-addressed).
     #[must_use]
+    #[optimize(size)]
     pub fn is_high_capacity(&self) -> bool {
         self.high_capacity
     }
 
     /// The card's relative address.
     #[must_use]
+    #[optimize(size)]
     pub fn rca(&self) -> u16 {
         self.rca
     }
 
     /// Checks `count` blocks from `lba` lie on the card. Every public read
     /// and write starts here: below it, `address` may wrap.
+    #[optimize(size)]
     fn on_card(&self, lba: u32, count: usize) -> Result<(), Error> {
         let fits = u32::try_from(count)
             .ok()
@@ -446,6 +464,7 @@ impl<H: SdHost> SdCard<H> {
         if fits { Ok(()) } else { Err(Error::OutOfRange) }
     }
 
+    #[optimize(size)]
     fn address(&self, lba: u32) -> u32 {
         if self.high_capacity {
             lba
@@ -457,6 +476,7 @@ impl<H: SdHost> SdCard<H> {
     /// Reads block `lba` (512 bytes).
     // One copy, however many callers (ADR-0005 rule 8: size).
     #[inline(never)]
+    #[optimize(size)]
     pub fn read(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
         self.on_card(lba, 1)?;
         let first = self.read_once(lba, buf);
@@ -484,6 +504,7 @@ impl<H: SdHost> SdCard<H> {
         result
     }
 
+    #[optimize(size)]
     fn read_once(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
         self.reads = self.reads.wrapping_add(1);
         let addr = self.address(lba);
@@ -506,6 +527,7 @@ impl<H: SdHost> SdCard<H> {
     /// anything else CMD13 reports is an error. Other reads send nothing
     /// more.
     #[inline(always)]
+    #[optimize(size)]
     fn after_reading_to(&mut self, lba: u32, count: u32) -> Result<(), Error> {
         if lba.saturating_add(count) != self.blocks {
             return Ok(());
@@ -518,6 +540,7 @@ impl<H: SdHost> SdCard<H> {
     /// `sd_read_4_blocks` 1.5% in the emulator).
     #[cold]
     #[inline(never)]
+    #[optimize(size)]
     fn settle_end(&mut self) -> Result<(), Error> {
         let arg = u32::from(self.rca) << 16;
         let slot = self.end_settles as usize % END_RING;
@@ -541,6 +564,7 @@ impl<H: SdHost> SdCard<H> {
     /// within [`END_POLLS`] CMD13s (a card that doesn't raise it; if one
     /// raises it later, the next command fails as before C46).
     #[must_use]
+    #[optimize(size)]
     pub fn end_unseen(&self) -> u32 {
         self.end_unseen
     }
@@ -551,6 +575,7 @@ impl<H: SdHost> SdCard<H> {
     /// happened or is older than the last 32 (C46's follow-up: which waits
     /// end unseen, logged by the guard run).
     #[must_use]
+    #[optimize(size)]
     pub fn end_wait(&self, k: u32) -> Option<Option<u32>> {
         if k >= self.end_settles || self.end_settles - k > END_RING as u32 {
             return None;
@@ -562,12 +587,14 @@ impl<H: SdHost> SdCard<H> {
     /// Reads that ended on the last block and had the card's status
     /// collected after (see [`Self::after_reading_to`]).
     #[must_use]
+    #[optimize(size)]
     pub fn end_settles(&self) -> u32 {
         self.end_settles
     }
 
     /// Single blocks that needed the slower clock to read.
     #[must_use]
+    #[optimize(size)]
     pub fn slow_reads(&self) -> u32 {
         self.slow_reads
     }
@@ -579,6 +606,7 @@ impl<H: SdHost> SdCard<H> {
     /// If `buf` isn't a whole number of blocks.
     // One copy, however many callers (ADR-0005 rule 8: size).
     #[inline(never)]
+    #[optimize(size)]
     pub fn read_many(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
         self.read_many_while(lba, buf, &mut || {})
     }
@@ -587,6 +615,7 @@ impl<H: SdHost> SdCard<H> {
     /// for the data of the first attempt (by DMA: useful work instead of
     /// spinning). Retries and the block-by-block fallback run without it,
     /// exactly as `read_many`'s do.
+    #[optimize(size)]
     pub fn read_many_while(
         &mut self,
         lba: u32,
@@ -632,6 +661,7 @@ impl<H: SdHost> SdCard<H> {
         result
     }
 
+    #[optimize(size)]
     fn read_singly(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
         buf.as_chunks_mut::<BLOCK>()
             .0
@@ -640,6 +670,7 @@ impl<H: SdHost> SdCard<H> {
             .try_for_each(|(block, b)| self.read(b, block))
     }
 
+    #[optimize(size)]
     fn touches_weak(&self, lba: u32, blocks: u32) -> bool {
         let end = lba.saturating_add(blocks);
         self.weak[..usize::from(self.weak_len)]
@@ -647,6 +678,7 @@ impl<H: SdHost> SdCard<H> {
             .any(|&(start, n)| lba < start.saturating_add(n) && start < end)
     }
 
+    #[optimize(size)]
     fn remember_weak(&mut self, lba: u32, blocks: u32) {
         if self.touches_weak(lba, blocks) {
             return;
@@ -661,6 +693,7 @@ impl<H: SdHost> SdCard<H> {
     /// How many ranges are read block by block (multi-block reads failed
     /// there).
     #[must_use]
+    #[optimize(size)]
     pub fn weak_ranges(&self) -> usize {
         usize::from(self.weak_len)
     }
@@ -678,6 +711,7 @@ impl<H: SdHost> SdCard<H> {
     /// and unanswered. So: CMD12 first (it stops a card that is still
     /// sending, and is harmlessly illegal for one that isn't), then CMD13
     /// until the card is back in the transfer state, ready for data.
+    #[optimize(size)]
     fn recover(&mut self) {
         let _ = self.host.command(Command::new(12, 0, Response::R1b));
         let arg = u32::from(self.rca) << 16;
@@ -693,16 +727,19 @@ impl<H: SdHost> SdCard<H> {
 
     /// Multi-block reads that failed and then succeeded block by block.
     #[must_use]
+    #[optimize(size)]
     pub fn read_fallbacks(&self) -> u32 {
         self.read_fallbacks
     }
 
+    #[optimize(size)]
     fn read_many_once(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
         self.read_many_once_while(lba, buf, &mut || {})
     }
 
     // Out of line: `write_many`'s read-back would otherwise carry a copy.
     #[inline(never)]
+    #[optimize(size)]
     fn read_many_once_while(
         &mut self,
         lba: u32,
@@ -729,6 +766,7 @@ impl<H: SdHost> SdCard<H> {
     }
 
     /// Writes block `lba` (512 bytes).
+    #[optimize(size)]
     pub fn write(&mut self, lba: u32, buf: &[u8; BLOCK]) -> Result<(), Error> {
         self.on_card(lba, 1)?;
         let addr = self.address(lba);
@@ -743,6 +781,7 @@ impl<H: SdHost> SdCard<H> {
     /// data, not in the `prg` state). Host controllers' own busy handling
     /// doesn't always cover the programming after a stop (seen on the
     /// X51v: the command after a multi-block write got no response).
+    #[optimize(size)]
     fn wait_ready(&mut self) -> Result<(), Error> {
         let arg = u32::from(self.rca) << 16;
         for _ in 0..READY_TRIES {
@@ -762,6 +801,7 @@ impl<H: SdHost> SdCard<H> {
     /// If `buf` isn't a whole number of blocks.
     // One copy, however many callers (ADR-0005 rule 8: size).
     #[inline(never)]
+    #[optimize(size)]
     pub fn write_many(&mut self, lba: u32, buf: &[u8]) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
         self.on_card(lba, buf.len() / BLOCK)?;
@@ -789,6 +829,7 @@ impl<H: SdHost> SdCard<H> {
     /// status) has its status read, which clears that, and isn't asked
     /// again. If the write is then cut off, only blocks inside the range
     /// being written can be left erased.
+    #[optimize(size)]
     fn announce_write(&mut self, blocks: u32) {
         if !self.pre_erase {
             return;
@@ -810,12 +851,14 @@ impl<H: SdHost> SdCard<H> {
 
     /// Whether the card takes ACMD23 (pre-erase), as far as known.
     #[must_use]
+    #[optimize(size)]
     pub fn pre_erases(&self) -> bool {
         self.pre_erase
     }
 
     /// The host controller, for its diagnostics.
     #[must_use]
+    #[optimize(size)]
     pub fn host(&self) -> &H {
         &self.host
     }
@@ -823,17 +866,20 @@ impl<H: SdHost> SdCard<H> {
     /// The host controller, for its settings (DMA use, say). Not for
     /// commands: those would leave the card in a state this driver doesn't
     /// know about.
+    #[optimize(size)]
     pub fn host_mut(&mut self) -> &mut H {
         &mut self.host
     }
 
     /// Gives the host back.
+    #[optimize(size)]
     pub fn into_inner(self) -> H {
         self.host
     }
 
     /// A card error as the block-device interface names it (the card's
     /// own reason kept for [`last_error`](Self::last_error)).
+    #[optimize(size)]
     fn block_error(&mut self, e: Error) -> BlockError {
         if e == Error::OutOfRange {
             return BlockError::OutOfRange;
@@ -844,10 +890,12 @@ impl<H: SdHost> SdCard<H> {
 }
 
 impl<H: SdHost> BlockDevice for SdCard<H> {
+    #[optimize(size)]
     fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
         self.read_many(lba, buf).map_err(|e| self.block_error(e))
     }
 
+    #[optimize(size)]
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
         self.write_many(lba, buf).map_err(|e| self.block_error(e))
     }

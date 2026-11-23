@@ -498,6 +498,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-game-probe"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-user",
+]
+
+[[package]]
 name = "rp-gfx"
 version = "0.0.0"
 dependencies = [
@@ -673,6 +681,7 @@ name = "rp-kernel"
 version = "0.0.0"
 dependencies = [
  "rp-drv-pxa-uart",
+ "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-user",

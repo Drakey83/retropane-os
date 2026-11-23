@@ -20,6 +20,7 @@ rp-kernel-pe = { path = "../../kernel/pe" }
 rp-kernel-trace = { path = "../../kernel/trace" }
 rp-hal-mem = { path = "../../hal/mem" }
 rp-hal-user = { path = "../../hal/user" }
+rp-hal-api = { path = "../../hal/api" }
 
 [lints]
 workspace = true

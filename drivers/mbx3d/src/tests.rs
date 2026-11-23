@@ -432,7 +432,7 @@ mod feed {
 
     use super::*;
 
-    // Each test's own clock (R384): a static shared by the tests let one
+    // Each test's own clock (R389): a static shared by the tests let one
     // test's reads move another's time (libtest runs them on parallel
     // threads, one thread a test), and a 20 ms limit ran out in another
     // test's ticks (6 of 300 runs). Starts just short of the wrap: timeouts
@@ -827,7 +827,7 @@ mod feed {
         assert_eq!(fed.level_max, 0x1FE);
     }
 
-    /// R384: another test's clock reads (here a thread reading its own a
+    /// R389: another test's clock reads (here a thread reading its own a
     /// million times, as a parallel test does) never move this test's
     /// time: the 20 ms scene of the test above comes out the same each time.
     #[test]
@@ -1161,7 +1161,7 @@ mod set_up {
 
     use super::*;
 
-    // Each test's own clock (R384): a static shared by the tests let one
+    // Each test's own clock (R389): a static shared by the tests let one
     // test's reads move another's time (libtest runs them on parallel
     // threads, one thread a test), and a 20 ms limit ran out in another
     // test's ticks (6 of 300 runs). Starts just short of the wrap: timeouts

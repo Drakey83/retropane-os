@@ -2082,18 +2082,27 @@ mod image {
                 "runner: R352 -rpeps {s}: the TA's 0x854/0x858 1.0e-9 from {s} s into the run (Dell's 1.0e-5 before)"
             );
         }
-        if args[..arg_count]
+        let probe2 = args[..arg_count]
             .iter()
-            .any(|a| a.to_bytes() == b"-rpprobe")
+            .any(|a| a.to_bytes() == b"-rpprobe2");
+        if probe2
+            || args[..arg_count]
+                .iter()
+                .any(|a| a.to_bytes() == b"-rpprobe")
         {
             super::gfx::REG_PROBE.with(|p| {
                 if let Some(p) = p.as_mut() {
                     p.on = true;
+                    if probe2 {
+                        p.set_high();
+                    }
                 }
             });
             let _ = writeln!(
                 uart,
-                "runner: R340 -rpprobe: the 2700G's registers read through {} renders from frame {} (reads only)",
+                "runner: R340 -rpprobe{}: the 2700G's registers ({}) read through {} renders from frame {} (reads only)",
+                if probe2 { "2" } else { "" },
+                if probe2 { "0x860-0xFFC" } else { "0x000-0x85C" },
                 super::gfx::regprobe_renders(),
                 super::gfx::regprobe_from()
             );
