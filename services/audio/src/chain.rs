@@ -656,8 +656,11 @@ mod tests {
         };
         for speaker in [false, true] {
             let (mut a, mut b) = (State::default(), State::default());
-            // the host's allocator gives a word-aligned start (asserted)
-            let mut store = vec![0u8; 4 * BLOCK + 4];
+            // a word-aligned start by its type, not by the allocator (asserted)
+            #[repr(C, align(4))]
+            struct Words([u8; 4 * BLOCK + 4]);
+            let mut words = Words([0; 4 * BLOCK + 4]);
+            let store = &mut words.0;
             assert!(rp_hal_simd::words_mut(&mut store[..4 * BLOCK]).is_some());
             for k in 0..20_000u32 {
                 let mut mix = [0i32; 2 * BLOCK];
