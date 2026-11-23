@@ -2372,7 +2372,7 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "gamemode: a game's chain written before every descriptor is checked",
         file: "kernel/gamemode/src/dma.rs",
-        from: "        total += pieces(m, i as u8, d, |_| {})?;",
+        from: "        total += pieces(m, i as u8, d, &mut |_| {})?;",
         to: "        total += 1;",
         check: Check::Host(&["-p", "rp-kernel-gamemode", "a_refusal_anywhere_writes_nothing"]),
     },
