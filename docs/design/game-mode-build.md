@@ -26,7 +26,7 @@ What does block it is work not yet built, not a gate line:
 
 | # | Blocker | Where it stands | What waits on it |
 |---|---|---|---|
-| K1 | **The kernel has never run on the X51v.** `rp-kernel` (VM, compressed RAM, scheduler, IPC, PE processes, supervised hosts, the display host) passes in the emulator only; Phase 2's exit ("multiple processes running, with protected memory, on device and emulator") is open. Only `rp-threads` (the scheduler's 13 tests) and `rp-quantum` ran on the device (2026-10-12, 2026-10-15) | Phase 2 | every device measurement of the freeze, the thaw and the switch; R270 (the game as a process, measured against the bare test image) |
+| K1 | **Settled 2026-11-23: `rp-kernel` passed on the X51v (G5 run 4, below).** Before: **the kernel had never run on the X51v.** `rp-kernel` (VM, compressed RAM, scheduler, IPC, PE processes, supervised hosts, the display host) passes in the emulator only; Phase 2's exit ("multiple processes running, with protected memory, on device and emulator") is open. Only `rp-threads` (the scheduler's 13 tests) and `rp-quantum` ran on the device (2026-10-12, 2026-10-15) | Phase 2 | every device measurement of the freeze, the thaw and the switch; R270 (the game as a process, measured against the bare test image) |
 | K2 | **Nothing of the OS runs as a process yet.** The shell (`rp-today`) and Half-Life's runner are bare test images under the loader; the audio and graphics services are libraries inside them, not driver hosts (only `services/display-host` is one) | Phase 2 "Processes ... driver host process", Phase 5 | Full Mode's suspend/resume calls, the exclusivity grants, the session test |
 | K3 | **The large-allocation region (R363)**: ADR-0003 amended 2026-11-23; the reservation itself not yet in the kernel's address map | doable now (step G4) | the game's 27 MiB of modules and 26 MiB heap under the kernel |
 | K4 | **The CE personality runs no WM5 program yet** (Phase 4: coredll, GAPI not built) | Phase 4 | design B's CE legacy test; LZ4's ratio on a CE app's heap (measurement 2's second half) |
@@ -286,6 +286,26 @@ the loader. Fixed as a class: one `resolve` for both fault paths, and a
 kernel check that touches an unloaded image page before the clients run
 (fails without the fix in the emulator). The device's numbers (the
 `BENCH` lines) go into K1's row when the whole run passes.
+
+**Run 3** (`local/rp-kernel-g5-run3.txt`): the new check failed on the
+X51v though it passed in the emulator: the XScale's fault address is the
+FCSE-relocated one (`0x0a103000`), the image's page fill took it as the
+process's own and found no page; QEMU reports the unrelocated address.
+Fixed in the one fault path, and the check gives it the relocated form
+directly, so the emulator covers it (docs/hw/emulator.md, R368).
+
+**Run 4 (2026-11-23, `local/rp-kernel-g5-run4.txt`): `RETROPANE-KERNEL-OK`
+on the X51v, back at the loader. K1 is settled.** Every VM, Game Mode
+(full tier, freeze, return record, large region, threads freeze), IPC
+(calls, server fault, foreign handle, nesting, isolation, preemption in
+calls, PE image relocated and paged on demand, service manager,
+supervised restart, spawn and exit, native slots, handle pages), trace
+and driver-host (served, restarted) check passed; the deepest stack 6,440
+of 16,384 bytes. The device's numbers are in docs/perf.md "The kernel on
+the real X51v": a page compresses in 104 us and thaws in 43 us (design B
+assumed 183 and 134), a whole 47-page process freezes in 3.8 ms, a
+process's threads freeze in 49 us. G7 (the runner in the large region,
+measured against the bare image, R270) is unblocked.
 
 ### G6. Exclusivity grants and the mode manager
 

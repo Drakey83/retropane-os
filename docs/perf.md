@@ -302,6 +302,29 @@ interface thread's priority, for eight policies: the table is in ADR-0010,
 pair keeps 99.5% of its work). A switch between two threads with 16 KiB
 working sets costs ~100 µs in all, of which 13 µs is the register switch.
 
+### The kernel on the real X51v (2026-11-23, `rp-kernel` G5 run 4)
+
+The whole kernel's first pass on the device (`RP_KERNEL_RETURN=1`, under
+the loader, `local/rp-kernel-g5-run4.txt`; 3.25 MHz ticks converted, the
+CPU at the loader's clock). One run: numbers to repeat before they are
+leaned on.
+
+| What | Device | Note |
+|---|---|---|
+| Kernel tables built (`boot_kernel_tables`) | 10.5 ms | once at boot |
+| Demand-zero fault (`vm_fault_zero`, 63) | 21.9 us each | |
+| Compress a page (`vm_compress_page`, 32) | 104 us each | design B's estimate was 183 us |
+| Restore a compressed page (`vm_restore_page`) | 51 us | |
+| Reclaim sweep (`vm_reclaim_sweep`, 16 pages) | 55 us a page | |
+| Freeze a process (`vm_freeze_process`, 47 pages) | 3.8 ms, 81 us a page | Game Mode's fast tier |
+| Thaw on touch (`vm_thaw_page`, 16) | 43 us a page | design B used 134 us |
+| Freeze / thaw a process's threads | 49 us / 7 us | `THREADS freeze` |
+| XXH32 over 64 KiB (`gm_xxh32_64k`) | 512 us (128 MB/s) | the return record and the tier's run hashes |
+| Full tier round trip, 1 store frame to a RAM card (`gm_tier_out`, `gm_tier_in`) | 165 us out, 226 us back | the card's own time comes from R364: 5.0 MB/s out, 7.3 MB/s back |
+| A word every 4 KiB across 4 MiB of 1 MiB sections (`gm_section_walk`, 4,096 reads) | 0.27 us a read | 4 KiB pages to compare with R270 |
+| IPC call round trip (`ipc_call_roundtrip`, 2,036 calls, two clients, nested) | 27.6 us a call | emulator ~13 us real time |
+| Trace event (`trace_event`, 1,000) | 1.15 us each | |
+
 ### Windows Mobile baseline (2026-10-13, `rp-wmbench` v2 and v3, ROADMAP Phase 0)
 
 The same rows measured under the stock Windows Mobile 6.1 (CE 5.2 build
