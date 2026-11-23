@@ -95,7 +95,7 @@ measured.
   2700G composes the layers every frame (`Cmd::Cover`, anti-aliased,
   tinted); re-sending every stroke as triangles each frame was rejected:
   its cost grows with the ink, the coverage layer's never does. Latency and
-  the filter on the X51v's own noise: R372 (device run).
+  the filter on the X51v's own noise: R369 (device run).
 - **Blocks in any order.** A note's lines are text, checklist items and
   **ink blocks** (`0x01` and the block's number); each stroke names its
   block in a version-2 extension byte (style bit 7), in the block's own
@@ -106,7 +106,7 @@ measured.
   block or starts a new one; TEXT and LIST put a paragraph or an item after
   the caret's line; a tap on a line moves the caret there. The note
   scrolls (a drag off the ink, or the rail along the right edge). **Looks
-  for the owner's pick (R373)**, drawn by the real program
+  for the owner's pick (R370)**, drawn by the real program
   (`cargo xtask ui-preview`, `v3-notes-*`; copies in
   [mockups/notes-blocks/](mockups/notes-blocks/)): A open sheet (built as
   the default: the ink blocks unmarked, like the whole-sheet ink the owner
@@ -131,7 +131,7 @@ measured.
   coverage in a host test). Files go to the card's `RetroPane` folder
   through group A's card file service (`Program::card_ask`: `CARDPUT`,
   `CARDFILES`, `CARDFILE`; `rp_today::cardfiles`), one service for every
-  app (R374), where the PC sees them over MTP. Notes brought it two things:
+  app (R371), where the PC sees them over MTP. Notes brought it two things:
   a write streams from the app a piece at a time into a staged run linked
   whole at the end (`put_from`: no file need fit the image's 256 KB pool,
   and a pulled card or a note changed mid-write leaves the old file), and
