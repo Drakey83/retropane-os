@@ -77,6 +77,7 @@ impl<D: BlockDevice> Volume<D> {
     /// (clusters / 8 bytes, [`Error::NoRoom`] otherwise); `scratch` at least
     /// two sectors (more reads the FAT in fewer commands).
     #[inline(never)]
+    #[optimize(size)]
     pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<Health, Error> {
         let total = self.clusters + 2;
         if seen.len() < (total as usize).div_ceil(8) || scratch.len() < 2 * SECTOR {
@@ -160,6 +161,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Follows and marks a chain; checks its length against `size` (files).
     /// `true` if it was whole and reached for the first time.
+    #[optimize(size)]
     fn chain(
         &mut self,
         first: u32,
@@ -200,6 +202,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Counts allocated clusters nothing reached, and, when the FATs are
     /// mirrored, the sectors where the copies differ.
+    #[optimize(size)]
     fn scan_fat(
         &mut self,
         seen: &Seen<'_>,

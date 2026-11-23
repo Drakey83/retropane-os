@@ -63,6 +63,7 @@ impl Survey {
 /// # Errors
 /// The device's; [`Error::NotFat32`] when neither is a FAT or exFAT boot
 /// sector (the partition table is still filled in).
+#[optimize(size)]
 pub fn survey<D: BlockDevice>(dev: &mut D) -> Result<Survey, Error> {
     let mut b = [0u8; SECTOR];
     dev.read_blocks(0, &mut b)?;

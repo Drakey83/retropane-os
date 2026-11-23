@@ -149,6 +149,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// The sector after `lba` in a folder whose clusters are one run
     /// (`contiguous`, within `bound` clusters from `first` when known) or
     /// chained.
+    #[optimize(size)]
     fn step(
         &mut self,
         lba: u32,
@@ -170,11 +171,13 @@ impl<D: BlockDevice> ExVolume<D> {
         Ok(next.map(|n| self.cluster_lba(n)))
     }
 
+    #[optimize(size)]
     fn in_heap(&self, lba: u32) -> bool {
         lba >= self.heap_start && (lba - self.heap_start) >> self.cluster_shift < self.clusters
     }
 
     /// Reads the set whose file entry is at `loc`, checksum checked.
+    #[optimize(size)]
     fn read_set16(&mut self, loc: u64, set: &mut Set) -> Result<u64, Error> {
         let contiguous = loc & CONTIGUOUS_DIR != 0;
         let (mut lba, mut i) = split(loc);
@@ -211,6 +214,7 @@ impl<D: BlockDevice> ExVolume<D> {
         Ok(loc)
     }
 
+    #[optimize(size)]
     fn node_of(&self, set: &Set, loc: u64, out: &mut Node) -> Result<(), Error> {
         let f = &set.e[0];
         let st = &set.e[1];
@@ -244,6 +248,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// [`Error::NotFound`] when `loc` isn't a whole, checksummed set.
+    #[optimize(size)]
     pub fn node_stat(&mut self, loc: u64, out: &mut Node) -> Result<(), Error> {
         if loc == ROOT {
             return Err(Error::NotFound);
@@ -257,6 +262,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// Folder `dir` ([`ROOT`] or a folder's location).
+    #[optimize(size)]
     fn node_dir(&mut self, dir: u64) -> Result<NodeDir, Error> {
         if dir == ROOT {
             return Ok(NodeDir {
@@ -300,6 +306,7 @@ impl<D: BlockDevice> ExVolume<D> {
         })
     }
 
+    #[optimize(size)]
     fn dir_for_exfat(d: &NodeDir) -> crate::exfat::Dir {
         crate::exfat::Dir::new(d.first, d.contiguous, d.len, d.entry)
     }
@@ -310,6 +317,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// sector write of the folder's file and stream entries makes it part
     /// of the folder. Its name entries may lie in later sectors (a long
     /// name): they don't change, and are read only for the checksum.
+    #[optimize(size)]
     fn grow16(&mut self, d: &mut NodeDir, scratch: &mut [u8]) -> Result<(), Error> {
         let root = d.loc == ROOT;
         if !root && d.entry.is_none() {
@@ -386,6 +394,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// The folder is gone or damaged, or the card failed.
+    #[optimize(size)]
     pub fn node_child(
         &mut self,
         dir: u64,
@@ -481,6 +490,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// The up-case table: first cluster and length in bytes.
+    #[optimize(size)]
     fn upcase_table(&mut self) -> Result<Option<(u32, u64)>, Error> {
         let root = self.node_dir(ROOT)?;
         let mut found = None;
@@ -497,6 +507,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// `name` up-cased with the card's table, into `up` (ASCII-only names
     /// without reading it; a card with no readable table: single-character
     /// Unicode mappings).
+    #[optimize(size)]
     fn upcase16(&mut self, name: &[u16], up: &mut [u16; NAME_UNITS]) -> Result<(), Error> {
         for (u, &c) in up.iter_mut().zip(name) {
             *u = if c < 0x80 {
@@ -566,6 +577,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// Whether folder `d` holds a set named `name` (up-cased comparison:
     /// hash first, then the names).
+    #[optimize(size)]
     fn name_taken16(&mut self, d: &NodeDir, name: &[u16]) -> Result<bool, Error> {
         let mut up = [0u16; NAME_UNITS];
         self.upcase16(name, &mut up)?;
@@ -604,6 +616,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// The location naming folder `d` for walks: kept from when it was
     /// opened.
+    #[optimize(size)]
     fn dir_loc_of(&self, d: &NodeDir) -> Option<u64> {
         if d.first == self.root_cluster && d.entry.is_none() && !d.contiguous {
             return Some(ROOT);
@@ -612,6 +625,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// Opens folder `dir`, remembering its location for walks.
+    #[optimize(size)]
     fn open16(&mut self, dir: u64) -> Result<NodeDir, Error> {
         let d = self.node_dir(dir)?;
         if dir != ROOT {
@@ -622,6 +636,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// A set for `name`, checksummed.
     #[allow(clippy::too_many_arguments)]
+    #[optimize(size)]
     fn build16(
         &mut self,
         name: &[u16],
@@ -684,6 +699,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// Writes `set` into folder `d` (crate::exfat's placement: deleted
     /// entries in one sector, or the end, the file entry's sector last);
     /// returns its location.
+    #[optimize(size)]
     fn place16(&mut self, d: &NodeDir, set: &Set, scratch: &mut [u8]) -> Result<u64, Error> {
         let mut d = *d;
         for _ in 0..2 {
@@ -706,6 +722,7 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// Marks the set at `loc` unused, its file entry's sector first.
+    #[optimize(size)]
     fn delete16(&mut self, loc: u64) -> Result<(), Error> {
         let mut set = Set {
             e: [[0; ENTRY]; SET_MAX],
@@ -734,6 +751,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// # Errors
     /// [`Error::BadName`], [`Error::Exists`], [`Error::NoRoom`], or the
     /// folder is gone.
+    #[optimize(size)]
     pub fn node_create(
         &mut self,
         dir: u64,
@@ -800,6 +818,7 @@ impl<D: BlockDevice> ExVolume<D> {
         r
     }
 
+    #[optimize(size)]
     fn clean_up(&mut self) -> Result<(), Error> {
         if !self.was_dirty {
             self.set_dirty(false)?;
@@ -814,6 +833,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// [`Error::NoRoom`] (nothing changed), or the folder is gone.
+    #[optimize(size)]
     pub fn node_reserve(
         &mut self,
         dir: u64,
@@ -895,6 +915,7 @@ impl<D: BlockDevice> ExVolume<D> {
         ))
     }
 
+    #[optimize(size)]
     fn release_run(&mut self, first: u32, n: u32, contiguous: bool) -> Result<(), Error> {
         if contiguous {
             return self.mark(first, n, false);
@@ -916,6 +937,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// Past the reservation, an offset off a sector, or the card failed.
+    #[optimize(size)]
     pub fn node_write(
         &mut self,
         r: &mut Reservation,
@@ -966,6 +988,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// A bad or taken name (the reservation stays), or the card failed.
+    #[optimize(size)]
     pub fn node_commit(
         &mut self,
         r: &Reservation,
@@ -1010,6 +1033,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// The card failed.
+    #[optimize(size)]
     pub fn node_abandon(&mut self, r: &Reservation) -> Result<(), Error> {
         let _ = self.delete16(r.temp);
         self.release_run(r.first, r.clusters, r.contiguous)?;
@@ -1022,6 +1046,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// The card failed or is damaged.
+    #[optimize(size)]
     pub fn node_recover(&mut self) -> Result<u32, Error> {
         // At most 200 (two digits per name: 100 pending or committing).
         for fixed in 0..200 {
@@ -1101,6 +1126,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// [`Error::NotEmpty`], [`Error::NotFound`], or the card failed.
+    #[optimize(size)]
     pub fn node_delete(&mut self, loc: u64) -> Result<(), Error> {
         let mut n = Node::default();
         self.node_stat(loc, &mut n)?;
@@ -1129,6 +1155,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// Writes the set of `loc` again in folder `to` named `name` (every
     /// other field kept), then deletes the old set.
+    #[optimize(size)]
     fn reset16(
         &mut self,
         loc: u64,
@@ -1174,6 +1201,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// [`Error::BadName`], [`Error::Exists`], or the card failed.
+    #[optimize(size)]
     pub fn node_rename(
         &mut self,
         dir: u64,
@@ -1201,6 +1229,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// Whether folder `d` holds the set at `loc` (its sector lies in the
     /// folder's clusters).
+    #[optimize(size)]
     fn holds(&mut self, d: &NodeDir, loc: u64) -> Result<bool, Error> {
         let (lba, _) = split(loc);
         if !self.in_heap(lba) {
@@ -1229,6 +1258,7 @@ impl<D: BlockDevice> ExVolume<D> {
     /// # Errors
     /// [`Error::Exists`] (taken name, or a folder into itself), or the
     /// card failed.
+    #[optimize(size)]
     pub fn node_move(
         &mut self,
         from: u64,
@@ -1258,6 +1288,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// Whether folder `dir` lies inside folder `top` (searched from `top`
     /// down, depth-bounded: exFAT records no parents).
+    #[optimize(size)]
     fn below16(&mut self, dir: u64, top: u64) -> Result<bool, Error> {
         let mut stack = [(0u64, 0u64); 16];
         let mut depth = 1;
@@ -1288,6 +1319,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// The card failed or the file is damaged.
+    #[optimize(size)]
     pub fn node_read(
         &mut self,
         n: &Node,
@@ -1320,6 +1352,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Errors
     /// The card failed.
+    #[optimize(size)]
     pub fn node_space(&mut self, scratch: &mut [u8]) -> Result<(u64, u64), Error> {
         let (_, free) = self.scan(2, u32::MAX, scratch)?;
         let cb = self.cluster_bytes() as u64;
@@ -1328,6 +1361,7 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// The largest file: exFAT's sizes are 64-bit; the card's capacity.
     #[must_use]
+    #[optimize(size)]
     pub fn node_max_file(&self) -> u64 {
         u64::from(self.clusters) * self.cluster_bytes() as u64
     }

@@ -52,17 +52,19 @@ fn main() {
         }
     };
     println!("cargo:rustc-env=RP_TODAY_WALLPAPER_NAME={name}");
-    // Packed for the image (sheet today-image-room.md): each plane through
-    // PNG's Paeth filter, then zlib; unpacked once at start into the RAM
-    // pool (`rp_today::unpack_wallpaper`). The raw planes stay beside it
-    // for the PC's checks.
+    // Packed for the image (R208): the Y, U and V planes by context
+    // modelling (`rp_inflate::plane`: LOCO-I's predictor, contexts by
+    // activity, a range coder; ~28% under PNG's Paeth and deflate, the
+    // sheet today-image-room.md's first way); unpacked once at start into
+    // the RAM pool (`rp_today::unpack_wallpaper`). The raw planes stay
+    // beside it for the PC's checks.
     let packed = pack_wallpaper(&wall);
     println!(
         "cargo:warning=wallpaper ({name}) packed {} -> {} bytes",
         wall.len(),
         packed.len()
     );
-    std::fs::write(Path::new(&out).join("wallpaper.zz"), packed).expect("OUT_DIR writable");
+    std::fs::write(Path::new(&out).join("wallpaper.rppl"), packed).expect("OUT_DIR writable");
     std::fs::write(Path::new(&out).join("wallpaper.yuv"), wall).expect("OUT_DIR writable");
 
     // The radar's built-in base map, as layers every look is coloured from
@@ -225,15 +227,12 @@ fn utc_offset_minutes() -> i64 {
         .unwrap_or(0)
 }
 
-/// The planes (Y, then U and V at half size) each Paeth-filtered, then
-/// zlib: what `rp_today::unpack_wallpaper` undoes.
+/// The planes (Y, then U and V at half size) as one `RPPL` stream: what
+/// `rp_today::unpack_wallpaper` undoes.
 fn pack_wallpaper(wall: &[u8]) -> Vec<u8> {
     let (y, uv) = wall.split_at(W * H);
     let (u, v) = uv.split_at(W * H / 4);
-    let mut f = rp_inflate::pack::paeth_filter(y, W, H);
-    f.extend(rp_inflate::pack::paeth_filter(u, W / 2, H / 2));
-    f.extend(rp_inflate::pack::paeth_filter(v, W / 2, H / 2));
-    rp_inflate::pack::zlib(&f)
+    rp_inflate::plane::pack::pack_planes(&[(y, W, H), (u, W / 2, H / 2), (v, W / 2, H / 2)])
 }
 
 /// The radar map's rows (the Weather app's page).

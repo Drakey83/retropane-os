@@ -467,6 +467,7 @@ fn chs(lba: u32) -> [u8; 3] {
 const BOOT_CODE: [u8; 4] = [0xCD, 0x18, 0xEB, 0xFE];
 
 /// Writes `count` zero sectors from `lba`, in runs as long as `scratch`.
+#[optimize(size)]
 fn zero<D: BlockDevice>(
     dev: &mut D,
     lba: u32,
@@ -491,6 +492,7 @@ fn zero<D: BlockDevice>(
 /// [`Error::NoRoom`] for a scratch under a sector or a layout that doesn't
 /// fit the device; the device's errors (the card is then unformatted: its
 /// boot sector cleared, not yet written).
+#[optimize(size)]
 pub fn write<D: BlockDevice>(dev: &mut D, l: &Layout, scratch: &mut [u8]) -> Result<(), Error> {
     let len = scratch.len() / SECTOR * SECTOR;
     if len == 0 || l.part_start.checked_add(l.part_sectors) != Some(l.total) {
@@ -547,6 +549,7 @@ pub fn write<D: BlockDevice>(dev: &mut D, l: &Layout, scratch: &mut [u8]) -> Res
 
 /// FAT: the FATs and fixed root zeroed, their first entries, the root's
 /// label, FSInfo.
+#[optimize(size)]
 fn write_fat<D: BlockDevice>(dev: &mut D, l: &Layout, s: &mut [u8]) -> Result<(), Error> {
     let p = l.part_start;
     let fat_start = p + l.fat_offset;
@@ -661,6 +664,7 @@ fn fat_boot_sector(l: &Layout) -> [u8; SECTOR] {
 }
 
 /// exFAT: the FAT, the bitmap, the up-case table and the root directory.
+#[optimize(size)]
 fn write_exfat<D: BlockDevice>(dev: &mut D, l: &Layout, s: &mut [u8]) -> Result<(), Error> {
     let p = l.part_start;
     let spc = l.sectors_per_cluster;

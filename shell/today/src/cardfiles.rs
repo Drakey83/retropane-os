@@ -64,6 +64,7 @@ fn is_kind(name: &[u8], kind: &[u8]) -> bool {
 
 /// Each file of `kind` (its name and size), the root's first and then the
 /// folder's, at most [`LIST_MAX`].
+#[optimize(size)]
 fn each<D: BlockDevice>(
     vol: &mut AnyVolume<D>,
     kind: &[u8],
@@ -95,6 +96,7 @@ fn each<D: BlockDevice>(
 ///
 /// # Errors
 /// The card not readable.
+#[optimize(size)]
 pub fn list<D: BlockDevice>(
     card: D,
     start: u32,
@@ -140,6 +142,7 @@ pub fn list<D: BlockDevice>(
 ///
 /// # Errors
 /// The card not readable, no such file, or a whole file bigger than `out`.
+#[optimize(size)]
 pub fn read<D: BlockDevice>(
     card: D,
     start: u32,
@@ -211,6 +214,7 @@ pub fn name_ok(name: &[u8]) -> bool {
 ///
 /// # Errors
 /// As [`put_from`].
+#[optimize(size)]
 pub fn put<D: BlockDevice>(
     card: D,
     start: u32,
@@ -246,6 +250,7 @@ pub fn put<D: BlockDevice>(
 /// # Errors
 /// A name [`name_ok`] refuses, over [`WRITE_MAX`], the card not readable
 /// or full, or the app's bytes ending short.
+#[optimize(size)]
 pub fn put_from<D: BlockDevice>(
     card: D,
     start: u32,

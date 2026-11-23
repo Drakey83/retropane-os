@@ -1744,3 +1744,74 @@ fn a_staged_file_is_written_a_piece_at_a_time_and_linked_at_the_commit() {
     assert!(health(&mut v).clean());
     assert_eq!(v.stage("maps/c.rpm", 0, &mut scratch), Err(Error::NoRoom));
 }
+
+/// Every function a generic `impl` holds (its instances are compiled in
+/// the crate that uses them, at that crate's opt-level: rp-today's 3)
+/// says `#[optimize(size)]` itself, so the card code stays built for size
+/// wherever it lands (ADR-0005 rule 8; R208 found 25 KB at opt-level 3).
+/// Returns the functions without it, `file:line`.
+pub(crate) fn unmarked_generic_fns(name: &str, src: &str) -> Vec<String> {
+    let mut missing = Vec::new();
+    let (mut generic, mut marked) = (false, false);
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        if l.starts_with("mod tests {") && i > 0 && lines[i - 1].starts_with("#[cfg(test)]") {
+            break;
+        }
+        if let Some(rest) = l.strip_prefix("impl<") {
+            let params = rest.split('>').next().unwrap_or("");
+            generic = params.split(',').any(|p| !p.trim().starts_with('\''));
+        } else if l.starts_with('}') {
+            generic = false;
+        }
+        let t = l.trim_start();
+        let is_fn = l.starts_with("    ")
+            && !l.starts_with("     ")
+            && [
+                "fn ",
+                "pub fn ",
+                "pub(crate) fn ",
+                "const fn ",
+                "pub const fn ",
+            ]
+            .iter()
+            .any(|p| t.starts_with(p));
+        if generic && is_fn && !marked {
+            missing.push(format!("{name}:{}", i + 1));
+        }
+        if t == "#[optimize(size)]" {
+            marked = true;
+        } else if !(t.starts_with("#[") || t.starts_with("///")) {
+            marked = false;
+        }
+    }
+    missing
+}
+
+#[test]
+fn generic_card_code_is_built_for_size_wherever_it_lands() {
+    let files = [
+        ("lib.rs", include_str!("lib.rs")),
+        ("exfat.rs", include_str!("exfat.rs")),
+        ("node.rs", include_str!("node.rs")),
+        ("node_ex.rs", include_str!("node_ex.rs")),
+        ("guard.rs", include_str!("guard.rs")),
+        ("mkfs.rs", include_str!("mkfs.rs")),
+        ("check.rs", include_str!("check.rs")),
+        ("survey.rs", include_str!("survey.rs")),
+        // The SD card driver below it, built for size the same way (its
+        // instances land beside these).
+        (
+            "sdcard/lib.rs",
+            include_str!("../../../drivers/sdcard/src/lib.rs"),
+        ),
+    ];
+    let missing: Vec<String> = files
+        .iter()
+        .flat_map(|(n, s)| unmarked_generic_fns(n, s))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "generic functions without #[optimize(size)]: {missing:?}"
+    );
+}

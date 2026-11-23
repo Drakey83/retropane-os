@@ -35,6 +35,7 @@ fn path_of(name: &[u8; 12]) -> [u8; 19] {
 /// No volume, no file, a short or damaged header, another place's map
 /// under its name, or a file whose length isn't its header's.
 #[inline(never)]
+#[optimize(size)]
 pub fn head<D: BlockDevice>(
     card: D,
     start: u32,
@@ -76,6 +77,7 @@ pub fn head<D: BlockDevice>(
 /// file was found one run by [`head`] in this run of the program, and
 /// nothing writes it while it is read (a new map from the dock stops the
 /// read first).
+#[optimize(size)]
 pub fn sectors<D: BlockDevice>(
     mut card: D,
     run: Reserved,
@@ -98,6 +100,7 @@ pub fn sectors<D: BlockDevice>(
 /// # Errors
 /// The card's or the volume's ([`Error::Fragmented`]: no run that long).
 #[inline(never)]
+#[optimize(size)]
 pub fn stage<D: BlockDevice>(
     card: D,
     start: u32,
@@ -116,6 +119,7 @@ pub fn stage<D: BlockDevice>(
 /// # Errors
 /// The card's, or a piece past the run.
 #[inline(never)]
+#[optimize(size)]
 pub fn stage_piece<D: BlockDevice>(
     card: D,
     start: u32,
@@ -133,6 +137,7 @@ pub fn stage_piece<D: BlockDevice>(
 /// # Errors
 /// The card's or the volume's ([`Error::Fragmented`]: the run was taken).
 #[inline(never)]
+#[optimize(size)]
 pub fn commit<D: BlockDevice>(
     card: D,
     start: u32,
@@ -151,6 +156,7 @@ pub fn commit<D: BlockDevice>(
 /// The next piece (up to [`PIECE`]) of `key`'s kept map from byte `off`
 /// into `out`: the bytes read, or `None`.
 #[inline(never)]
+#[optimize(size)]
 pub fn piece<D: BlockDevice>(
     card: D,
     start: u32,
@@ -186,6 +192,7 @@ pub fn piece<D: BlockDevice>(
 /// # Errors
 /// The card's or the volume's.
 #[inline(never)]
+#[optimize(size)]
 pub fn write<D: BlockDevice>(
     card: D,
     start: u32,
@@ -208,6 +215,7 @@ pub fn write<D: BlockDevice>(
 // Its own frame (the stack rule, P6): its name and header arrays (~2 KB)
 // never sit under a commit's or a put's deepest calls.
 #[inline(never)]
+#[optimize(size)]
 fn cap<D: BlockDevice>(
     vol: &mut AnyVolume<D>,
     key: Key,

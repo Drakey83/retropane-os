@@ -27,6 +27,11 @@
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![forbid(unsafe_code)]
+// ADR-0005 rule 8 (cold code built for size) where this crate's generics
+// land: an instance is compiled at the opt-level of the crate that uses
+// it (rp-today's 3), not this crate's `s`, so each generic function says
+// so itself (R208: 25 KB of card code at opt-level 3 in rp-today).
+#![feature(optimize_attribute)]
 
 use rp_hal_api::{BlockDevice, BlockError};
 
@@ -349,6 +354,7 @@ impl<'a> Fill<'a> {
     /// Writes it from sector `lba` on, the last partial sector zero-padded:
     /// whole sectors of bytes as they are, zeros and the tail through
     /// `scratch` (a sector on the stack when `scratch` is shorter).
+    #[optimize(size)]
     pub(crate) fn write<D: BlockDevice>(
         self,
         dev: &mut D,
@@ -625,6 +631,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Mounts the FAT12, FAT16 or FAT32 partition whose first sector is
     /// `base`.
     #[inline(never)]
+    #[optimize(size)]
     pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
         let mut buf = [0u8; SECTOR];
         dev.read_blocks(base, &mut buf)?;
@@ -727,18 +734,21 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Which FAT the volume has.
     #[must_use]
+    #[optimize(size)]
     pub fn kind(&self) -> FatKind {
         self.kind
     }
 
     /// Bytes per cluster.
     #[must_use]
+    #[optimize(size)]
     pub fn cluster_bytes(&self) -> usize {
         self.sectors_per_cluster as usize * SECTOR
     }
 
     /// Data clusters on the volume.
     #[must_use]
+    #[optimize(size)]
     pub fn clusters(&self) -> u32 {
         self.clusters
     }
@@ -749,6 +759,7 @@ impl<D: BlockDevice> Volume<D> {
     /// is no backup): the card's own copy, for scrubbing or repairing a
     /// weak FAT sector safely.
     #[must_use]
+    #[optimize(size)]
     pub fn fat_mirror(&self, lba: u32) -> Option<u32> {
         let in_first = (self.fat_start..self.fat_start + self.fat_sectors).contains(&lba);
         (in_first && self.mirrored).then(|| lba + self.fat_sectors)
@@ -756,31 +767,37 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Gives the device back (flushing nothing: every operation leaves the
     /// FAT written).
+    #[optimize(size)]
     pub fn into_inner(self) -> D {
         self.dev
     }
 
     /// The device, for its own diagnostics.
     #[must_use]
+    #[optimize(size)]
     pub fn device(&self) -> &D {
         &self.dev
     }
 
+    #[optimize(size)]
     fn cluster_lba(&self, cluster: u32) -> u32 {
         self.data_start + (cluster - 2) * self.sectors_per_cluster
     }
 
+    #[optimize(size)]
     fn valid_cluster(&self, c: u32) -> bool {
         (2..2 + self.clusters).contains(&c)
     }
 
     /// Whether directory `dir` is FAT12/16's fixed root.
+    #[optimize(size)]
     fn fixed_root(&self, dir: u32) -> bool {
         dir == 0 && self.root_sectors > 0
     }
 
     /// Where directory cluster `cluster` lies (its first sector and sector
     /// count); 0 on FAT12/16: the fixed root, whole.
+    #[optimize(size)]
     fn dir_unit(&self, cluster: u32) -> (u32, u32) {
         if self.fixed_root(cluster) {
             (self.root_lba, self.root_sectors)
@@ -790,12 +807,14 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Most clusters a directory may span ([`DIR_MAX_BYTES`]).
+    #[optimize(size)]
     fn dir_clusters_max(&self) -> u32 {
         (DIR_MAX_BYTES / self.cluster_bytes()).max(1) as u32
     }
 
     // --- FAT ---------------------------------------------------------------
 
+    #[optimize(size)]
     fn fat_load(&mut self, sector: u32) -> Result<(), Error> {
         if self.fat_cached == Some(sector) {
             return Ok(());
@@ -808,6 +827,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Writes the cached FAT sector to every FAT copy.
+    #[optimize(size)]
     fn fat_flush(&mut self) -> Result<(), Error> {
         if let (Some(sector), true) = (self.fat_cached, self.fat_dirty) {
             for copy in 0..self.fats {
@@ -823,6 +843,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Where `cluster`'s entry starts: its FAT sector and the byte in it
     /// (a FAT12 entry at byte 511 runs into the next sector).
+    #[optimize(size)]
     fn fat_at(&self, cluster: u32) -> Result<(u32, usize), Error> {
         if !self.valid_cluster(cluster) {
             return Err(Error::Corrupt);
@@ -832,6 +853,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// `cluster`'s entry as stored (end marks not widened).
+    #[optimize(size)]
     fn fat_raw(&mut self, cluster: u32) -> Result<u32, Error> {
         let (sector, at) = self.fat_at(cluster)?;
         let mut w = [0u8; 2];
@@ -848,11 +870,13 @@ impl<D: BlockDevice> Volume<D> {
         Ok(entry_get(self.kind, &w, 0, cluster))
     }
 
+    #[optimize(size)]
     fn fat_get(&mut self, cluster: u32) -> Result<u32, Error> {
         let raw = self.fat_raw(cluster)?;
         Ok(self.kind.widen(raw))
     }
 
+    #[optimize(size)]
     fn fat_set(&mut self, cluster: u32, value: u32) -> Result<(), Error> {
         let (sector, at) = self.fat_at(cluster)?;
         if at + self.kind.width() as usize <= SECTOR {
@@ -876,6 +900,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// The cluster after `cluster` in its chain, or `None` at the end.
+    #[optimize(size)]
     fn next_cluster(&mut self, cluster: u32) -> Result<Option<u32>, Error> {
         let v = self.fat_get(cluster)?;
         if v >= EOC_MIN {
@@ -888,6 +913,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Frees a chain from `head` (both FATs).
+    #[optimize(size)]
     fn free_chain(&mut self, head: u32) -> Result<(), Error> {
         let mut c = head;
         let mut freed = 0u32;
@@ -916,6 +942,7 @@ impl<D: BlockDevice> Volume<D> {
     /// the write-back cache, which may hold changes not yet written, is
     /// always read from the cache. A `scratch` under one sector falls back
     /// to the cache alone: one sector per command.
+    #[optimize(size)]
     fn find_free_run(
         &mut self,
         from: u32,
@@ -978,6 +1005,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Adjusts the free-cluster count by `delta` (when it's known) and sets
     /// the next-free hint when given. A damaged FSInfo is left alone.
+    #[optimize(size)]
     fn fsinfo_adjust(&mut self, delta: i64, next_free: Option<u32>) -> Result<(), Error> {
         let Some(lba) = self.fsinfo_lba else {
             return Ok(());
@@ -998,6 +1026,7 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    #[optimize(size)]
     fn fsinfo_hint(&mut self) -> Result<u32, Error> {
         let Some(lba) = self.fsinfo_lba else {
             return Ok(2);
@@ -1010,6 +1039,7 @@ impl<D: BlockDevice> Volume<D> {
     // --- Directory ---------------------------------------------------------
 
     /// Folds a long-name entry into the name being assembled.
+    #[optimize(size)]
     fn take_lfn(&mut self, e: &[u8]) {
         let seq = e[0];
         if seq & 0x40 != 0 {
@@ -1056,6 +1086,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Walks the root directory, calling `f` with each entry's sector,
     /// index, raw 32 bytes and assembled long name (empty when it has
     /// none) until `f` returns `true`. Returns whether it did.
+    #[optimize(size)]
     fn walk_dir(&mut self, dir: u32, f: &mut Visit<'_>) -> Result<bool, Error> {
         let mut cluster = dir;
         let fixed = self.fixed_root(dir);
@@ -1110,12 +1141,14 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Calls `f` for every file and subdirectory in the root directory
     /// (volume labels and deleted entries skipped).
+    #[optimize(size)]
     pub fn for_each_root(&mut self, f: impl FnMut(&DirEntry<'_>)) -> Result<(), Error> {
         self.for_each_in("", f)
     }
 
     /// Calls `f` for every file and subdirectory in the directory at `path`
     /// (`""` or `"/"`: the root; `.` and `..` entries skipped).
+    #[optimize(size)]
     pub fn for_each_in(
         &mut self,
         path: &str,
@@ -1146,12 +1179,14 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Finds a file by path (`name`, `dir/name` or `dir\name`; ASCII,
     /// case-insensitive; long or short forms).
+    #[optimize(size)]
     pub fn find(&mut self, path: &str) -> Result<File, Error> {
         let (dir, leaf) = self.parent_of(path)?;
         self.find_in(dir, leaf)
     }
 
     /// The directory cluster a path's parent names, and its last component.
+    #[optimize(size)]
     fn parent_of<'p>(&mut self, path: &'p str) -> Result<(u32, &'p str), Error> {
         let mut parts = components(path)?;
         let leaf = parts.next_back().ok_or(Error::BadName)?;
@@ -1163,6 +1198,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// The cluster of the directory at `path` (the root for `""`).
+    #[optimize(size)]
     fn resolve_dir(&mut self, path: &str) -> Result<u32, Error> {
         let mut dir = self.root_cluster;
         for d in components(path)? {
@@ -1172,6 +1208,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// The subdirectory `name` of `dir`.
+    #[optimize(size)]
     fn lookup_dir(&mut self, dir: u32, name: &str) -> Result<u32, Error> {
         match self.find_entry(dir, name, true)?.first_cluster {
             // A subdirectory pointing at the root (or nowhere) is corrupt.
@@ -1181,6 +1218,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Finds a file in directory `dir` by name.
+    #[optimize(size)]
     fn find_in(&mut self, dir: u32, name: &str) -> Result<File, Error> {
         check_name(name.as_bytes())?;
         self.find_entry(dir, name, false)
@@ -1190,6 +1228,7 @@ impl<D: BlockDevice> Volume<D> {
     /// one matching walk for both (long or short name, case-insensitive;
     /// volume labels and `.`/`..` never match).
     #[inline(never)]
+    #[optimize(size)]
     fn find_entry(&mut self, dir: u32, name: &str, want_dir: bool) -> Result<File, Error> {
         let want = name.as_bytes();
         let mut found = None;
@@ -1222,6 +1261,7 @@ impl<D: BlockDevice> Volume<D> {
     /// clusters are freed; a cut in between leaks space, which `check`
     /// reports as lost.
     #[inline(never)]
+    #[optimize(size)]
     pub fn remove(&mut self, path: &str) -> Result<(), Error> {
         let (dir, leaf) = self.parent_of(path)?;
         let (file, is_dir) = match self.find_entry(dir, leaf, false) {
@@ -1310,6 +1350,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Panics
     /// If `scratch` is shorter than a sector.
     #[inline(never)]
+    #[optimize(size)]
     pub fn read_file(
         &mut self,
         file: &File,
@@ -1388,6 +1429,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Panics
     /// If `scratch` is shorter than a sector.
     #[inline(never)]
+    #[optimize(size)]
     pub fn read_range(
         &mut self,
         file: &File,
@@ -1465,6 +1507,7 @@ impl<D: BlockDevice> Volume<D> {
     /// sectors; the larger it is (up to the FAT's size), the fewer device
     /// commands a long search takes. Any length works: under a sector, the
     /// FAT is read one sector per command.
+    #[optimize(size)]
     pub fn replace(
         &mut self,
         name: &str,
@@ -1474,6 +1517,7 @@ impl<D: BlockDevice> Volume<D> {
         self.replace_fill(name, Fill::Bytes(data), scratch)
     }
 
+    #[optimize(size)]
     fn replace_fill(
         &mut self,
         name: &str,
@@ -1508,6 +1552,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Replaces `path`'s contents, or creates it (and any missing parent
     /// directories, like `mkdir -p`) when it doesn't exist.
     #[inline(never)]
+    #[optimize(size)]
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
         self.put_fill(path, Fill::Bytes(data), scratch)
     }
@@ -1519,6 +1564,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Panics
     /// If `scratch` is shorter than a sector.
+    #[optimize(size)]
     pub fn reserve(
         &mut self,
         path: &str,
@@ -1545,6 +1591,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::NoRoom`] for an empty file, [`Error::Fragmented`] with no
     /// free run that long, a folder's, or the device's.
+    #[optimize(size)]
     pub fn stage(&mut self, path: &str, bytes: usize, scratch: &mut [u8]) -> Result<Staged, Error> {
         let mut parts = components(path)?;
         parts.next_back();
@@ -1578,6 +1625,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::NoRoom`] for a piece not whole sectors or past the run, or
     /// the device's.
+    #[optimize(size)]
     pub fn stage_write(&mut self, s: &Staged, at: u32, data: &[u8]) -> Result<(), Error> {
         let n = u32::try_from(data.len() / SECTOR).map_err(|_| Error::NoRoom)?;
         if !data.len().is_multiple_of(SECTOR) || at.checked_add(n).is_none_or(|e| e > s.sectors) {
@@ -1593,6 +1641,7 @@ impl<D: BlockDevice> Volume<D> {
     /// # Errors
     /// [`Error::Fragmented`] if a cluster of the run was taken since the
     /// stage (the old file stays whole), or as [`Self::put`].
+    #[optimize(size)]
     pub fn commit(&mut self, path: &str, s: Staged, scratch: &mut [u8]) -> Result<Written, Error> {
         self.put_fill(path, Fill::Staged(s), scratch)
     }
@@ -1603,6 +1652,7 @@ impl<D: BlockDevice> Volume<D> {
     /// logs reuse their files: reminder R22, the PC's cached view stays
     /// right). [`Error::Fragmented`] if the clusters aren't one run,
     /// [`Error::NotFound`] if there's no such file or it's empty.
+    #[optimize(size)]
     pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
         let f = self.find(path)?;
         if f.first_cluster < 2 || f.size == 0 {
@@ -1623,6 +1673,7 @@ impl<D: BlockDevice> Volume<D> {
         })
     }
 
+    #[optimize(size)]
     fn put_fill(
         &mut self,
         path: &str,
@@ -1648,6 +1699,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Creates the directory `path` (its parent must exist): its first
     /// cluster with `.` and `..` is written and linked before the entry
     /// that makes it exist. An existing directory is [`Error::Exists`].
+    #[optimize(size)]
     pub fn mkdir(&mut self, path: &str, scratch: &mut [u8]) -> Result<(), Error> {
         let (parent, leaf) = self.parent_of(path)?;
         check_new_name(leaf.as_bytes())?;
@@ -1707,6 +1759,7 @@ impl<D: BlockDevice> Volume<D> {
     /// written), so a power cut leaves no file or the whole file; at worst
     /// some clusters stay allocated to nothing, which a disk check frees.
     /// A full root directory grows by a cluster.
+    #[optimize(size)]
     pub fn create(
         &mut self,
         path: &str,
@@ -1716,6 +1769,7 @@ impl<D: BlockDevice> Volume<D> {
         self.create_fill(path, Fill::Bytes(data), scratch)
     }
 
+    #[optimize(size)]
     fn create_fill(
         &mut self,
         path: &str,
@@ -1755,6 +1809,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Writes the directory entries (long-name entries when needed, then
     /// the short entry, in the last sector written) for `leaf` in `dir`;
     /// returns how many clusters the directory grew by.
+    #[optimize(size)]
     fn add_entry(
         &mut self,
         dir: u32,
@@ -1818,6 +1873,7 @@ impl<D: BlockDevice> Volume<D> {
         Ok(grown)
     }
 
+    #[optimize(size)]
     fn next_hint(&self, w: &Written, hint: u32) -> u32 {
         if w.clusters > 0 {
             w.first_cluster + if w.contiguous { w.clusters } else { 0 }
@@ -1827,6 +1883,7 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Whether an entry of `dir` has the short name `short`.
+    #[optimize(size)]
     fn short_exists(&mut self, dir: u32, short: &[u8; 11]) -> Result<bool, Error> {
         self.walk_dir(dir, &mut |_, _, e, _| e[..11] == short[..])
     }
@@ -1834,6 +1891,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Finds `need` consecutive free slots in directory `dir` (deleted or
     /// past its end), growing it by a zeroed cluster if it has none;
     /// returns their (sector, index), in order.
+    #[optimize(size)]
     fn free_slots(
         &mut self,
         dir: u32,
@@ -1895,6 +1953,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Allocates clusters for `data` (one contiguous run when there is one,
     /// searching from `hint`), writes it and links the chain in every FAT
     /// copy. The data is reachable only through what the caller links next.
+    #[optimize(size)]
     fn store(&mut self, data: Fill<'_>, hint: u32, scratch: &mut [u8]) -> Result<Written, Error> {
         if let Fill::Staged(s) = data {
             // Its data written a piece at a time into clusters still free:
@@ -2034,6 +2093,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// the boot sector read here never sits under a caller's deepest
     /// calls (the image's stack rule).
     #[inline(never)]
+    #[optimize(size)]
     pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
         if Self::is_exfat(&mut dev, base)? {
             Ok(Self::ExFat(exfat::ExVolume::mount(dev, base)?))
@@ -2045,6 +2105,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// Whether the boot sector at `base` names exFAT. Its own frame: the
     /// sector it reads is gone before either volume is made.
     #[inline(never)]
+    #[optimize(size)]
     fn is_exfat(dev: &mut D, base: u32) -> Result<bool, Error> {
         let mut boot = [0u8; SECTOR];
         dev.read_blocks(base, &mut boot)?;
@@ -2053,6 +2114,7 @@ impl<D: BlockDevice> AnyVolume<D> {
 
     /// Replaces or creates the file, its missing folders made (crash-safe
     /// on either).
+    #[optimize(size)]
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
         match self {
             Self::Fat(v) => v.put(path, data, scratch),
@@ -2062,6 +2124,7 @@ impl<D: BlockDevice> AnyVolume<D> {
 
     /// Finds one free run for a file written a piece at a time
     /// ([`Volume::stage`], [`exfat::ExVolume::stage`]).
+    #[optimize(size)]
     pub fn stage(&mut self, path: &str, bytes: usize, scratch: &mut [u8]) -> Result<Staged, Error> {
         match self {
             Self::Fat(v) => v.stage(path, bytes, scratch),
@@ -2070,6 +2133,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     }
 
     /// Writes whole sectors of a staged file ([`Volume::stage_write`]).
+    #[optimize(size)]
     pub fn stage_write(&mut self, s: &Staged, at: u32, data: &[u8]) -> Result<(), Error> {
         match self {
             Self::Fat(v) => v.stage_write(s, at, data),
@@ -2078,6 +2142,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     }
 
     /// Links a staged file as `path` ([`Volume::commit`]).
+    #[optimize(size)]
     pub fn commit(&mut self, path: &str, s: Staged, scratch: &mut [u8]) -> Result<Written, Error> {
         match self {
             Self::Fat(v) => v.commit(path, s, scratch),
@@ -2087,6 +2152,7 @@ impl<D: BlockDevice> AnyVolume<D> {
 
     /// Reserves a zero-filled file in one run of sectors (see
     /// [`Reserved`]).
+    #[optimize(size)]
     pub fn reserve(
         &mut self,
         path: &str,
@@ -2100,6 +2166,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     }
 
     /// Where an existing file lies if contiguous (`Volume::extent`).
+    #[optimize(size)]
     pub fn extent(&mut self, path: &str) -> Result<Reserved, Error> {
         match self {
             Self::Fat(v) => v.extent(path),
@@ -2111,6 +2178,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Panics
     /// If `scratch` is shorter than a sector.
+    #[optimize(size)]
     pub fn read_back(
         &mut self,
         path: &str,
@@ -2132,6 +2200,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// Reads `len` bytes of `path` from byte `start` (see
     /// [`Volume::read_range`]); returns the file's size and the bytes
     /// passed.
+    #[optimize(size)]
     pub fn read_range(
         &mut self,
         path: &str,
@@ -2155,6 +2224,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     }
 
     /// Deletes the file or empty folder at `path` (crash-safe on either).
+    #[optimize(size)]
     pub fn remove(&mut self, path: &str) -> Result<(), Error> {
         match self {
             Self::Fat(v) => v.remove(path),
@@ -2164,6 +2234,7 @@ impl<D: BlockDevice> AnyVolume<D> {
 
     /// The boot-file guard for whichever format the volume is (see
     /// [`crate::guard`]).
+    #[optimize(size)]
     pub fn guard(&mut self, names: &[&str]) -> Result<Guard, Error> {
         match self {
             Self::Fat(v) => v.guard(names),
@@ -2175,6 +2246,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     /// it can't be made: the ~1.3 KiB guard is never carried back through
     /// the caller's frames (quality audit C89: the loader's stack).
     #[inline(never)]
+    #[optimize(size)]
     pub fn guard_into(&mut self, names: &[&str], out: &mut Option<Guard>) {
         *out = None;
         if let Ok(g) = self.guard(names) {
@@ -2183,6 +2255,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     }
 
     /// Checks the volume, read-only ([`check`]).
+    #[optimize(size)]
     pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<Health, Error> {
         match self {
             Self::Fat(v) => v.check(seen, scratch),
@@ -2192,6 +2265,7 @@ impl<D: BlockDevice> AnyVolume<D> {
 
     /// Calls `f` with each entry of the folder `path` ("" for the root):
     /// its name, whether it is a folder, and its size in bytes.
+    #[optimize(size)]
     pub fn list(&mut self, path: &str, f: &mut dyn FnMut(&[u8], bool, u64)) -> Result<(), Error> {
         match self {
             Self::Fat(v) => v.for_each_in(path, |e| f(e.name, e.is_dir, u64::from(e.size))),
@@ -2200,6 +2274,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     }
 
     /// The block device.
+    #[optimize(size)]
     pub fn device(&self) -> &D {
         match self {
             Self::Fat(v) => v.device(),
@@ -2213,6 +2288,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// As the format's own.
+    #[optimize(size)]
     pub fn node_child(
         &mut self,
         dir: u64,
@@ -2229,6 +2305,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// [`Error::NotFound`] when `loc` isn't a whole entry set.
+    #[optimize(size)]
     pub fn node_stat(&mut self, loc: u64, out: &mut node::Node) -> Result<(), Error> {
         match self {
             Self::Fat(v) => v.node_stat(loc, out),
@@ -2240,6 +2317,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// The card failed or the file is damaged.
+    #[optimize(size)]
     pub fn node_read(
         &mut self,
         n: &node::Node,
@@ -2257,6 +2335,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// A bad or taken name, no room, or the folder is gone.
+    #[optimize(size)]
     pub fn node_create(
         &mut self,
         dir: u64,
@@ -2276,6 +2355,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// No room (nothing changed), or the folder is gone.
+    #[optimize(size)]
     pub fn node_reserve(
         &mut self,
         dir: u64,
@@ -2292,6 +2372,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// Past it, off a sector, or the card failed.
+    #[optimize(size)]
     pub fn node_write(
         &mut self,
         r: &mut node::Reservation,
@@ -2309,6 +2390,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// A bad or taken name (the reservation stays), or the card failed.
+    #[optimize(size)]
     pub fn node_commit(
         &mut self,
         r: &node::Reservation,
@@ -2328,6 +2410,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// The card failed.
+    #[optimize(size)]
     pub fn node_abandon(&mut self, r: &node::Reservation) -> Result<(), Error> {
         match self {
             Self::Fat(v) => v.node_abandon(r),
@@ -2339,6 +2422,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// The card failed or is damaged.
+    #[optimize(size)]
     pub fn node_recover(&mut self) -> Result<u32, Error> {
         match self {
             Self::Fat(v) => v.node_recover(),
@@ -2350,6 +2434,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// Not empty, gone, or the card failed.
+    #[optimize(size)]
     pub fn node_delete(&mut self, loc: u64) -> Result<(), Error> {
         match self {
             Self::Fat(v) => v.node_delete(loc),
@@ -2361,6 +2446,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// A bad or taken name, `loc` not in `dir`, or the card failed.
+    #[optimize(size)]
     pub fn node_rename(
         &mut self,
         dir: u64,
@@ -2378,6 +2464,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// A taken name, a folder into itself, or the card failed.
+    #[optimize(size)]
     pub fn node_move(
         &mut self,
         from: u64,
@@ -2395,6 +2482,7 @@ impl<D: BlockDevice> AnyVolume<D> {
     ///
     /// # Errors
     /// The card failed.
+    #[optimize(size)]
     pub fn node_space(&mut self, scratch: &mut [u8]) -> Result<(u64, u64), Error> {
         match self {
             Self::Fat(v) => v.node_space(scratch),
@@ -2404,6 +2492,7 @@ impl<D: BlockDevice> AnyVolume<D> {
 
     /// The largest file the volume holds.
     #[must_use]
+    #[optimize(size)]
     pub fn node_max_file(&self) -> u64 {
         match self {
             Self::Fat(v) => v.node_max_file(),
