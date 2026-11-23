@@ -1283,7 +1283,24 @@ impl Notes {
     /// old way in: the store now holds them).
     #[must_use]
     pub fn new(_samples: &'static [Note]) -> Self {
-        Self {
+        notes_start!(value)
+    }
+
+    /// [`Notes::new`] made straight into `slot` (the program's, in `.bss`),
+    /// a field at a time: Notes is about 11 KB (its PNG band 4 KB), and made
+    /// on the stack and moved it took an 11,000 B frame in the program's
+    /// entry (`cargo xtask stacks`, P6: every frame under 4 KB).
+    pub fn new_in(slot: &mut core::mem::MaybeUninit<Self>) -> &mut Self {
+        notes_start!(slot,)
+    }
+}
+
+/// Every field's start, made as a value or straight into a slot
+/// (`rp_hal_mem::in_place!`): one list for [`Notes::new`] and
+/// [`Notes::new_in`], as the shell's `shell_start!`.
+macro_rules! notes_start {
+    ($($how:tt)*) => {
+        rp_hal_mem::in_place!($($how)* Notes {
             tool: Tool::Pen,
             pen: 0,
             marker_hue: None,
@@ -1367,9 +1384,12 @@ impl Notes {
             learned_at: None,
             caps_next: true,
             sugg_stale: false,
-        }
-    }
+        })
+    };
+}
+use notes_start;
 
+impl Notes {
     /// Shows `view`.
     pub fn show(&mut self, view: View) {
         self.view = view;
@@ -3074,18 +3094,16 @@ impl Notes {
         let block = if ink { left.trailing_zeros() as u8 } else { 0 };
         let mut count = export::Count::default();
         let mut title = Text::<64>::EMPTY;
-        let mut png = core::mem::take(&mut self.png);
         if let Some(g) = cx.pim.and_then(|c| c.try_borrow().ok())
             && let Some(store) = g.as_ref()
         {
             title = Text::of(store.get(id).map_or(&[][..], |r| r.text(tag::TITLE)));
             match fmt {
                 export::Format::Svg => export::svg(store, id, block, &mut count),
-                export::Format::Png => export::png(store, id, block, &mut png, &mut count),
+                export::Format::Png => export::png(store, id, block, &mut self.png, &mut count),
                 _ => export::text(store, id, title.get(), fmt, &mut count),
             }
         }
-        self.png = png;
         let mut name = [0u8; 64];
         let n = export::file_name(title.get(), if ink { block + 1 } else { 0 }, fmt, &mut name);
         self.job = Job::Write {
@@ -3260,6 +3278,14 @@ pub fn opened(_today: i32) -> Notes {
 #[must_use]
 pub fn opened_for(today: i32, intent: u8) -> Notes {
     let mut n = opened(today);
+    n.start_new = intent == rp_app::INTENT_NEW;
+    n
+}
+
+/// [`opened_for`] made straight into the program's slot (no 11 KB value on
+/// the stack: [`Notes::new_in`]).
+pub fn opened_in(slot: &mut core::mem::MaybeUninit<Notes>, _today: i32, intent: u8) -> &mut Notes {
+    let n = Notes::new_in(slot);
     n.start_new = intent == rp_app::INTENT_NEW;
     n
 }

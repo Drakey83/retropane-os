@@ -1022,3 +1022,25 @@ fn every_tray_message_fits_between_color_and_the_tray_edge() {
         );
     }
 }
+
+#[test]
+fn notes_made_in_its_slot_starts_as_notes_made_whole() {
+    // The program's entry makes Notes in its slot a field at a time
+    // (`opened_in`, P6: no 11 KB value on the stack); it must start as the
+    // value `opened_for` gives, for either intent.
+    for intent in [0, rp_app::INTENT_NEW] {
+        let whole = opened_for(0, intent);
+        let mut slot = std::boxed::Box::new(core::mem::MaybeUninit::<Notes>::uninit());
+        let made = opened_in(&mut slot, 0, intent);
+        assert_eq!(made.start_new, whole.start_new);
+        assert_eq!(made.start_new, intent == rp_app::INTENT_NEW);
+        assert!(matches!(made.view, View::Home));
+        assert!(matches!(made.job, Job::None));
+        assert!(made.asking.is_none());
+        assert_eq!((made.size, made.n_files, made.live_n), (1, 0, 0));
+        assert_eq!(made.rows_of, whole.rows_of);
+        assert_eq!(made.live_w, whole.live_w);
+        assert!(made.png.band.iter().all(|&b| b == 0));
+        assert!(made.caps_next);
+    }
+}
