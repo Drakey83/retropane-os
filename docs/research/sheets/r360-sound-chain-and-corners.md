@@ -451,3 +451,40 @@ are not the limit, HL's models are already low in triangles. With run
 **~0.3 ms a frame, ~1% of the fight**, for a model cooker, a level
 picker and the levels' memory. A bigger cut is a visible one (the bound
 in pixels raised), which is the owner's look.
+
+## Step 14: the chip's overlap back without the glitches (R340's next speed work): measured, no certain timing rule
+
+Why the plays fell from ~45 to ~40 fps: the strict order (R340, run
+316: a TA never runs beside a render) cured the checkerboards, flashing
+and stalls that kit 113's free overlap brought (runs 297, 314), at ~9 fps
+of play (run 314 49.3 against run 316 40.8). From ~40 to ~31 the plays
+differed, not the code (runs 335a-e).
+
+**Runs 354a-c (the fight, the committed kit):** strict 17,276 ms;
+`-rpbeside` (run 314's guess: the last frame's two times) **16,589 ms
+(-4.0%; second half 33.4 -> 36.8 fps)**; free overlap (`-rpnoholdend`)
+16,614 ms. Bit 9 events 1 in each: the fight's scenes don't provoke it;
+the plays' do (run 314: 871 in 18,387 frames armed on the guess).
+
+**The frame log (30947150, `gfx-frames.bin`; runs 355a-d, 356a-c):**
+each chain's words, its TA time, each render's start and end, each bit
+9. On the fight and the walk:
+
+| | fight | walk | walk, `-rpbeside` |
+|---|---|---|---|
+| render ms: least / median | 9.6 / 23.4 | 9.7 / 24.8 | 9.7 / 25.0 |
+| render against its frame's words: correlation | 0.37 | 0.10 | 0.10 |
+| render against the one before (1st percentile) | 0.44x | 0.28x | 0.29x |
+| TA ms beyond its words' fit, at most | +14 | +9.5 | +13 |
+
+What it means: a render can fall to a quarter of the one before it, and
+a TA can run 26 ms on a frame's words where a render can be 9.6 ms, so no
+rule from the frame's size or the last frames' times is certain; a
+safe overlap needs the chip to say how far its render has got (a
+progress register, not yet found: the known-safe reads are the render
+settings, docs/hw/2700g.md). The walk gains nothing from overlap (CPU-
+bound, 25.5 fps both ways); the fight 4%, the plays most (their lighter
+scenes leave the chip as the limit). Next: a hands-free probe for a
+render-progress register (registers read during renders, those that
+count kept; reads only, an unknown register at worst ending in the bus's
+time-out), then a rule built on it.
