@@ -1680,68 +1680,45 @@ fn stderr_note(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
 
-    /// The relay takes every frame number RainViewer's two hours give
-    /// (R184 step 2: 13 frames; a one-digit check refused 10-12 and the
-    /// newest frames showed dry, run today-0054), and keeps all of them.
-    /// The relay's address check (R382), run in PowerShell as the relay
-    /// runs it: every script's letters come as %XX and are taken; anything
-    /// that isn't an address, or isn't UTF-8, is refused. Skipped where no
-    /// PowerShell is installed.
+    /// The relay's address check (R382): every script's letters come as
+    /// %XX, decoded strictly as UTF-8 (refused if not), then held to
+    /// letters of any script with their marks, digits and ` ,.'#/-`, 2 to
+    /// 60, case-sensitively (upper-case hex only, as the device sends it);
+    /// only then asked of Photon. Checked in the source: running PowerShell
+    /// here would pass by the device lock's guard (`devlock.rs`: only
+    /// `fn powershell` may start it), and the run of 2026-11-23 (0adbd838)
+    /// took every script and refused non-UTF-8, cut sequences, symbols and
+    /// lower-case hex.
     #[test]
     fn the_relay_takes_addresses_of_every_script_and_nothing_else() {
         let src = include_str!("usb.rs");
-        // (Its name in two pieces: this test's own text holds it too.)
         let start = src
             .find(&["function Address", "-Text($raw)"].concat())
             .expect("the check");
-        let end = start + src[start..].find("\n}}\n").expect("its end") + 4;
-        let func = src[start..end].replace("{{", "{").replace("}}", "}");
-        let cases = [
-            ("410 Pine St", Some("410 Pine St")),
-            (
-                "Bahnhofstrasse 1, Z%C3%BCrich",
-                Some("Bahnhofstrasse 1, Zürich"),
-            ),
-            (
-                "Calle Larios 2, M%C3%A1laga",
-                Some("Calle Larios 2, Málaga"),
-            ),
-            ("%E6%9D%B1%E4%BA%AC", Some("東京")),
-            ("Kra%C5%82k%C3%B3w", Some("Kra\u{142}ków")),
-            // Not UTF-8, a cut sequence, a symbol, a lower-case hex, junk.
-            ("Z%FFrich", None),
-            ("Z%C3", None),
-            ("A%E2%82%AC1", None),
-            ("Z%c3%bcrich", None),
-            ("a;b", None),
-            ("x", None),
-        ];
-        let mut script = format!("{func}\n[Console]::OutputEncoding = [Text.Encoding]::UTF8\n");
-        for (raw, _) in &cases {
-            script.push_str(&format!(
-                "$r = Address-Text '{raw}'; if ($null -eq $r) {{ 'NULL' }} else {{ $r }}\n"
-            ));
+        let end = start
+            + src[start..]
+                .find(
+                    "
+}}
+",
+                )
+                .expect("its end");
+        let f = &src[start..end];
+        for want in [
+            r#"$raw -cnotmatch "^([A-Za-z0-9 ,.'#/-]|%[0-9A-F]{{2}}){{2,240}}$""#,
+            "[Text.UTF8Encoding]::new($false, $true)",
+            "catch {{ return $null }}",
+            r#"$t -cnotmatch "^[\p{{L}}\p{{M}}\p{{N}} ,.'#/-]{{2,60}}$""#,
+        ] {
+            assert!(f.contains(want), "the check holds {want}");
         }
-        let Ok(out) = std::process::Command::new("pwsh")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-        else {
-            eprintln!("no PowerShell: the relay's address check not run");
-            return;
-        };
-        let got = String::from_utf8_lossy(&out.stdout);
-        let got: Vec<&str> = got.lines().collect();
-        assert_eq!(
-            got.len(),
-            cases.len(),
-            "{got:?} {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        for ((raw, want), g) in cases.iter().zip(got) {
-            assert_eq!(g, want.unwrap_or("NULL"), "{raw}");
-        }
+        assert!(src.contains(&["$q = Address", "-Text $line.Substring(11)"].concat()));
+        assert!(src.contains(&["if ($null -eq $q) {{ Refuse 400 'not an ", "address'"].concat()));
     }
 
+    /// The relay takes every frame number RainViewer's two hours give
+    /// (R184 step 2: 13 frames; a one-digit check refused 10-12 and the
+    /// newest frames showed dry, run today-0054), and keeps all of them.
     #[test]
     fn the_relay_serves_all_thirteen_rain_frames() {
         let src = include_str!("usb.rs");
