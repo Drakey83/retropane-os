@@ -406,8 +406,9 @@ impl Chain {
         l: &ta::Layout,
         bg: &[u32],
         parts: &[&[u32]],
+        eps: Option<u32>,
     ) -> Result<bool, ()> {
-        if !self.prepare(l, bg, parts) {
+        if !self.prepare(l, bg, parts, eps) {
             return Ok(false);
         }
         if self.arm(regs) { Ok(true) } else { Err(()) }
@@ -424,8 +425,14 @@ impl Chain {
     /// stay the program's to keep until its next frame call, as an armed
     /// chain's do). False: the chain does not fit, nothing waits (the
     /// frame goes by the CPU, which clears for itself).
-    pub fn prepare(&mut self, l: &ta::Layout, bg: &[u32], parts: &[&[u32]]) -> bool {
-        let table = l.start_table();
+    pub fn prepare(&mut self, l: &ta::Layout, bg: &[u32], parts: &[&[u32]], eps: Option<u32>) -> bool {
+        let mut table = l.start_table();
+        // R352 `-rpeps`: the TA's 0x854/0x858 in place of Dell's 1.0e-5
+        if let Some(v) = eps {
+            for p in table.iter_mut().filter(|p| p.0 == 0x854 || p.0 == 0x858) {
+                p.1 = v;
+            }
+        }
         let grid = table.iter().find(|p| p.0 == GRID).map_or(0, |p| p.1);
         let (cols, rows) = l.grid();
         let clears = [(l.tail, l.tail_bytes), (l.regions, 8 * (cols * rows + 1))];

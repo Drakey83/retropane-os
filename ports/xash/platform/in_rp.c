@@ -1021,6 +1021,43 @@ static void RP_End( void )
 			Q_snprintf( cmd, sizeof( cmd ), "sv_cheats 1\nnoclip\nrp_setpos %s\n", cam );
 			Cbuf_AddText( cmd );
 		}
+		/* R352 after run 332 (-rpcamsweep x,y,z,pitch,yaw; the runner
+		   switches the TA's epsilon at 78 s on its clock for it): the held camera turned 45 degrees every
+		   3 s from 6 s into the play, the 2700G's picture taken 1.5 s after
+		   each turn (shot-N.565), eight headings, then the same eight again
+		   from 45 s of play (the runner's -rpeps switch set before it, on its own clock): the far walls' ribs at each
+		   heading under Dell's TA epsilon and under ours */
+		if( state == 1 && now - played_from > 2000000u && RP_Parm( "-rpcamsweep" ))
+		{
+			static int   step = -1, shot = -1, have;
+			static float base[5];
+			const uint64_t t = now - played_from;
+
+			if( !have && Sys_GetParmFromCmdLine( "-rpcamsweep", cam ))
+			{
+				for( char *c = cam; *c; c++ )
+					if( *c == ',' )
+						*c = ' ';
+				have = sscanf( cam, "%f %f %f %f %f", &base[0], &base[1], &base[2], &base[3], &base[4] ) == 5 ? 1 : -1;
+			}
+			for( int k = step + 1; k < 16 && have == 1; k++ )
+			{
+				uint64_t t0 = (uint64_t)( k < 8 ? 6 + 3 * k : 45 + 3 * ( k - 8 )) * 1000000u;
+				char     cmd[96];
+
+				if( t < t0 )
+					break;
+				step = k;
+				Q_snprintf( cmd, sizeof( cmd ), "%srp_setpos %.0f %.0f %.0f %.0f %.0f\n", k == 0 ? "sv_cheats 1\nnoclip\n" : "", base[0], base[1], base[2], base[3], base[4] + 45.0f * ( k & 7 ));
+				Cbuf_AddText( cmd );
+				fprintf( stderr, "rp-sweep: heading %d of 8 (%s), yaw %.0f\n", ( k & 7 ) + 1, k < 8 ? "Dell's epsilon" : "-rpeps", base[4] + 45.0f * ( k & 7 ));
+			}
+			if( step >= 0 && shot < step && t >= (uint64_t)( step < 8 ? 6 + 3 * step : 45 + 3 * ( step - 8 )) * 1000000u + 1500000u )
+			{
+				shot = step;
+				Cvar_SetValue( "rp_shot", 1.0f );
+			}
+		}
 	}
 	if( why )
 		; /* the cascade's frames are done */

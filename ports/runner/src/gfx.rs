@@ -1121,6 +1121,37 @@ pub static EV9: rt::Global<Ev9> = rt::Global::new(Ev9 {
 });
 const TA_EV9_ANSWER: usize = 0x834;
 
+/// R352 after run 332 (the owner's clip: the steel ribs on the far top of
+/// c2a5f's walls flash in and out, the nearer ones steady: a few units in
+/// front of their wall at 1,500 to 3,000 units, ours sends depth as 1/z,
+/// there 3e-4 to 7e-4 apart by 1e-6). The TA's start table copies Dell's
+/// `0x854`/`0x858` = 1.0e-5, read as "a depth or clipping epsilon" and
+/// never measured: if it is a depth tolerance, 1/z values that close
+/// compare equal and the later primitive wins in some tiles, the flashing.
+/// `-rpeps S`: from S seconds into the run both words 1.0e-9 instead, so
+/// one hands-free run shows the same view both ways (the first switch
+/// logged). `None`: Dell's.
+pub static TA_EPS: rt::Global<Option<(u32, u32, bool)>> = rt::Global::new(None);
+/// 1.0e-9 as a float.
+pub const TA_EPS_SMALL: u32 = 0x3089_705F;
+
+/// The value for the TA's `0x854`/`0x858` now, if `-rpeps` has switched.
+pub fn ta_eps_now(log: fn(Arguments<'_>)) -> Option<u32> {
+    TA_EPS.with(|e| match e {
+        Some((t0, s, said)) if us_since(*t0) / 1_000_000 >= *s => {
+            if !*said {
+                *said = true;
+                log(format_args!(
+                    "rp-gfx: R352 -rpeps: the TA's 0x854/0x858 now 1.0e-9 (Dell's 1.0e-5 until {} s)",
+                    *s
+                ));
+            }
+            Some(TA_EPS_SMALL)
+        }
+        _ => None,
+    })
+}
+
 /// R340, the rule run 310 measured (the console over the menu, each frame
 /// fed its first N strips): the 2700G's event bit 9 comes exactly when
 /// the TA runs longer than the render in flight has left (none while the
@@ -3617,7 +3648,7 @@ impl Screen for Chip {
                 if cpu.is_none() {
                     o.recover(regs);
                 }
-                let chain = match ch.start(regs, &o.lay.ta, &bg, parts) {
+                let chain = match ch.start(regs, &o.lay.ta, &bg, parts, ta_eps_now(self.log)) {
                     Ok(true) => match ch.settle(regs) {
                         chain::Settled::Done(_) => probe4f::render_hash(o, regs, height),
                         _ => None,
@@ -3667,7 +3698,7 @@ impl Screen for Chip {
                 // (armed once the render has ended: the chip then holds
                 // no other scene, so the fits check has nothing to weigh)
                 let into = o.next_b;
-                if ch.prepare(&o.ta_lay(into), &bg, parts) {
+                if ch.prepare(&o.ta_lay(into), &bg, parts, ta_eps_now(self.log)) {
                     o.defer_t0 = Some(rt::ticks());
                     bisect_step(c.ev[3], o.scene_pages, self.log);
                     o.armed_b = into;
@@ -3706,7 +3737,7 @@ impl Screen for Chip {
             o.arm_cursor = pm_cursor(o);
             // kit 63: the TA's memory cleared by the chain itself
             let into = o.overlap && o.next_b;
-            match ch.start(regs, &o.ta_lay(into), &bg, parts) {
+            match ch.start(regs, &o.ta_lay(into), &bg, parts, ta_eps_now(self.log)) {
                 Ok(true) => {
                     if o.rendering.is_some() || o.pending.is_some() {
                         BISECT.with(|b| b.over += 1);

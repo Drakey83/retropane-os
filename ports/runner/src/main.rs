@@ -2042,6 +2042,16 @@ mod image {
                 "runner: R340 -rptexhold {s}: the program's texture writes wait while the TA and a render are both at work (the first {s} s; 0: the whole run)"
             );
         }
+        // (-rpcamsweep's test: the switch at 78 s, between its two sweeps)
+        let sweep = args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpcamsweep");
+        if sweep || args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpeps") {
+            let s = if sweep { 78 } else { seconds_after(&args[..arg_count], b"-rpeps").unwrap_or(0) };
+            super::gfx::TA_EPS.with(|e| *e = Some((rt::ticks(), s, false)));
+            let _ = writeln!(
+                uart,
+                "runner: R352 -rpeps {s}: the TA's 0x854/0x858 1.0e-9 from {s} s into the run (Dell's 1.0e-5 before)"
+            );
+        }
         if args[..arg_count]
             .iter()
             .any(|a| a.to_bytes() == b"-rpnoholdend")
