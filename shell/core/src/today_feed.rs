@@ -73,8 +73,6 @@ pub(crate) struct Feed {
     /// Open tasks due today or before, and how many of them are late.
     pub due: u16,
     pub late: u16,
-    /// The most pressing of them (late first, then flagged, then by due).
-    pub next_task: Row,
 }
 
 impl Feed {
@@ -87,7 +85,6 @@ impl Feed {
             more: 0,
             due: 0,
             late: 0,
-            next_task: Row::EMPTY,
         }
     }
 
@@ -222,7 +219,6 @@ fn feed(s: &Store<'_>, today: i32, minute: u16, utc_offset: i32) -> Feed {
     out.n = n as u8;
     out.more = pick.today.saturating_sub(shown_today).min(255) as u8;
     // The tasks: open ones (steps aside) due today or before.
-    let mut best: Option<((bool, u32, i32), Row)> = None;
     for r in s.all(Kind::Task) {
         if r.num(tag::DONE).is_some() || r.num(tag::PARENT).is_some() {
             continue;
@@ -237,14 +233,6 @@ fn feed(s: &Store<'_>, today: i32, minute: u16, utc_offset: i32) -> Feed {
         if due < today {
             out.late = out.late.saturating_add(1);
         }
-        // Late first, then the flag, then the oldest due.
-        let rank = (due < today, r.num(tag::PRIORITY).unwrap_or(0).min(3), -due);
-        if best.as_ref().is_none_or(|b| rank > b.0) {
-            best = Some((rank, Row::of(None, false, r.text(tag::TITLE))));
-        }
-    }
-    if let Some((_, row)) = best {
-        out.next_task = row;
     }
     out
 }
@@ -432,8 +420,6 @@ mod tests {
         let mut f = Feed::new();
         f.update(Some(&s), TODAY, 600, 0);
         assert_eq!((f.due, f.late), (3, 2));
-        // Late before flagged; the older of the late ones.
-        assert_eq!(f.next_task.title(), b"Taxes");
     }
 
     /// R376: an appointment kept in another zone shows at the device's

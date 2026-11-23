@@ -264,22 +264,6 @@ pub enum WindowBody {
     Tinted,
 }
 
-/// Where Today's tasks line goes (tasks-rule0.md: "Today screen's tasks
-/// line fed from the store"); three drawn for the owner's pick
-/// (R374 in docs/reminders.md), A the default until then.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TodayTasks {
-    /// A: on the calendar panel's top line, right of "TODAY": "3 TASKS
-    /// DUE · 1 LATE". The panel keeps its two appointment rows.
-    Header,
-    /// B: the panel's second row: the count, the most pressing task's
-    /// title and "+2". One appointment row is left.
-    Row,
-    /// C: a third row under the two appointments, the panel 28 px taller
-    /// (into the gap over the quick buttons).
-    Extra,
-}
-
 /// The washed wallpaper's veil (C), drawn first, kept by the look.
 pub(crate) const WASH: Argb = 0x9CF4_F2F6;
 
@@ -1082,8 +1066,6 @@ pub struct Shell {
     light_style: LightStyle,
     /// What fills an app's window behind it ([`WindowBody`]).
     window_body: WindowBody,
-    /// Where Today's tasks line goes.
-    today_tasks: TodayTasks,
     /// The floor of the last frame made ([`Self::floor`]).
     floor_was: Option<(Rect, Argb, Argb)>,
     /// The host paints window backdrops ([`Self::use_backdrops`]).
@@ -1261,7 +1243,6 @@ macro_rules! shell_start {
             sky_forced: false,
             light_style: LightStyle::Frosted,
             window_body: WindowBody::Tinted,
-            today_tasks: TodayTasks::Header,
             floor_was: None,
             backdrops: false,
             panels_off: false,
@@ -1925,8 +1906,8 @@ impl Shell {
             Target::Timeline => weather_app::TIMELINE,
             Target::Reading(i) => self.reading_rect(i),
             Target::Span(i) => chart::span_chip(i),
-            Target::Agenda => self.panel_rects().0,
-            Target::TasksLine => self.panel_rects().1,
+            Target::Agenda => CALENDAR_PANEL,
+            Target::TasksLine => TASKS_LINE,
         }
     }
 
@@ -3577,26 +3558,6 @@ impl Shell {
         self.dirty(Rect::new(0, 0, W, H));
     }
 
-    /// Where Today's tasks line goes (the previews draw each).
-    pub fn set_today_tasks(&mut self, t: TodayTasks) {
-        self.today_tasks = t;
-        self.dirty(Rect::new(0, 0, W, H));
-    }
-
-    /// Today's calendar panel and its tasks line, as the tasks line's
-    /// place has them.
-    fn panel_rects(&self) -> (Rect, Rect) {
-        let p = CALENDAR_PANEL;
-        match self.today_tasks {
-            TodayTasks::Header => (p, TASKS_LINE),
-            TodayTasks::Row => (p, Rect::new(p.x + 4, p.y + 66, p.w - 8, 30)),
-            TodayTasks::Extra => {
-                let p = Rect::new(p.x, p.y, p.w, p.h + 28);
-                (p, Rect::new(p.x + 4, p.y + 94, p.w - 8, 30))
-            }
-        }
-    }
-
     /// What fills an app's window behind it (the previews draw each).
     pub fn set_window_body(&mut self, b: WindowBody) {
         self.window_body = b;
@@ -4005,7 +3966,7 @@ impl Shell {
     /// tasks line Tasks.
     fn calendar_panel(&self, f: &mut Frame) {
         let (ui, label) = (self.fonts.ui, self.fonts.label);
-        let (p, line) = self.panel_rects();
+        let (p, line) = (CALENDAR_PANEL, TASKS_LINE);
         let now = self.program_now();
         let feed = {
             let mut feed = self.feed.borrow_mut();
@@ -4023,14 +3984,8 @@ impl Shell {
         } else {
             self.glass(f, p, GLASS_LEFT, GLASS_RIGHT);
         }
-        // B gives the second row to the tasks.
-        let cap = if self.today_tasks == TodayTasks::Row {
-            1
-        } else {
-            2
-        };
         let all = &feed.rows[..usize::from(feed.n)];
-        let rows = &all[..all.len().min(cap)];
+        let rows = &all[..all.len().min(2)];
         let more =
             u16::from(feed.more) + all[rows.len()..].iter().filter(|r| !r.tomorrow).count() as u16;
         let head: &[u8] = if !rows.is_empty() && rows.iter().all(|r| r.tomorrow) {
@@ -4041,37 +3996,9 @@ impl Shell {
         f.text(p.x + 16, p.y + 28, label, DIM, head);
         // The tasks line, right-aligned: the count due, then the late ones
         // in the late colour (the words say it too: colour never alone).
-        if feed.ready && self.today_tasks != TodayTasks::Header {
-            // B and C: a row of its own: the count, the most pressing
-            // task, the late ones.
-            self.press_under(f, Target::TasksLine);
-            let y = line.y + 22;
-            let due = if feed.due == 0 {
-                Line::new().push(b"No tasks")
-            } else {
-                Line::new().num(i32::from(feed.due)).push(b" due")
-            };
-            f.text(p.x + 16, y, ui, DIM, due.as_bytes());
-            let mut room = p.w - 112 - 16;
-            if feed.late > 0 {
-                let late = Line::new().num(i32::from(feed.late)).push(b" late");
-                let lw = ui.width(late.as_bytes());
-                f.text(
-                    p.x + p.w - 16 - lw,
-                    y,
-                    ui,
-                    rp_app::kit::LATE,
-                    late.as_bytes(),
-                );
-                room -= lw + 12;
-            }
-            if feed.due == 0 {
-                f.text(p.x + 112, y, ui, DIM, b"All done for today");
-            } else {
-                rp_app::kit::fitted(f, p.x + 112, y, ui, TEXT, feed.next_task.title(), room);
-            }
-            self.decorate(f, Target::TasksLine);
-        } else if feed.ready {
+        // (The owner's pick A of three drawn, 2026-11-23, R374: the
+        // panel keeps both appointment rows.)
+        if feed.ready {
             self.press_under(f, Target::TasksLine);
             let mut due = Line::new();
             if feed.due == 0 {

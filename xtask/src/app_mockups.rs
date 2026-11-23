@@ -316,8 +316,9 @@ pub fn sample_people_v3(s: &mut rp_shell::Shell) {
 }
 
 /// The Today screen at noon on the previews' Monday with the sample week
-/// and tasks in the store, the tasks line in place `t`.
-fn today_panel(s: &mut rp_shell::Shell, t: rp_shell::TodayTasks) {
+/// and tasks in the store, the tasks line on the panel's top line (the
+/// owner's pick A, R374).
+fn today_panel(s: &mut rp_shell::Shell) {
     sample_tasks(s);
     put_week(s);
     s.set_year(2024);
@@ -328,7 +329,6 @@ fn today_panel(s: &mut rp_shell::Shell, t: rp_shell::TodayTasks) {
         day: 1,
         month: 1,
     });
-    s.set_today_tasks(t);
 }
 
 fn contacts(view: rp_app_contacts::View) -> Contacts {
@@ -896,22 +896,12 @@ fn base() -> Vec<Mock> {
             what: "Version 3 concept, Contacts: favourites as big glossy avatars, the last person spoken to, grouped cards",
             prepare: Box::new(|s| open(s, crate::design_v3::ContactsHome::default())),
         },
-        // Today's calendar panel from the store, the tasks line in each of
-        // its three places for the owner's pick (tasks-rule0.md).
+        // Today's calendar panel from the store, the tasks line on its top
+        // line (the owner's pick A of three, 2026-11-23, R374).
         Mock {
-            name: "today-tasks-a-header",
-            what: "Today's calendar panel from the store, A: the tasks line on the panel's top line, right of TODAY",
-            prepare: Box::new(|s| today_panel(s, rp_shell::TodayTasks::Header)),
-        },
-        Mock {
-            name: "today-tasks-b-row",
-            what: "Today's calendar panel from the store, B: the tasks as the panel's second row (one appointment row left)",
-            prepare: Box::new(|s| today_panel(s, rp_shell::TodayTasks::Row)),
-        },
-        Mock {
-            name: "today-tasks-c-extra",
-            what: "Today's calendar panel from the store, C: a third row for the tasks, the panel 28 px taller",
-            prepare: Box::new(|s| today_panel(s, rp_shell::TodayTasks::Extra)),
+            name: "today-tasks",
+            what: "Today's calendar panel from the store, the tasks line on the panel's top line, right of TODAY",
+            prepare: Box::new(today_panel),
         },
         Mock {
             name: "app-calendar-home",

@@ -67,9 +67,9 @@ tick it off with a satisfying tap.
   title, due on its day, "From Calendar: Mon 1 Jan, 3:00 PM, <place>" in
   the note.
 - **Today's tasks line:** "3 TASKS DUE · 1 LATE" on the calendar panel's top
-  line opens Tasks (A). Two other places are drawn for the owner's pick
-  (B the panel's second row, C a third row): `docs/img/today-tasks/`,
-  reminder R374.
+  line opens Tasks. The owner's pick A of three drawn (2026-11-23, R374; B,
+  the panel's second row, and C, a third row, were taken out): the panel
+  keeps both appointment rows and its size. Shots `docs/img/today-tasks/`.
 
 ## Build list
 
@@ -85,7 +85,7 @@ tick it off with a satisfying tap.
 | Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | built | shell/pim/src/repeat.rs, apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Reminders through the notification banner and sound | apps-and-packs: reminders | built | shell/pim/src/remind.rs, shell/core/src/apps/mod.rs, services/audio/src/chime.rs, shell/today/src/main.rs, shell/core/src/tests.rs |
 | Tasks on their due days in Calendar; make a task from an appointment | apps-and-packs: tie-ins with Calendar | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
-| Today screen's tasks line fed from the store | sheet | built | shell/core/src/today_feed.rs, shell/core/src/lib.rs, xtask/src/app_mockups.rs, docs/img/today-tasks/today-tasks-a-header.png |
+| Today screen's tasks line fed from the store | sheet | built | shell/core/src/today_feed.rs, shell/core/src/lib.rs, xtask/src/app_mockups.rs, docs/img/today-tasks/today-tasks.png |
 | CalDAV tasks and Google Tasks sync over any connection | sheet | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |
 | Search across tasks | sheet | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
