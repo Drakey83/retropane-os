@@ -315,10 +315,14 @@ fn profile(out: &mut String, part: &[(u32, u32)], code: &Code, top: usize) {
     let mut modules: HashMap<&str, usize> = HashMap::new();
     let mut functions: HashMap<String, usize> = HashMap::new();
     let mut callers: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    // `RETROPANE_PROFILE_CALLERS`: more functions whose callers are shown
+    // (comma-separated parts of their names, as `rp_time_us,rp_snd_write`).
+    let asked = std::env::var("RETROPANE_PROFILE_CALLERS").unwrap_or_default();
+    let asked: Vec<&str> = asked.split(',').filter(|a| !a.is_empty()).collect();
     for &(pc, lr) in part {
         *modules.entry(code.module(pc)).or_default() += 1;
         let f = code.name(pc);
-        if helper(&f) {
+        if helper(&f) || asked.iter().any(|a| f.contains(a)) {
             *callers
                 .entry(f.clone())
                 .or_default()

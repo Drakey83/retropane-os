@@ -37,6 +37,12 @@ pub trait Console {
 /// The first handle that is a file: 0, 1 and 2 are the console.
 const FIRST: i32 = 3;
 
+/// The least time between two screen pumps from the program's clock
+/// reads (R360 after run 338a): a frame's render starts at most this late,
+/// and the chip's status is read a few times a frame instead of at every
+/// clock read.
+pub const SCREEN_PUMP_US: u64 = 200;
+
 /// A C program's system: `N` file handles over the card, a console, a heap.
 pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     files: Files<'a, D, N>,
@@ -53,6 +59,10 @@ pub struct System<'a, D: BlockDevice, const N: usize, C: Console> {
     input: Option<&'a mut dyn Events>,
     /// The 2700G, where the image gives it to the program.
     screen: Option<&'a mut dyn Screen>,
+    /// When the screen was last pumped from a clock read, and how often
+    /// it may be (microseconds; 0: every read, the old way).
+    screen_pumped: u64,
+    screen_pump_us: u64,
     /// The program's modules, where the image is a runner (ADR-0039).
     library: Option<Library<'a>>,
     /// Why the last module was refused.
@@ -169,6 +179,8 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
             clock: Micros::starting_at(ticks()),
             sound: None,
             screen: None,
+            screen_pumped: u64::MAX, // the first read pumps
+            screen_pump_us: SCREEN_PUMP_US,
             input: None,
             library: None,
             refused: None,
@@ -247,6 +259,13 @@ impl<'a, D: BlockDevice, const N: usize, C: Console> System<'a, D, N, C> {
     /// `rp_input_open` and `rp_input_poll` reach.
     pub fn set_input(&mut self, input: &'a mut dyn Events) {
         self.input = Some(input);
+    }
+
+    /// How often a clock read may pump the screen, in microseconds (0:
+    /// every read, the way before R360's run 338a; the runner's
+    /// `-rppumpall`).
+    pub fn set_screen_pump_us(&mut self, us: u64) {
+        self.screen_pump_us = us;
     }
 
     /// Gives the system the 2700G: what `rp_gfx_open` and the calls after
@@ -514,8 +533,14 @@ impl<D: BlockDevice, const N: usize, C: Console> Sys for System<'_, D, N, C> {
             i.pump(us);
         }
         // And the screen's: a frame fed by DMA has its render started as
-        // soon as the chip has taken it (ref-rp.md step 4f).
-        if let Some(g) = self.screen.as_mut() {
+        // soon as the chip has taken it (ref-rp.md step 4f). R360 after run
+        // 338a: at most every SCREEN_PUMP_US (each pump reads the 2700G's
+        // status over its slow bus, and the engine reads its clock many
+        // times a frame); the render starts at most that much later.
+        if let Some(g) = self.screen.as_mut()
+            && (us < self.screen_pumped || us - self.screen_pumped >= self.screen_pump_us)
+        {
+            self.screen_pumped = us;
             g.pump();
         }
         us
@@ -893,6 +918,60 @@ mod tests {
             // A name that is no path.
             assert_eq!(s.open(b"", R), Err(Errno::Invalid), "{kind}");
         });
+    }
+
+    /// A screen that counts its pumps.
+    #[derive(Default)]
+    struct Pumped(u32);
+
+    impl Screen for Pumped {
+        fn open(&mut self) -> Result<Gfx, Errno> {
+            Err(Errno::NoSys)
+        }
+        fn frame(&mut self, _parts: &[&[u32]]) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn wait(&mut self) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn close(&mut self) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn pump(&mut self) {
+            self.0 += 1;
+        }
+    }
+
+    /// R360 after run 338a: the clock's reads pump the screen at most every
+    /// [`SCREEN_PUMP_US`], and at every read with the old way (0); a read
+    /// whose counter went back (a new clock) pumps at once.
+    #[test]
+    fn clock_reads_pump_the_screen_at_most_every_screen_pump_us() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        for every in [SCREEN_PUMP_US, 0] {
+            each(|vol, kind| {
+                COUNTER.store(0, Ordering::Relaxed);
+                let scratch = &mut vec![0u8; 8192][..];
+                let room = &mut vec![0u8; 16][..];
+                let mut said = Said(Vec::new());
+                let mut screen = Pumped::default();
+                let files: Files<'_, Disk, 2> = Files::new(vol, scratch, room);
+                let mut s = System::new(files, &mut said, Break::new(0, 0), || {
+                    COUNTER.load(Ordering::Relaxed)
+                });
+                s.set_screen(&mut screen);
+                s.set_screen_pump_us(every);
+                // 1,000 reads 13 ticks (4 us) apart: 4 ms of clock
+                for k in 0..1000u32 {
+                    COUNTER.store(k * 13, Ordering::Relaxed);
+                    let _ = s.now_us();
+                }
+                drop(s);
+                let want = if every == 0 { 1000 } else { 20 };
+                assert_eq!(screen.0, want, "{kind}: every {every} us");
+            });
+        }
     }
 
     #[test]

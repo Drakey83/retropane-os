@@ -136,7 +136,7 @@ mod image {
     /// `-rpsampleon 2`, a sample every 200,000 cycles stalled on memory
     /// (R324: the frames are bus-bound); an event that counts occurrences,
     /// not cycles (a miss), every 2,000 of them (one number: the command
-    /// line holds 31 words). Implies [`SAMPLE_WORD`].
+    /// line holds 63 words). Implies [`SAMPLE_WORD`].
     const SAMPLE_ON_WORD: &[u8] = b"-rpsampleon";
     /// The samples' file: `RPSAMP1\0`, then little-endian words: samples
     /// a second, samples, ticks that found the room full, the sample at
@@ -198,7 +198,7 @@ mod image {
     /// the program should do without the image being built again.
     const ARGS_FILE: &str = "args.txt";
     /// The most of that file that is read.
-    const ARGS_ROOM: usize = 512;
+    const ARGS_ROOM: usize = 1024; // R360: room for A/B switches (ARGS 64 words)
     static ARGS_TEXT: rt::Slot<[u8; ARGS_ROOM]> = rt::Slot::new();
 
     /// A test run's two words for ending by itself, which the program's
@@ -2034,7 +2034,7 @@ mod image {
             .iter()
             .any(|a| a.to_bytes() == b"-rptexhold")
         {
-            // (the bare word: the whole run; the line holds 31 words)
+            // (the bare word: the whole run; the line holds 63 words)
             let s = seconds_after(&args[..arg_count], b"-rptexhold").unwrap_or(0);
             super::gfx::QUIET.with(|q| q.hold_s = Some(s));
             let _ = writeln!(
@@ -2043,9 +2043,15 @@ mod image {
             );
         }
         // (-rpcamsweep's test: the switch at 78 s, between its two sweeps)
-        let sweep = args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpcamsweep");
+        let sweep = args[..arg_count]
+            .iter()
+            .any(|a| a.to_bytes() == b"-rpcamsweep");
         if sweep || args[..arg_count].iter().any(|a| a.to_bytes() == b"-rpeps") {
-            let s = if sweep { 78 } else { seconds_after(&args[..arg_count], b"-rpeps").unwrap_or(0) };
+            let s = if sweep {
+                78
+            } else {
+                seconds_after(&args[..arg_count], b"-rpeps").unwrap_or(0)
+            };
             super::gfx::TA_EPS.with(|e| *e = Some((rt::ticks(), s, false)));
             let _ = writeln!(
                 uart,
@@ -2167,7 +2173,21 @@ mod image {
                     },
                 )
         }) {
-            Some(c) => s.set_screen(c),
+            Some(c) => {
+                s.set_screen(c);
+                // R360 after run 338a: the screen pumped from every clock
+                // read, the old way, for the A/B (`-rppumpall`)
+                if args[..arg_count]
+                    .iter()
+                    .any(|a| a.to_bytes() == b"-rppumpall")
+                {
+                    s.set_screen_pump_us(0);
+                    let _ = writeln!(
+                        uart,
+                        "rp-gfx: R360: -rppumpall: the screen pumped at every clock read"
+                    );
+                }
+            }
             None => {
                 let _ = writeln!(uart, "rp-gfx: none (set up twice)");
             }

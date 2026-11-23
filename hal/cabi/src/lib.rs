@@ -834,7 +834,7 @@ mod face {
     }
 
     /// The most arguments [`run_module`] passes on.
-    pub const ARGS: usize = 32;
+    pub const ARGS: usize = 64; // R360: 32 cut run 339b's A/B (two test switches past the kit's 29 words)
 
     /// Loads the program module `name` and runs it with `args` as its
     /// command line (the first is the program's own name): its result,
