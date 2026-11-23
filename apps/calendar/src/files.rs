@@ -449,7 +449,7 @@ impl Calendar {
             kit::text(
                 f,
                 MARGIN + 8,
-                y + 112,
+                y + 26,
                 cx.fonts.ui,
                 kit::FOCUS,
                 self.io.status,
@@ -842,7 +842,9 @@ impl Calendar {
         y += 48;
         let mut name = [0u8; 48];
         let mut skipped = 0;
-        for z in zone::all().filter(|z| {
+        // Nothing typed: the zones most people pick, US first; else every
+        // zone whose name holds what is typed.
+        let matching = zone::all().filter(|z| {
             let mut name = [0u8; 48];
             let n = z.name(&mut name);
             q.is_empty()
@@ -851,7 +853,15 @@ impl Calendar {
                         .zip(q)
                         .all(|(a, b)| a.eq_ignore_ascii_case(b) || (*a == b'_' && *b == b' '))
                 })
-        }) {
+        });
+        let mut common = zone::common();
+        let mut matching = matching;
+        let list: &mut dyn Iterator<Item = Zone> = if q.is_empty() {
+            &mut common
+        } else {
+            &mut matching
+        };
+        for z in list {
             if skipped < self.io.zone_first {
                 skipped += 1;
                 continue;
@@ -880,17 +890,19 @@ impl Calendar {
             self.io.n_zones += 1;
             y += 48;
         }
-        let more = digits(self.io.zone_first + 1);
-        let mut b = Buf::<24>::new();
-        b.s(b"from ").s(more.get());
-        kit::right(
-            f,
-            FIELD.right() - 14,
-            FIELD.y + 24,
-            cx.fonts.label,
-            DIM,
-            b.get(),
-        );
+        if self.io.zone_first > 0 {
+            let more = digits(self.io.zone_first + 1);
+            let mut b = Buf::<24>::new();
+            b.s(b"from ").s(more.get());
+            kit::right(
+                f,
+                FIELD.right() - 14,
+                FIELD.y + 24,
+                cx.fonts.label,
+                DIM,
+                b.get(),
+            );
+        }
     }
 
     fn zones_event(&mut self, e: Event, cx: &Ctx) -> Reply {

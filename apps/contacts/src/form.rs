@@ -117,7 +117,7 @@ pub const FORM: [(&[u8], &[u8], usize); SLOTS] = [
     (b"ZIP", b"ZIP or postal code", 12),
     (b"COUNTRY", b"Country (blank: this one)", 32),
     (b"BIRTHDAY", b"MM/DD/YYYY, the year if known", 10),
-    (b"ANNIVERSARY", b"MM/DD/YYYY, the year if known", 10),
+    (b"ANNIV.", b"MM/DD/YYYY, the year if known", 10),
     (b"WEBSITE", b"example.com", 40),
 ];
 

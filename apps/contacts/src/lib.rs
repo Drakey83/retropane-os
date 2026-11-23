@@ -1651,7 +1651,7 @@ impl Contacts {
         }
         for (label, t) in [
             (&b"BIRTHDAY"[..], tag::BIRTHDAY),
-            (b"ANNIVERSARY", tag::ANNIVERSARY),
+            (b"ANNIV.", tag::ANNIVERSARY),
         ] {
             if let Some(d) = Day::of_field(r.text(t)) {
                 let (b, n) = form::day_shown(d, cx.us);

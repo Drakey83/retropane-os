@@ -266,6 +266,12 @@ const PREFERRED: [&[u8]; 30] = [
     b"Pacific/Auckland",
 ];
 
+/// The zones most people pick, US first: what a zone picker offers before
+/// anything is typed.
+pub fn common() -> impl Iterator<Item = Zone> {
+    PREFERRED.iter().filter_map(|n| find(n))
+}
+
 /// The zone a rule is (a file's VTIMEZONE matched to its tzdata name): a
 /// [`PREFERRED`] zone first, then the table's order.
 #[must_use]
