@@ -1060,6 +1060,11 @@ pub struct Quiet {
     /// and time since its arm.
     cuts: u32,
     cut_at: (u32, u32),
+    /// R340 after run 330 (18 bit 9 events with no chain in flight and a
+    /// render running, a kind no run since the strict order had shown):
+    /// the program's texture writes so far ([`Screen::quiet`] calls), so
+    /// each event can say how many came while its render ran.
+    calls: u32,
 }
 pub static QUIET: rt::Global<Quiet> = rt::Global::new(Quiet {
     hold_s: None,
@@ -1069,6 +1074,7 @@ pub static QUIET: rt::Global<Quiet> = rt::Global::new(Quiet {
     skipped: 0,
     cuts: 0,
     cut_at: (0, 0),
+    calls: 0,
 });
 
 /// R340 (2026-11-21): the core's event bit 9, the lead after runs
@@ -1661,6 +1667,9 @@ struct Open {
     gfx: Gfx,
     /// A render started and not yet seen done: when it started.
     rendering: Option<u32>,
+    /// R340 after run 330: the texture writes counted when the render in
+    /// flight began ([`Quiet`]'s `calls`).
+    render_writes: u32,
     /// `ENABLE` before the render's done bit went on.
     en: u32,
     /// The panel's plane, where the program's picture moved it from.
@@ -2770,6 +2779,23 @@ impl Open {
                 self.mem_owed = true;
             }
             if ev & EV_9 != 0 {
+                // R340 after run 330: each of the first 60 events whole
+                // (the render's age, the program's texture writes during
+                // it, the frame, the chain's place), so a play names what
+                // comes with them
+                let n9 = c.ev[3];
+                if (4..=60).contains(&n9) {
+                    let age = self.rendering.map_or(u32::MAX, us_since);
+                    let writes = QUIET.with(|q| q.calls).wrapping_sub(self.render_writes);
+                    log(format_args!(
+                        "rp-gfx: R340 event {n9}: frame {}, status 0x{st:08x}, render {} us old ({}), {} texture writes during it, chain {}",
+                        c.frames,
+                        if age == u32::MAX { 0 } else { age },
+                        if self.rendering.is_some() { "running" } else { "none" },
+                        if self.rendering.is_some() { writes } else { 0 },
+                        match at { None => u32::MAX, Some(d) => d }
+                    ));
+                }
                 EV9.with(|e| {
                     match at {
                         None => e.idle += 1,
@@ -3038,6 +3064,7 @@ impl Open {
             from.regions = CHK_REGIONS;
         }
         self.rendering = Some(rt::ticks());
+        self.render_writes = QUIET.with(|q| q.calls);
         let target = if self.lay.ta.height < H {
             SCREEN_BAR
         } else {
@@ -3249,6 +3276,7 @@ impl Screen for Chip {
             syscfg0,
             gfx,
             rendering: None,
+            render_writes: 0,
             en: 0,
             moved,
             stepped,
@@ -3984,6 +4012,7 @@ impl Screen for Chip {
     }
 
     fn quiet(&mut self, hold: bool) -> bool {
+        QUIET.with(|q| q.calls = q.calls.wrapping_add(1));
         if mute_take() {
             self.counts.rebuild_owed = true;
         }

@@ -6,7 +6,7 @@
 # (kit 117: the list was the cascade's alone), 186 KiB of the engine's and
 # 60 of the client's, after the float and division routines' sections
 # (rp_float_asm, rp_div_asm) (their 64 KiB pages: 3 and 1). R358 (2026-11-22):
-# RP_PlaneFix in, CL_WriteUsercmd (the engine's last, least sampled) out
+# RP_PlaneGet and RP_HullCheckQ in, CL_WriteUsercmd, NET_GetPacket and R_EntityDynamicLight (the engine's last, least sampled) out
 # so the engine's three pages hold. `module symbol`
 # a line; regenerate when the hot code changes (scratchpad hot2.py:
 # samples and the kit's ELFs, a pair a scene).
@@ -32,7 +32,7 @@ engine RP_ProjectS
 engine rp_fcmplt_asm
 engine rp_fdot3_asm
 engine RP_TraceSide
-engine RP_PlaneFix
+engine RP_PlaneGet
 engine memcpy
 engine __aeabi_dsub
 client __aeabi_dmul
@@ -66,6 +66,7 @@ engine TriEnd
 engine R_AllowFog
 engine RP_FracNoiseFix
 engine RP_TriCorner
+engine RP_HullCheckQ
 engine PM_RecursiveHullCheck
 client rp_fcmpeq_asm
 engine Mod_PointInLeaf
@@ -388,8 +389,6 @@ engine CL_ProcessPacket
 engine RP_StudioLightBegin
 engine CL_IsInGame
 engine AngleVectors
-engine NET_GetPacket
-engine R_EntityDynamicLight
 client _ZN20CStudioModelRenderer21StudioCalcAttachmentsEv
 client _ZN20CStudioModelRenderer25StudioEstimateInterpolantEv
 client PM_CheckParamters

@@ -902,6 +902,8 @@ engine c
             "\"-rphullfloat\"",
             "RP_HullCheckBoth(",
             "RP_PointCheckBoth(",
+            "RP_PlaneGet(",
+            "qmid = rp_int && RP_TracePoint( mid, qm ) ? qm : NULL;",
             "RP_BoxCheckBoth(",
             "if( v >= RP_TRACE_MARGIN )",
             "if( sum > ( 1u << 31 ))",
@@ -913,6 +915,34 @@ engine c
             patch.contains("frac = ( t1 + DIST_EPSILON ) / ( t1 - t2 );")
                 && patch.contains("frac = ( t1 - DIST_EPSILON ) / ( t1 - t2 );"),
             "DIST_EPSILON's crossing must stay as upstream wrote it"
+        );
+    }
+
+    /// R352's guard (after run 330): a face's lightmap or lit surface
+    /// written again at its own place is held to the frame's end and
+    /// copied in after the render before has ended, never written while a
+    /// frame in flight may read it.
+    #[test]
+    fn rewrites_in_place_wait_for_the_render_before() {
+        let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
+        assert_eq!(
+            src.matches("rp_upload_stage = placed;").count(),
+            2,
+            "RP_LmPlace and RP_SurfacePlace both hold their rewrites in place"
+        );
+        let flush = src
+            .find("static void RP_StageFlush( void )")
+            .expect("RP_StageFlush");
+        let body = &src[flush..flush + 400];
+        assert!(
+            body.find("rp_gfx_wait( );") < body.find("memcpy("),
+            "the held squares copied in only after the render before has ended"
+        );
+        let submit = src.find("void RP_EmitSubmit( void )").expect("RP_EmitSubmit");
+        let parts = src[submit..].find("rp_gfx_frame_parts(").expect("the submit");
+        assert!(
+            src[submit..submit + parts].contains("RP_StageFlush( );"),
+            "the held squares in before the frame that draws them"
         );
     }
 

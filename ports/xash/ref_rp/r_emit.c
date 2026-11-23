@@ -174,6 +174,7 @@ static struct
 	uint32_t fx_tris, fx_plain, fx_skipped; /* kit 74: the effects' triangles, drawn plainly (no picture), not drawn (no room) */
 	uint32_t lm_faces, lm_built, lm_dlit, lm_words, lm_full, tex_built, tex_kib, tex_resets; /* R297 option B */
 	uint32_t evict_waits; /* R352: pages dropped that a frame in flight could still read (waited for) */
+	uint32_t staged, stage_flushes, stage_full; /* R352 after run 330: rewrites in place held to the frame's end (squares), the frames that had any, early flushes */
 	uint32_t decals, decal_cut, decals_lit, decals_built, decal_arena_resets; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, water_faces, water_cells, water_missed, conveyors; /* R309 */
@@ -374,6 +375,14 @@ static void RP_EmitReport( void )
 				rp_trace_counts[0] = rp_trace_counts[1] = 0;
 			}
 			{
+				/* R358 after run 330: the planes' cache (RP_PlaneGet) */
+				extern unsigned rp_pcache_counts[2];
+
+				fprintf( stderr, "rp-emit: R358: planes taken from the cache %u a frame, taken into integers %u a frame%c",
+					rp_pcache_counts[0] / f, rp_pcache_counts[1] / f, 10 );
+				rp_pcache_counts[0] = rp_pcache_counts[1] = 0;
+			}
+			{
 				/* R358: every hull's sloped nodes (the line above now counts them all) and -rphullcheck's differences */
 				extern int      rp_hull_int, rp_hull_check;
 				extern unsigned rp_hull_counts[8];
@@ -467,6 +476,8 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 )
 		fprintf( stderr, "rp-emit: R352: %u faces drawn the other way than the frame before (option B against the lit surface: a flash); faces left option B for a decal %u, no texture room %u, no lightmap room %u; %u pages dropped in all, %u of them after a wait for the frames in flight; %u decals drawn over their faces (%u of them cut at the near plane, %u lit by their wall's lightmap; %u built, the rest kept from before; %u arena restarts)\n",
 			rp_count.path_flips, rp_count.why_decal, rp_count.why_tex, rp_count.why_lm, rp_count.evicted, rp_count.evict_waits, rp_count.decals, rp_count.decal_cut, rp_count.decals_lit, rp_count.decals_built, rp_count.decal_arena_resets );
+		fprintf( stderr, "rp-emit: R352: rewrites in place held to the frame's end: %u squares (%u KiB) in %u frames, %u times copied early (the 64 KiB full)\n",
+			rp_count.staged, rp_count.staged >> 3, rp_count.stage_flushes, rp_count.stage_full );
 	if( rp_emit_on == 2 )
 	{
 		char line[512];
@@ -1487,6 +1498,44 @@ static inline int RP_ChipWrite( void )
 	return rp_gfx_quiet( 1 );
 }
 
+/*
+R352 after run 330 (the owner: texture glitching again, in fights; its log:
+two bursts of chip events in two fights). A face whose light changed (a
+muzzle flash, the flashlight, a flickering style) has its lightmap, or its
+lit surface, written again at the SAME place in video memory (RP_LmPlace,
+RP_SurfacePlace) while the CPU builds the next frame, and with kit 113's
+overlap the frame before may still be rendering from those texels: for
+that frame the face shows half the old light and half the new, the
+one-frame flash of a fight. The vendor way (GL drivers) renames a texture
+being written while in use, a copy in video memory we do not have (the
+atlas is 98% full in fights); the textbook way waits for the render
+before each write, which stalls the CPU every frame there is a light.
+Ours: a rewrite in place is held in RAM, square by square (each 8 x 8
+square is 128 bytes in a row of the twiddled page), and copied in at the
+frame's end, once the render before has ended (rp_gfx_wait there: in a
+CPU-bound fight it has long ended; in a chip-bound frame the frame call
+would have waited for it anyway). New places are written at once as
+before (no frame reads them yet). 64 KiB of held squares; past it the
+squares so far are copied in early (after the same wait).
+*/
+#define RP_STAGE_SQUARES 512
+static uint32_t rp_stage_words[RP_STAGE_SQUARES][32];
+static uint32_t rp_stage_at[RP_STAGE_SQUARES]; /* the square's first word, from rp_g.tex */
+static int      rp_stage_n;
+static int      rp_upload_stage; /* RP_Upload: hold the squares (a rewrite in place) */
+
+static void RP_StageFlush( void )
+{
+	if( !rp_stage_n )
+		return;
+	rp_gfx_wait( );
+	if( RP_ChipWrite( ))
+		for( int i = 0; i < rp_stage_n; i++ )
+			memcpy((uint32_t *)rp_g.tex + rp_stage_at[i], rp_stage_words[i], sizeof( rp_stage_words[i] ));
+	rp_stage_n = 0;
+	rp_count.stage_flushes++;
+}
+
 static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy )
 {
 	uint32_t *page = (uint32_t *)((uint8_t *)rp_g.tex + (size_t)pg * RP_PAGE_BYTES );
@@ -1501,6 +1550,18 @@ static void RP_Upload( const pixel_t *src, int w, int h, int pg, int qx, int qy 
 		{
 			uint32_t *dst = page + RP_Interleave( qx + sx, qy + sy ) * 32;
 			int       x0 = sx << 3, y0 = sy << 3;
+
+			if( rp_upload_stage )
+			{
+				if( rp_stage_n == RP_STAGE_SQUARES )
+				{
+					rp_count.stage_full++;
+					RP_StageFlush( );
+				}
+				rp_stage_at[rp_stage_n] = (uint32_t)( dst - (uint32_t *)rp_g.tex );
+				dst = rp_stage_words[rp_stage_n++];
+				rp_count.staged++;
+			}
 
 			if( x0 + 8 <= w && y0 + 8 <= h )
 			{
@@ -1740,7 +1801,9 @@ static int RP_SurfacePlace( msurface_t *fa, int miplevel, int w, int h, int *x, 
 		RP_LOC( fa ) = 0;
 		return -1;
 	}
+	rp_upload_stage = placed; /* R352: a rewrite in place held to the frame's end */
 	RP_Upload((const pixel_t *)cache->data, w, h, pg, *x, *y );
+	rp_upload_stage = 0;
 	rp_upload_left -= w * h * 2;
 	RP_LOC( fa ) = (intptr_t)( RP_VALID | (uint32_t)miplevel << 24 | (uint32_t)pg << 16 | (uint32_t)*y << 8 | (uint32_t)*x );
 	RP_IMAGE( fa ) = (intptr_t)image;
@@ -2259,7 +2322,9 @@ static int RP_LmPlace( msurface_t *fa, int *x, int *y )
 		rp_page[pg].live += 128;
 	}
 	rp_upload_raw = 1;
+	rp_upload_stage = placed; /* R352: a rewrite in place held to the frame's end */
 	RP_Upload((const pixel_t *)rp_lm_texels, w, h, pg, *x, *y );
+	rp_upload_stage = 0;
 	rp_upload_raw = 0;
 	RP_LOC( fa ) = (intptr_t)( RP_VALID | RP_LMAP | (uint32_t)pg << 16 | (uint32_t)*y << 8 | (uint32_t)*x );
 	RP_GEN( fa ) = (intptr_t)( rp_page[pg].gen << 1 | ( r & 2 ? 1 : 0 ));
@@ -5957,6 +6022,7 @@ void RP_EmitSubmit( void )
 	if( rp_emit_on != 2 )
 		return;
 	RP_LmFlush();
+	RP_StageFlush( ); /* R352: the rewrites in place, the render before ended */
 	{
 		/* the sky's six sides drawn first (below everything), then the
 		   parts in their order: the words where they lie */
@@ -6173,6 +6239,7 @@ void RP_EmitNewMap( void )
 	   (kit 113's overlap): waited for, as every other page drop does
 	   (RP_IN_FLIGHT), before the new map's faces are written over them */
 	rp_gfx_wait( );
+	rp_stage_n = 0; /* (no rewrite of the old map's held) */
 	for( int pg = 0; pg < rp_pages; pg++ )
 		RP_PageDrop( &rp_page[pg] );
 	if( rp_emit_on == 2 && rp_fixed_on )
