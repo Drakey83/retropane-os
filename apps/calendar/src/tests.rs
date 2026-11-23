@@ -243,7 +243,7 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
         assert_eq!(tasks[0].num(tag::DUE), Some(19_723));
         assert_eq!(
             tasks[0].text(tag::NOTE),
-            b"From Calendar: Mon 1 Jan, 3:05 PM"
+            b"From Calendar: Mon Jan 1, 3:05 PM"
         );
     }
     c.event(
@@ -1028,4 +1028,52 @@ fn an_edit_keeps_a_repeat_the_chips_show_only_in_part() {
     let g = pim.borrow();
     let r = g.as_ref().unwrap().get(id).unwrap();
     assert_eq!(Rule::unpack(r.num(tag::REPEAT).unwrap(), tue), Some(nth));
+}
+
+/// R372: every date the calendar writes is in the region's order, "Jan 1"
+/// in the US and "1 Jan" elsewhere (the editor's DAY row was "MON 1 Jan"
+/// on a US device; the title and search were "Jan 1" everywhere).
+#[test]
+fn dates_are_written_in_the_regions_order() {
+    // Monday 1 January 2024; Sunday 31 December 2023 the day before.
+    for (day, us, want) in [
+        (19_723, true, "Jan 1"),
+        (19_723, false, "1 Jan"),
+        (19_722, true, "Dec 31"),
+        (19_722, false, "31 Dec"),
+    ] {
+        let mut b = Buf::<16>::new();
+        b.date(day, us);
+        assert_eq!(b.get(), want.as_bytes());
+    }
+    // The task made from an appointment, outside the US.
+    let pim = store();
+    let at = (date::start_of(19_723) + 9 * 60).to_le_bytes();
+    let id = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Appointment,
+            None,
+            &[(tag::TITLE, b"Dentist"), (tag::START, &at)],
+        )
+        .unwrap();
+    let cx = Ctx {
+        us: false,
+        ..ctx(pim)
+    };
+    let mut c = opened(19_723);
+    c.open_edit(&cx, Some(id));
+    draw(&mut c, &cx);
+    c.event(
+        Event::PenUp {
+            x: 100,
+            y: E_DELETE + 20,
+        },
+        &cx,
+    );
+    let g = pim.borrow();
+    let t = g.as_ref().unwrap().all(Kind::Task).next().unwrap();
+    assert_eq!(t.text(tag::NOTE), b"From Calendar: Mon 1 Jan, 9:00 AM");
 }

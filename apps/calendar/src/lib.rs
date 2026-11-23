@@ -413,6 +413,18 @@ impl<const N: usize> Buf<N> {
         let tail = d;
         self.s(&tail[i..])
     }
+    /// Day `day`'s date, short month, in the region's order: "Jan 1" in
+    /// the US, "1 Jan" elsewhere (R372: every date the calendar writes
+    /// goes through here, so none is written one way only).
+    fn date(&mut self, day: i32, us: bool) -> &mut Self {
+        let d = date::date_of(day);
+        let month = &MONTHS[usize::from(d.month - 1)][..3];
+        if us {
+            self.s(month).s(b" ").num(u32::from(d.day))
+        } else {
+            self.num(u32::from(d.day)).s(b" ").s(month)
+        }
+    }
     fn get(&self) -> &[u8] {
         &self.b[..self.n]
     }
@@ -891,13 +903,10 @@ impl Calendar {
             None => e.day,
         };
         let mut note = Buf::<96>::new();
-        let dd = date::date_of(due);
         note.s(b"From Calendar: ")
             .s(date::WEEKDAYS[usize::from(date::weekday(due))].as_bytes())
             .s(b" ")
-            .num(u32::from(dd.day))
-            .s(b" ")
-            .s(&MONTHS[usize::from(dd.month - 1)][..3]);
+            .date(due, cx.us);
         if !e.all_day {
             note.s(b", ").s(clock(e.start).get());
         }
@@ -986,13 +995,10 @@ impl Calendar {
                 value,
             );
         };
-        let dd = date::date_of(e.day);
         let mut d = Buf::<32>::new();
         d.s(WEEKDAYS[usize::from(date::weekday(e.day))])
             .s(b" ")
-            .num(u32::from(dd.day))
-            .s(b" ")
-            .s(&MONTHS[usize::from(dd.month - 1)][..3]);
+            .date(e.day, cx.us);
         stepper(f, E_DAY, b"DAY", d.get());
         if e.all_day {
             stepper(f, E_START, b"STARTS", b"All day");
@@ -1660,13 +1666,10 @@ impl Calendar {
     /// The title band: the weekday and date, and what today holds.
     fn title(&self, f: &mut Frame, cx: &Ctx) -> u16 {
         let today = cx.now.day;
-        let d = date::date_of(self.day);
         let mut t = Buf::<32>::new();
         t.s(WEEKDAY_NAMES[usize::from(date::weekday(self.day))])
             .s(b", ")
-            .s(&MONTHS[usize::from(d.month - 1)][..3])
-            .s(b" ")
-            .num(u32::from(d.day));
+            .date(self.day, cx.us);
         let (list, n) = self.on(today);
         let mut sum = Buf::<64>::new();
         let next = list[..n]
@@ -2046,12 +2049,9 @@ impl Calendar {
                 } else if day == cx.now.day + 1 {
                     l.s(b"TOMORROW");
                 } else {
-                    let d = date::date_of(day);
                     l.s(WEEKDAYS[usize::from(date::weekday(day))])
                         .s(b" ")
-                        .num(u32::from(d.day))
-                        .s(b" ")
-                        .s(&MONTHS[usize::from(d.month - 1)][..3]);
+                        .date(day, cx.us);
                 }
                 let c = if day == cx.now.day {
                     tint::CALENDAR
@@ -2566,13 +2566,10 @@ impl Calendar {
             card.w - 30,
         );
         let day = q.day.unwrap_or(cx.now.day);
-        let dd = date::date_of(day);
         let mut when = Buf::<48>::new();
         when.s(WEEKDAYS[usize::from(date::weekday(day))])
             .s(b" ")
-            .num(u32::from(dd.day))
-            .s(b" ")
-            .s(&MONTHS[usize::from(dd.month - 1)][..3]);
+            .date(day, cx.us);
         if let Some(t) = q.time {
             let len = q.minutes.unwrap_or(60);
             when.s(b"  ")
@@ -3273,9 +3270,7 @@ impl Calendar {
             kit::panel(f, cx, row);
             let d = date::date_of(date::day_of(start));
             let mut when = Buf::<24>::new();
-            when.s(&MONTHS[usize::from(d.month - 1)][..3])
-                .s(b" ")
-                .num(u32::from(d.day))
+            when.date(date::day_of(start), cx.us)
                 .s(b", ")
                 .num(d.year.unsigned_abs());
             kit::text(f, row.x + 14, row.y + 20, label, DIM, when.get());
