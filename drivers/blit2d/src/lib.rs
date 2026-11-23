@@ -496,8 +496,6 @@ impl<R: RegisterBus> Engine<R> {
 mod tests {
     extern crate std;
 
-    use core::sync::atomic::{AtomicU32, Ordering};
-
     use rp_hal_mock::MockBus;
 
     use super::*;
@@ -705,10 +703,20 @@ mod tests {
         assert_eq!(Format::code(0xC), Format::BPP32);
     }
 
-    // Starts just short of the wrap: timeouts must survive it.
-    static NOW: AtomicU32 = AtomicU32::new(u32::MAX - 5_000);
+    // Each test's own clock (R384): a static shared by the tests let one
+    // test's reads move another's time (libtest runs them on parallel
+    // threads, one thread a test), and a 20 ms limit ran out in another
+    // test's ticks (6 of 300 runs). Starts just short of the wrap: timeouts
+    // must survive it.
+    std::thread_local! {
+        static NOW: core::cell::Cell<u32> = const { core::cell::Cell::new(u32::MAX - 5_000) };
+    }
     fn tick() -> u32 {
-        NOW.fetch_add(1_000, Ordering::Relaxed)
+        NOW.with(|n| {
+            let t = n.get();
+            n.set(t.wrapping_add(1_000));
+            t
+        })
     }
 
     #[test]

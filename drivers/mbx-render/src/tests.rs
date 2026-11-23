@@ -7,7 +7,6 @@
 
 extern crate std;
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::vec::Vec;
 
 use rp_draw::{Cmd, Font, Frame, Glyph, Image, PanelArt, Rect, Renderer};
@@ -18,9 +17,18 @@ use rp_gfx::render::CpuRenderer;
 use super::model::{self, Bus, Mem};
 use super::*;
 
-static NOW: AtomicU32 = AtomicU32::new(0);
+// Each test's own clock (R384): a static shared by the tests let one
+// test's reads move another's time (libtest runs them on parallel threads,
+// one thread a test).
+std::thread_local! {
+    static NOW: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
 fn now() -> u32 {
-    NOW.fetch_add(1, Ordering::Relaxed)
+    NOW.with(|n| {
+        let t = n.get();
+        n.set(t.wrapping_add(1));
+        t
+    })
 }
 
 /// The wallpaper: a pattern with every channel moving, already quantised

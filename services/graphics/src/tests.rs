@@ -6,7 +6,6 @@ extern crate std;
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use rp_draw::{Cmd, Frame, Rect};
 use rp_drv_blit2d::{MBX, reg};
@@ -94,9 +93,18 @@ impl RegisterBus for Both {
     }
 }
 
-static NOW: AtomicU32 = AtomicU32::new(0);
+// Each test's own clock (R384): a static shared by the tests let one
+// test's reads move another's time (libtest runs them on parallel threads,
+// one thread a test).
+std::thread_local! {
+    static NOW: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
 fn now() -> u32 {
-    NOW.fetch_add(1, Ordering::Relaxed)
+    NOW.with(|n| {
+        let t = n.get();
+        n.set(t.wrapping_add(1));
+        t
+    })
 }
 
 /// Exact in RGB565 (the screens' format since ADR-0023's 16-bit vote), as

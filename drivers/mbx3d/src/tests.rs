@@ -424,7 +424,6 @@ fn rectangular_tex0_carries_both_size_codes() {
 mod feed {
     extern crate std;
 
-    use core::sync::atomic::{AtomicU32, Ordering};
     use std::vec;
     use std::vec::Vec;
 
@@ -433,10 +432,20 @@ mod feed {
 
     use super::*;
 
-    // Starts just short of the wrap: timeouts must survive it.
-    static NOW: AtomicU32 = AtomicU32::new(u32::MAX - 5_000);
+    // Each test's own clock (R384): a static shared by the tests let one
+    // test's reads move another's time (libtest runs them on parallel
+    // threads, one thread a test), and a 20 ms limit ran out in another
+    // test's ticks (6 of 300 runs). Starts just short of the wrap: timeouts
+    // must survive it.
+    std::thread_local! {
+        static NOW: core::cell::Cell<u32> = const { core::cell::Cell::new(u32::MAX - 5_000) };
+    }
     fn tick() -> u32 {
-        NOW.fetch_add(1_000, Ordering::Relaxed)
+        NOW.with(|n| {
+            let t = n.get();
+            n.set(t.wrapping_add(1_000));
+            t
+        })
     }
     const CLOCK: ta::Clock = ta::Clock {
         now: tick,
@@ -818,6 +827,33 @@ mod feed {
         assert_eq!(fed.level_max, 0x1FE);
     }
 
+    /// R384: another test's clock reads (here a thread reading its own a
+    /// million times, as a parallel test does) never move this test's
+    /// time: the 20 ms scene of the test above comes out the same each time.
+    #[test]
+    fn another_threads_clock_reads_never_move_this_tests_time() {
+        let other = std::thread::spawn(|| {
+            for _ in 0..1_000_000 {
+                tick();
+            }
+        });
+        for _ in 0..50 {
+            let mut bus = idle(0);
+            bus.preset(MBX + reg::STATUS, 0);
+            let fed = ta::feed(
+                &mut bus,
+                &READY,
+                &GLESFEAT,
+                ta::draws(&[&[1]]),
+                CLOCK,
+                20_000,
+            );
+            assert!(!fed.done && fed.stuck.is_none());
+            assert_eq!(fed.words, 3);
+        }
+        other.join().unwrap();
+    }
+
     #[test]
     fn a_chip_that_always_says_room_cannot_hold_the_feed_past_its_limit() {
         // R340, run 276: a wedged chip's timed-out status reads said the
@@ -1117,7 +1153,6 @@ mod quads {
 mod set_up {
     extern crate std;
 
-    use core::sync::atomic::{AtomicU32, Ordering};
     use std::vec;
     use std::vec::Vec;
 
@@ -1126,9 +1161,20 @@ mod set_up {
 
     use super::*;
 
-    static NOW: AtomicU32 = AtomicU32::new(u32::MAX - 5_000);
+    // Each test's own clock (R384): a static shared by the tests let one
+    // test's reads move another's time (libtest runs them on parallel
+    // threads, one thread a test), and a 20 ms limit ran out in another
+    // test's ticks (6 of 300 runs). Starts just short of the wrap: timeouts
+    // must survive it.
+    std::thread_local! {
+        static NOW: core::cell::Cell<u32> = const { core::cell::Cell::new(u32::MAX - 5_000) };
+    }
     fn tick() -> u32 {
-        NOW.fetch_add(1_000, Ordering::Relaxed)
+        NOW.with(|n| {
+            let t = n.get();
+            n.set(t.wrapping_add(1_000));
+            t
+        })
     }
     const CLOCK: ta::Clock = ta::Clock {
         now: tick,
