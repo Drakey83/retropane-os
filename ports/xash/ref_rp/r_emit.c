@@ -178,6 +178,7 @@ static struct
 	uint32_t decals, decal_cut, decals_lit, decals_built, decal_arena_resets; /* R352: decals drawn over their faces; those cut at the near plane; those lit by their wall's lightmap */
 	uint32_t path_flips, why_decal, why_tex, why_lm; /* R352: faces drawn the other way than the frame before (texture and lightmap against the lit surface), and why a face left option B */
 	uint32_t sky_frames, sky_sides, sky_missed, sky_faces, water_faces, water_cells, water_missed, conveyors; /* R309 */
+	uint32_t coplanar; /* R352 after run 333: brush entities' faces in a world face's plane, drawn just behind it */
 	uint64_t upload_us;
 } rp_count;
 static uint32_t rp_skins_total; /* step 4a: skins written since the start */
@@ -214,6 +215,9 @@ static int rp_tex2_plain; /* -rptex2plain (R340's probe): the ARGB4444 pictures 
    wall through a surface rebuild; -rpdecalsoft keeps it for a side by side. */
 static int rp_decal_on = 1;
 static int rp_skyface_off; /* R352 after run 331: -rpskybox, the sky faces not drawn (R309's way) */
+static int rp_coplanar_off; /* R352 after run 333: -rpcoplanar, brush entities' faces in a world plane at their own depth (the old way) */
+static uint8_t *rp_cop; /* R352 after run 333: a bit a face, set for a brush entity's face in a world face's plane and side (RP_CoplanarMark) */
+static uint32_t rp_cop_marked; /* how many the map has */
 /* R352: decals lit by their wall's lightmap (Half-Life's GL look); -rpdecalunlit the unlit way (ref_soft's) */
 static int rp_decal_lit = 1;
 static cvar_t *rp_decal; /* 1 turns them on while a run plays (-rpcombo's second half) */
@@ -234,6 +238,8 @@ void RP_EmitInit( void )
 		rp_tex2_plain = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpskybox" ))
 		rp_skyface_off = 1;
+	if( gEngfuncs.Sys_CheckParm( "-rpcoplanar" ))
+		rp_coplanar_off = 1;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalsoft" )) /* R352: decals baked into the lit surface, the old way */
 		rp_decal_on = 0;
 	if( gEngfuncs.Sys_CheckParm( "-rpdecalunlit" ))
@@ -500,6 +506,9 @@ static void RP_EmitReport( void )
 	if( rp_emit_on == 2 && rp_count.sky_frames )
 		fprintf( stderr, "rp-emit: R352: sky faces drawn at their own depth %u a frame (pieces, one a cube side), hiding what the map keeps behind its sky (-rpskybox: not drawn)%c",
 			rp_count.sky_faces / f, 10 );
+	if( rp_emit_on == 2 )
+		fprintf( stderr, "rp-emit: R352: %u brush entity faces a frame in a world face's plane drawn just behind it (%u marked in the map%s)%c",
+			rp_count.coplanar / f, rp_cop_marked, rp_coplanar_off ? ", -rpcoplanar: not moved" : "", 10 );
 	memset( &rp_count, 0, sizeof( rp_count ));
 	rp_nm_lazy = rp_nm_made = 0;
 	since = now;
@@ -1032,6 +1041,7 @@ static struct
 	int                frame, serial;
 	const cl_entity_t *ent;
 	int32_t            m[3][3], o[3];
+	int                still; /* the entity unmoved and unturned: its planes are the world's (R352 after run 333) */
 } rp_bview;
 
 static inline int32_t RP_Fix30( float f )
@@ -1094,6 +1104,7 @@ static void RP_BrushViewFixed( void )
 	rp_bview.frame = tr.framecount;
 	rp_bview.ent = RI.currententity;
 	rp_bview.serial = ++rp_vserial;
+	rp_bview.still = RI.currententity && VectorIsNull( RI.currententity->origin ) && VectorIsNull( RI.currententity->angles );
 	for( int i = 0; i < 3; i++ )
 	{
 		for( int j = 0; j < 3; j++ )
@@ -2660,6 +2671,86 @@ static int  RP_CookRead( const model_t *mod ) __attribute__(( noinline ));
 static void RP_CookMake( const model_t *mod ) __attribute__(( noinline ));
 static void RP_CookFree( void );
 
+/*
+R352 after run 333 (the owner's clip IMG_0666: "all of the top beams on
+the top of the building flash in and out"). c2a5f's steel ribs are a
+func_wall (model *140, `out_w4b`) whose front faces stand in plane 2362
+(y = -376 facing +y) from z -1568 to -1120; below z -1240 the world's wall
+is 8 units behind them (y = -384), but in the top band (z -1240 to -1120)
+the world's own wall (`c3a1_w5b`, faces 3277, 3278, 4255, 4256) is in the
+same plane and side. Two faces at one depth with different corners: the
+2700G's depth test settles each pixel by the rounding of the two faces'
+interpolated 1/z, and that changes as the view moves, so the ribs in the
+band appear and vanish frame to frame (the clip: frames 0-10 ribs up to
+the top, 12-23 none, the view all but still; run 333's chip picture of
+the same view with none and thin dark seams at the ribs' edges). The map
+has 666 such faces (of 3,477 brush entity faces, 147 entities).
+
+Iterate, don't imitate (rule 0). GoldSrc's and Quake's GL renderers draw
+the world, then the entities, with depth "less or equal": the same fight,
+a known look of those renderers. ref_soft's span sorter settles a tie by
+the surfaces' keys, the world's first, so the software picture (the look
+Half-Life ships, and ours elsewhere) shows the world's wall in the band,
+every frame. Ours: the ties found once, at the map's first draw, from the
+map's own planes (a brush entity's face whose plane and side a world face
+uses: the compiler gives coplanar faces one plane), a bit a face; such a
+face, when its entity is unmoved and unturned, is drawn 2^-9 of its depth
+behind itself (its 1/z words down by the decals' step, the other way), so
+the world wins every pixel of a tie, every frame, as ref_soft draws it,
+for one compare a brush face and nothing on the world's faces. 2^-9 of the
+depth is under a unit at 500 units (a rib stands 8 proud), and the chip
+keeps the decals' same step apart without speckle (runs 326-328).
+-rpcoplanar keeps the old way for a side by side.
+*/
+#define RP_COPLANAR_BIAS 0x4000u /* float bits: 2^14 of the mantissa's 2^23 steps, as RP_DECAL_BIAS */
+#define RP_COPLANAR( fa ) ( rp_cop && ( rp_cop[( fa ) - rp_wmodel->surfaces >> 3] >> (( ( fa ) - rp_wmodel->surfaces ) & 7 ) & 1 ))
+
+static void RP_CoplanarMark( const model_t *mod )
+{
+	uint8_t *seen;
+	int      world;
+
+	free( rp_cop );
+	rp_cop = NULL;
+	rp_cop_marked = 0;
+	world = mod->nummodelsurfaces;
+	if( !mod->numplanes || world <= 0 || world >= mod->numsurfaces )
+		return;
+	seen = calloc( mod->numplanes, 1 );
+	rp_cop = calloc(( mod->numsurfaces + 7 ) >> 3, 1 );
+	if( !seen || !rp_cop )
+	{
+		free( seen );
+		free( rp_cop );
+		rp_cop = NULL;
+		return;
+	}
+	/* each plane's sides the world's faces use: bit 0 the front, bit 1 the back */
+	for( int f = 0; f < world; f++ )
+	{
+		const msurface_t *fa = &mod->surfaces[f];
+		ptrdiff_t         pl = fa->plane - mod->planes;
+
+		if( fa->plane && pl >= 0 && pl < mod->numplanes )
+			seen[pl] |= ( fa->flags & SURF_PLANEBACK ) ? 2 : 1;
+	}
+	for( int f = world; f < mod->numsurfaces; f++ )
+	{
+		const msurface_t *fa = &mod->surfaces[f];
+		ptrdiff_t         pl = fa->plane - mod->planes;
+
+		if( fa->plane && pl >= 0 && pl < mod->numplanes
+			&& ( seen[pl] & (( fa->flags & SURF_PLANEBACK ) ? 2 : 1 )))
+		{
+			rp_cop[f >> 3] |= (uint8_t)( 1u << ( f & 7 ));
+			rp_cop_marked++;
+		}
+	}
+	free( seen );
+	fprintf( stderr, "rp-emit: R352: %u brush entity faces share a world face's plane and side (drawn just behind it%s)\n",
+		rp_cop_marked, rp_coplanar_off ? "; -rpcoplanar: not" : "" );
+}
+
 static int RP_WorldTables( void )
 {
 	const model_t *mod = WORLDMODEL;
@@ -2678,6 +2769,7 @@ static int RP_WorldTables( void )
 	rp_wv_block = NULL;
 	if( !mod || !mod->numvertexes || !mod->numsurfedges )
 		return 0;
+	RP_CoplanarMark( mod );
 	rp_wv_block = calloc( 1, sizeof( *rp_wv ) * mod->numvertexes + 31 );
 	rp_wc = calloc( mod->numsurfedges, sizeof( *rp_wc ));
 	if( !rp_wv_block || !rp_wc )
@@ -3433,6 +3525,15 @@ static int RP_ChipFaceFixed( msurface_t *fa, const int32_t m[3][3], const int32_
 	}
 	sx = RP_DivN( sx, n ) * 4;
 	sy = RP_DivN( sy, n ) * 4;
+	/* R352 after run 333: a still brush entity's face in a world face's
+	   plane drawn just behind it, so the world wins the tie every frame
+	   (RP_CoplanarMark); nearzi (the mip level) taken before, unmoved */
+	if( m == (const int32_t( * )[3])rp_bview.m && rp_bview.still && !rp_coplanar_off && RP_COPLANAR( fa ))
+	{
+		for( int i = 0; i < n; i++ )
+			zis[i] -= RP_COPLANAR_BIAS;
+		rp_count.coplanar++;
+	}
 	if( rp_lm_on && RP_ChipFaceLm( fa, n, zis, cxy, st ))
 	{
 		if( fa->pdecals )
