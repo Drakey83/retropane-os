@@ -3668,7 +3668,9 @@ fn kit_taps() -> Option<std::thread::JoinHandle<Vec<String>>> {
         let (x, y) = v.split_once(',')?;
         Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
     };
-    let mut at: Vec<(u64, (u32, u32), Option<(u32, u32)>)> = list
+    // A tap: its guest second, where it lands, and a drag's end.
+    type Tap = (u64, (u32, u32), Option<(u32, u32)>);
+    let mut at: Vec<Tap> = list
         .split(';')
         .filter_map(|item| {
             let (s, rest) = item.trim().split_once(':')?;

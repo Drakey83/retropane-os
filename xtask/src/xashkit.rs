@@ -185,7 +185,9 @@ pub const BINDS_FILE: &str = "rp_binds.cfg";
 /// each layout was raised for: a test fails a change to [`BINDS`] that
 /// left the number as it was.
 pub const LAYOUT: u32 = 5;
-/// The CRC-32 of [`BINDS`] when [`LAYOUT`] was last raised.
+/// The CRC-32 of [`BINDS`] when [`LAYOUT`] was last raised (read by the
+/// test that guards [`LAYOUT`] only).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const LAYOUT_OF: u32 = 0xFBEB6547;
 
 /// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL

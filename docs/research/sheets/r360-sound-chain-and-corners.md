@@ -71,3 +71,12 @@ flat; two places were read down to the instruction:
   compiler_builtins' generic soft float in place of ours (19,627 ms,
   25.4 fps). `cargo xtask xash-kit` now refuses a module without our
   helpers (`xashkit::helpers_linked`).
+
+## Step 3: where the sort's cycles go, counted by the X51v (runs 342a-d)
+
+| | What it does |
+|---|---|
+| Vendor / textbook | VTune or `perf record -e cache-misses` on a PC; instrumenting the function with counter reads (spans) |
+| Ours | the runner's event sampler (kit 88, `-rpsampleon <event>`): the PMU interrupts every 2,000 D-cache misses (or 200,000 stall cycles) and the sample keeps the instruction, so the misses and stalls land on the sort's own instructions (`pchist.py`-style histogram beside the disassembly), with nothing added to the code being measured |
+| Why it wins | a span says *how much* the sort waits; the samples say *on which load*, which is what a fix needs; no instrumentation to perturb a ~30-instruction loop |
+| Runs | one kit (HEAD), the fixed-seed fight: 342a cycles, 342b D-cache misses (0x0B), 342c data-stall cycles (0x02), 342d I-cache stall cycles (0x01) |
