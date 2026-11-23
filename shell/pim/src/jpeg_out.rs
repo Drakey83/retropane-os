@@ -328,7 +328,11 @@ mod tests {
     fn scene(x: usize, y: usize) -> (u8, u8, u8) {
         let r = (x * 255 / 95) as u8;
         let g = (y * 255 / 95) as u8;
-        let b = if (x / 12 + y / 12).is_multiple_of(2) { 220 } else { 40 };
+        let b = if (x / 12 + y / 12).is_multiple_of(2) {
+            220
+        } else {
+            40
+        };
         (r, g, b)
     }
 
