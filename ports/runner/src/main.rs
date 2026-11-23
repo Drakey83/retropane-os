@@ -1713,6 +1713,8 @@ mod image {
         // R340's next measure: the chip's stages frame by frame
         let (fl_mem, room) = room.split_at_mut(super::gfx::FRAME_LOG_ROOM);
         super::gfx::FRAME_LOG.with(|l| *l = super::gfx::FrameLog::new(fl_mem));
+        let (pr_mem, room) = room.split_at_mut(super::gfx::REG_PROBE_ROOM);
+        super::gfx::REG_PROBE.with(|p| *p = super::gfx::RegProbe::new(pr_mem));
         let mut files: Files<'static, Disk, HANDLES> = Files::new(vol, work, room);
         files.remember(Names::new(names));
 
@@ -2082,6 +2084,22 @@ mod image {
         }
         if args[..arg_count]
             .iter()
+            .any(|a| a.to_bytes() == b"-rpprobe")
+        {
+            super::gfx::REG_PROBE.with(|p| {
+                if let Some(p) = p.as_mut() {
+                    p.on = true;
+                }
+            });
+            let _ = writeln!(
+                uart,
+                "runner: R340 -rpprobe: the 2700G's registers read through {} renders from frame {} (reads only)",
+                super::gfx::regprobe_renders(),
+                super::gfx::regprobe_from()
+            );
+        }
+        if args[..arg_count]
+            .iter()
             .any(|a| a.to_bytes() == b"-rpnoholdend")
         {
             super::gfx::HOLD_END.with(|h| h.on = false);
@@ -2351,6 +2369,17 @@ mod image {
                 Out,
                 "runner: R340: the parameter memory manager's snapshots ({} KiB) {put}",
                 w.bytes().len() / 1024
+            );
+        }
+        // R340's probe: the registers' snapshots to the card
+        if let Some(mut p) = super::gfx::REG_PROBE.with(Option::take)
+            && p.on
+        {
+            let n = p.bytes().len();
+            let put = write_card(super::gfx::REG_PROBE_FILE, &[p.bytes()]);
+            let _ = writeln!(
+                Out,
+                "runner: R340 -rpprobe: the registers' snapshots ({n} bytes) {put}"
             );
         }
         // R340's next measure: the chip's stages frame by frame to the card

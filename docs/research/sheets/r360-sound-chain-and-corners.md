@@ -488,3 +488,19 @@ scenes leave the chip as the limit). Next: a hands-free probe for a
 render-progress register (registers read during renders, those that
 count kept; reads only, an unknown register at worst ending in the bus's
 time-out), then a rule built on it.
+
+**Run 357a (2026-11-23, `-rpprobe`, the fight, hands-free):** the core's
+registers `0x000`-`0x7FC` and the TA block `0x804`-`0x85C` read through
+24 renders (frames 400-423), six or seven snapshots each ~4.6 ms apart
+from the render's start to its end; 0 reads timed out, no hang, no
+reset. **Only `0x12c` (the status word) moved, and only at the end
+(0x48 -> 0x4c, the render's done bit): no register in these ranges
+counts a render's progress.** Left: (a) the block past `0x85C`
+(`0x860`-`0xFFC`, unknown on the chip; the probe stops after three reads
+that time out); (b) the render's progress read from the picture itself
+(the render writes the screen tile by tile: a few tiles marked before the
+render, seen overwritten as it passes them), which gives how far, not
+how long; with a TA that can take 26 ms (runs 355-356), a certain rule
+still needs a TA bound that holds; (c) whether answering the event
+(`-rpev9`, `0x834` = 1) makes a render ending under a TA harmless,
+in a play.

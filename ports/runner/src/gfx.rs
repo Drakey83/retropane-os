@@ -50,9 +50,21 @@ mod chain;
 mod framelog;
 mod pmwatch;
 mod probe4f;
+mod regprobe;
 use chain::Settled;
 use framelog::Kind as FrameKind;
 pub use framelog::{FILE as FRAME_LOG_FILE, FrameLog, ROOM as FRAME_LOG_ROOM};
+pub use regprobe::{FILE as REG_PROBE_FILE, ROOM as REG_PROBE_ROOM, RegProbe};
+
+/// R340's probe ([`RegProbe`], `-rpprobe`): the core's registers read
+/// through a few renders.
+pub static REG_PROBE: rt::Global<Option<RegProbe>> = rt::Global::new(None);
+pub const fn regprobe_renders() -> usize {
+    regprobe::RENDERS
+}
+pub const fn regprobe_from() -> u32 {
+    regprobe::FROM_FRAME
+}
 use pmwatch::{F_OVERLAP, F_RENDERING, F_TA_BUSY, Moment};
 pub use pmwatch::{FILE as PM_WATCH_FILE, PmWatch, ROOM as PM_WATCH_ROOM};
 
@@ -3150,6 +3162,17 @@ impl Open {
             let v = words.iter().find(|w| w.0 == off).map_or(v, |w| w.1);
             regs.write32(MBX + off, v);
         }
+        // R340's probe: this render watched to its end, the registers read
+        let fr = self.pm_frame;
+        REG_PROBE.with(|p| {
+            if let Some(p) = p.as_mut()
+                && p.wants(fr)
+            {
+                p.watch(regs, |r| {
+                    status(r).is_some_and(|s| s & m3::RENDER_DONE != 0)
+                });
+            }
+        });
     }
 }
 
