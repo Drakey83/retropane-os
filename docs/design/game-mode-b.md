@@ -1,6 +1,6 @@
 # Game Mode, design B (design only, for the owner's go)
 
-**Status: DRAFT, 2026-11-07.** Written on the owner's go of 2026-11-07 on
+**Status: APPROVED by the owner, 2026-11-23** ("do your recommendations for all of these", on the four open items below; the rulings are recorded there). Code waits on the kernel running on the X51v and the measurements listed at the end. Was: DRAFT, 2026-11-07. Written on the owner's go of 2026-11-07 on
 sheet A's alternative 3 ([sheet A](../research/sheets/game-mode-alternatives-a.md)):
 "One kernel, two user-space profiles, fast tier under 2 s keeping programs
 in RAM, full tier up to ~15 s writing them to flash or SD. Start design B
@@ -244,22 +244,39 @@ decompression. Stated per port as each is built.
 | CE legacy | one unmodified WM5 game through the CE personality entered and left 10 times |
 | Asset loading | stated separately per game, never counted in the transition |
 
-## Open for the owner (the brief: he decides on conflicts)
+## Open for the owner: ruled 2026-11-23
 
-- [ ] **The slot limit.** ADR-0003 gives each process a 32 MB slot, as CE5
-  did. A game can use more than 32 MB only through mappings outside its
-  slot (CE's large-allocation area or the shared region, which CE5 games
-  already use for big `VirtualAlloc`s). Design B assumes those mappings
-  carry the game past 32 MB; if ADR-0003's area for them isn't large
-  enough, the slot model and "as much of the 64 MB as possible" conflict.
-  Ruling wanted once the kernel phase sizes that area.
-- [ ] **The process model isn't built yet.** Crash return relies on
-  ADR-0016's isolation (accepted, steps 1-2 running in the emulator, not
-  yet on the X51v); B's crash path is proven only when that is.
-- [ ] **The reserve:** 256 KiB proposed; to be sized from the real records.
-- [ ] **The forced-way-back keys:** which existing key combination (no new
-  button jobs).
-- [ ] **Go on design B** as written, or changes.
+The owner, 2026-11-23: "do your recommendations for all of these". Each
+item as recommended and now ruled:
+
+- [x] **Go on design B as written.** Nothing in it is changed; the
+  measurements below still come before any code, and the first port into
+  Game Mode is Half-Life (ADR-0039 rule 1: the game as Game Mode's one
+  program under the kernel).
+- [x] **The forced way back: hold Power for 3 seconds.** Power is the one
+  key Windows Mobile never hands a game (GAPI's `GXOpenInput` takes the six
+  program buttons and the D-pad, never Power: docs/hw/keypad.md), so this
+  gives no game key a new job. A short press stays sleep, as in WM. After
+  1 s held, the system's own plane shows "Keep holding to leave the game"
+  with a countdown, so a long press by accident can still be let go. To
+  check on the X51v before it is built: what WM itself does on a held
+  Power (if WM gives held-Power a job, ours keeps WM's and the owner is
+  asked again).
+- [x] **The reserve: 256 KiB, a ceiling to shrink from.** The sums above
+  (about 80 KiB of service records, 60 KiB of the full tier's page map,
+  the thread records) fit with room; the real records are measured once the
+  services exist and the reserve is cut to them plus a quarter. Rule 0:
+  consoles reserve megabytes for the system at all times; this is a quarter
+  megabyte, and only the record.
+- [x] **The 32 MB slot: the game's large allocations in the large-allocation
+  region, sized to the RAM.** Half-Life already needs past 32 MB (its
+  modules 27 MiB and its heap 26 MiB in today's runner,
+  `cargo xtask xash-modules`), so the game process's modules and big
+  blocks are mapped in the region outside the slots that CE5's own large
+  `VirtualAlloc`s use; the kernel phase reserves at least 64 MB of address
+  space for it (ADR-0003's area, sized then; reminder R363). CE games keep
+  their slot exactly as CE5 gave it (legacy layout unchanged); only a
+  native port that asks for more gets the region.
 
 ## Measurements B needs before any code
 
