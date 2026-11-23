@@ -55,7 +55,12 @@ pub struct Window<'a> {
 impl<'a> Window<'a> {
     /// The piece of the file at `off` into `out`.
     pub fn new(off: usize, out: &'a mut [u8]) -> Self {
-        Self { off, out, at: 0, got: 0 }
+        Self {
+            off,
+            out,
+            at: 0,
+            got: 0,
+        }
     }
 }
 
@@ -173,7 +178,7 @@ fn tenths(s: &mut dyn Sink, v: i64) {
     }
     let a = v.unsigned_abs();
     num(s, (a / 10) as i64);
-    if a % 10 != 0 {
+    if !a.is_multiple_of(10) {
         s.put(b".");
         num(s, (a % 10) as i64);
     }
@@ -210,7 +215,11 @@ pub fn text(store: &Store<'_>, id: u32, title: &[u8], fmt: Format, s: &mut dyn S
                 s.put(b"](");
                 // Spaces in a link's target as %20 (CommonMark).
                 for &c in &name[..n] {
-                    s.put(if c == b' ' { b"%20" } else { core::slice::from_ref(&c) });
+                    s.put(if c == b' ' {
+                        b"%20"
+                    } else {
+                        core::slice::from_ref(&c)
+                    });
                 }
                 s.put(b")");
             } else {
@@ -296,7 +305,9 @@ pub fn svg(store: &Store<'_>, id: u32, block: u8, s: &mut dyn Sink) {
     let mut pts = [(0i16, 0i16); 255];
     let mut ws = [8u8; 255];
     each_stroke(store, id, &mut |packed| {
-        if (packed[1] & EXT != 0 && packed[6] & 0x7F != block) || (packed[1] & EXT == 0 && block != 0) {
+        if (packed[1] & EXT != 0 && packed[6] & 0x7F != block)
+            || (packed[1] & EXT == 0 && block != 0)
+        {
             return;
         }
         let u = unpack_all(packed, &mut pts, &mut ws);
@@ -305,7 +316,11 @@ pub fn svg(store: &Store<'_>, id: u32, block: u8, s: &mut dyn Sink) {
         let marker = u.style & crate::MARKER != 0;
         // The width of point k in tenths of a pixel.
         let wt = |k: usize| -> i64 {
-            let scale = if u.widths && !marker { i64::from(crate::width_scale(ws[k])) } else { 12 };
+            let scale = if u.widths && !marker {
+                i64::from(crate::width_scale(ws[k]))
+            } else {
+                12
+            };
             (2 * rad * scale * 10 / (16 * 12)).max(10)
         };
         let p = |k: isize| {
@@ -428,7 +443,11 @@ fn crc_more(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
         crc ^= u32::from(b);
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -616,7 +635,11 @@ pub fn png(store: &Store<'_>, id: u32, block: u8, work: &mut PngWork, s: &mut dy
         let band = &mut work.band[..rows * (w + 1)];
         band.iter_mut().for_each(|b| *b = 0);
         each_stroke(store, id, &mut |packed| {
-            let sb = if packed[1] & EXT != 0 { packed[6] & 0x7F } else { 0 };
+            let sb = if packed[1] & EXT != 0 {
+                packed[6] & 0x7F
+            } else {
+                0
+            };
             if sb != block {
                 return;
             }
@@ -640,7 +663,11 @@ pub fn png(store: &Store<'_>, id: u32, block: u8, work: &mut PngWork, s: &mut dy
                     }
                     let (r, x) = (i / w, i % w);
                     let p = &mut band[r * (w + 1) + 1 + x];
-                    let have = if *p == 0 { 0 } else { (usize::from(*p) - 1) % 15 + 1 };
+                    let have = if *p == 0 {
+                        0
+                    } else {
+                        (usize::from(*p) - 1) % 15 + 1
+                    };
                     if lv > have {
                         *p = (1 + ci * 15 + lv - 1) as u8;
                     }
@@ -649,7 +676,8 @@ pub fn png(store: &Store<'_>, id: u32, block: u8, work: &mut PngWork, s: &mut dy
         });
         let prev: &[u8] = if first { &[] } else { &work.prev };
         d.band(prev, band, &mut |b| o.push(b, s));
-        work.prev.copy_from_slice(&band[(rows - 1) * (w + 1)..rows * (w + 1)]);
+        work.prev
+            .copy_from_slice(&band[(rows - 1) * (w + 1)..rows * (w + 1)]);
         first = false;
         y0 += rows;
     }

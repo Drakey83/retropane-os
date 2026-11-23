@@ -190,7 +190,11 @@ impl Reader {
         Ok(())
     }
 
-    fn push(&mut self, b: u8, out: &mut dyn FnMut(&[u8]) -> Result<(), Damage>) -> Result<(), Damage> {
+    fn push(
+        &mut self,
+        b: u8,
+        out: &mut dyn FnMut(&[u8]) -> Result<(), Damage>,
+    ) -> Result<(), Damage> {
         if self.n >= LINE_MAX && self.more == 0 && b & 0xC0 != 0x80 {
             self.cut(out)?;
         }
@@ -253,7 +257,10 @@ impl Reader {
     ///
     /// # Errors
     /// [`Damage::Truncated`] inside a character, or what `out` answers.
-    pub fn finish(&mut self, out: &mut dyn FnMut(&[u8]) -> Result<(), Damage>) -> Result<(), Damage> {
+    pub fn finish(
+        &mut self,
+        out: &mut dyn FnMut(&[u8]) -> Result<(), Damage>,
+    ) -> Result<(), Damage> {
         if self.more > 0 || (self.bom > 0 && self.bom < 3) {
             return Err(Damage::Truncated(self.at));
         }

@@ -39,7 +39,11 @@ impl<'a> Dict<'a> {
         }
         let count = usize::from(u16::from_le_bytes([*data.get(5)?, *data.get(6)?]));
         let blocks = usize::from(u16::from_le_bytes([*data.get(7)?, *data.get(8)?]));
-        (9 + 2 * blocks <= data.len()).then_some(Self { data, blocks, count })
+        (9 + 2 * blocks <= data.len()).then_some(Self {
+            data,
+            blocks,
+            count,
+        })
     }
 
     /// The default (US English).
@@ -71,7 +75,10 @@ impl<'a> Dict<'a> {
 
     fn block_start(&self, b: usize) -> Option<usize> {
         let at = 9 + 2 * b;
-        let off = usize::from(u16::from_le_bytes([*self.data.get(at)?, *self.data.get(at + 1)?]));
+        let off = usize::from(u16::from_le_bytes([
+            *self.data.get(at)?,
+            *self.data.get(at + 1)?,
+        ]));
         Some(9 + 2 * self.blocks + off)
     }
 
@@ -81,7 +88,10 @@ impl<'a> Dict<'a> {
         let Some(mut at) = self.block_start(b) else {
             return true;
         };
-        let end = self.block_start(b + 1).unwrap_or(self.data.len()).min(self.data.len());
+        let end = self
+            .block_start(b + 1)
+            .unwrap_or(self.data.len())
+            .min(self.data.len());
         let mut word = [0u8; 32];
         while at + 2 <= end {
             let shared = usize::from(self.data[at]);
@@ -233,7 +243,10 @@ pub fn suggest(
     out: &mut [[u8; WORD_MAX]; 3],
 ) -> [usize; 3] {
     let mut lens = [0usize; 3];
-    if typed.is_empty() || typed.len() >= WORD_MAX || !typed.iter().all(|c| c.is_ascii_alphabetic() || *c == b'\'') {
+    if typed.is_empty()
+        || typed.len() >= WORD_MAX
+        || !typed.iter().all(|c| c.is_ascii_alphabetic() || *c == b'\'')
+    {
         return lens;
     }
     let mut low = [0u8; WORD_MAX];
@@ -245,7 +258,10 @@ pub fn suggest(
     // the list's ranks after them).
     let mut best: [([u8; WORD_MAX], usize, u32); 3] = [([0; WORD_MAX], 0, u32::MAX); 3];
     let mut offer = |w: &[u8], score: u32| {
-        if w.len() == prefix.len() || w.len() > WORD_MAX || best.iter().any(|b| b.2 != u32::MAX && &b.0[..b.1] == w) {
+        if w.len() == prefix.len()
+            || w.len() > WORD_MAX
+            || best.iter().any(|b| b.2 != u32::MAX && &b.0[..b.1] == w)
+        {
             return;
         }
         if let Some(k) = best.iter().position(|b| score < b.2) {
@@ -261,7 +277,9 @@ pub fn suggest(
         }
     });
     if let Some(d) = dict {
-        d.starting(prefix, &mut |w, r| offer(w, 1000 + u32::from(r) * 4 + w.len() as u32));
+        d.starting(prefix, &mut |w, r| {
+            offer(w, 1000 + u32::from(r) * 4 + w.len() as u32)
+        });
     }
     learned.starting(prefix, &mut |w, n| {
         if n < 2 {
@@ -276,7 +294,11 @@ pub fn suggest(
         }
         let w = &b.0[..b.1];
         for (i, &c) in w.iter().enumerate() {
-            out[k][i] = if all_upper || (upper_first && i == 0) { c.to_ascii_uppercase() } else { c };
+            out[k][i] = if all_upper || (upper_first && i == 0) {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
         }
         lens[k] = w.len();
     }
@@ -288,7 +310,10 @@ pub fn suggest(
 /// a sentence: at a block's start, or after `.`, `!` or `?` and a space.
 #[must_use]
 pub fn sentence_starts(before: &[u8]) -> bool {
-    let t = before.strip_prefix(b"[ ] ").or_else(|| before.strip_prefix(b"[x] ")).unwrap_or(before);
+    let t = before
+        .strip_prefix(b"[ ] ")
+        .or_else(|| before.strip_prefix(b"[x] "))
+        .unwrap_or(before);
     let t = t.strip_prefix(&[crate::doc::CONT]).unwrap_or(t);
     let trimmed = t.trim_ascii_end();
     if trimmed.is_empty() {

@@ -25,7 +25,11 @@ fn new_note(pim: &Pim, text: &[u8]) -> u32 {
     let mut g = pim.borrow_mut();
     g.as_mut()
         .unwrap()
-        .put(Kind::Note, None, &[(tag::TITLE, b"Trip"), (tag::TEXT, text)])
+        .put(
+            Kind::Note,
+            None,
+            &[(tag::TITLE, b"Trip"), (tag::TEXT, text)],
+        )
         .unwrap()
 }
 
@@ -110,7 +114,13 @@ fn typing_goes_on_past_two_thousand_bytes_in_the_app() {
     n.event(Event::Key(Key::SoftRight), &cx);
     draw(&mut n, &cx);
     let id = n.open_id().unwrap();
-    n.event(Event::PenUp { x: tool_key(3).x + 9, y: tool_key(3).y + 9 }, &cx);
+    n.event(
+        Event::PenUp {
+            x: tool_key(3).x + 9,
+            y: tool_key(3).y + 9,
+        },
+        &cx,
+    );
     for k in 0..5000u32 {
         n.event(Event::Char(b'a' + (k % 26) as u8), &cx);
         if k % 80 == 79 {
@@ -180,12 +190,24 @@ fn ink_text_and_lists_go_in_any_order_each_stroke_in_its_block() {
     // Ink in the first block.
     stroke(&mut n, &cx, ix + 20, iy + 30, 10, |_| 0);
     // A paragraph after it.
-    n.event(Event::PenUp { x: tool_key(3).x + 9, y: tool_key(3).y + 9 }, &cx);
+    n.event(
+        Event::PenUp {
+            x: tool_key(3).x + 9,
+            y: tool_key(3).y + 9,
+        },
+        &cx,
+    );
     for &c in b"Then a list" {
         n.event(Event::Char(c), &cx);
     }
     // A checklist after the paragraph.
-    n.event(Event::PenUp { x: tool_key(4).x + 9, y: tool_key(4).y + 9 }, &cx);
+    n.event(
+        Event::PenUp {
+            x: tool_key(4).x + 9,
+            y: tool_key(4).y + 9,
+        },
+        &cx,
+    );
     for &c in b"Bread" {
         n.event(Event::Char(c), &cx);
     }
@@ -221,7 +243,11 @@ fn ink_text_and_lists_go_in_any_order_each_stroke_in_its_block() {
     // The eraser takes a stroke of its own block only: on block 1 at the
     // place block 0's stroke has in block 0, nothing goes.
     n.tool = Tool::Erase;
-    let v1 = n.vis[..n.n_vis].iter().find(|v| v.item == Item::Ink(1)).copied().unwrap();
+    let v1 = n.vis[..n.n_vis]
+        .iter()
+        .find(|v| v.item == Item::Ink(1))
+        .copied()
+        .unwrap();
     let top1 = n.screen_y(v1.row) as u16;
     stroke(&mut n, &cx, ix + 20, top1 + 30, 4, |_| 0);
     let count = |pim: &Pim| {
@@ -250,7 +276,10 @@ fn tapping_a_line_moves_the_caret_and_return_and_backspace_edit_there() {
     n.event(Event::Char(b'!'), &cx);
     n.event(Event::Done, &cx);
     n.event(Event::Char(b'x'), &cx);
-    assert_eq!(lines(pim, id), [&b"First!"[..], b"x", b"Second", b"[ ] Item"]);
+    assert_eq!(
+        lines(pim, id),
+        [&b"First!"[..], b"x", b"Second", b"[ ] Item"]
+    );
     n.event(Event::Delete, &cx);
     n.event(Event::Delete, &cx);
     assert_eq!(lines(pim, id), [&b"First!"[..], b"Second", b"[ ] Item"]);
@@ -279,7 +308,7 @@ fn circle(step: f32) -> (i32, i32, i32) {
     let mut f = pen::Filter::default();
     let mut seed = 7u32;
     let (mut raw_err, mut filt_err, mut lag, mut k) = (0f32, 0f32, 0f32, 0f32);
-    let n = (2.0 * 3.14159 * 80.0 / step) as usize;
+    let n = (2.0 * core::f32::consts::PI * 80.0 / step) as usize;
     for i in 0..n {
         let a = i as f32 * step / 80.0;
         let (tx, ty) = (200.0 + 80.0 * a.cos(), 150.0 + 80.0 * a.sin());
@@ -287,9 +316,14 @@ fn circle(step: f32) -> (i32, i32, i32) {
             (tx.round() as i32 + lcg(&mut seed)) as i16,
             (ty.round() as i32 + lcg(&mut seed)) as i16,
         );
-        let ((fx, fy), _) = if i == 0 { f.start(rx, ry) } else { f.step(rx, ry) };
+        let ((fx, fy), _) = if i == 0 {
+            f.start(rx, ry)
+        } else {
+            f.step(rx, ry)
+        };
         if i > 5 {
-            let off = |x: f32, y: f32| (((x - 200.0).powi(2) + (y - 150.0).powi(2)).sqrt() - 80.0).abs();
+            let off =
+                |x: f32, y: f32| (((x - 200.0).powi(2) + (y - 150.0).powi(2)).sqrt() - 80.0).abs();
             raw_err += off(f32::from(rx), f32::from(ry));
             filt_err += off(f32::from(fx), f32::from(fy));
             // Behind the pen along its way (the noise across it cancels).
@@ -308,7 +342,9 @@ fn circle(step: f32) -> (i32, i32, i32) {
 fn the_pen_filter_halves_the_jitter_and_keeps_up_with_a_fast_pen() {
     // Slow: the jitter is what shows; it is more than halved.
     let (raw, filt, lag) = circle(1.5);
-    std::println!("slow (1.5 px a sample): raw {raw}, filtered {filt} (tenths of a px off the circle), lag {lag}");
+    std::println!(
+        "slow (1.5 px a sample): raw {raw}, filtered {filt} (tenths of a px off the circle), lag {lag}"
+    );
     assert!(filt * 2 <= raw, "raw {raw} filtered {filt}");
     assert!(lag <= 30, "lag {lag}");
     // Writing speed: the filter lets the pen through.
@@ -362,7 +398,10 @@ fn version_two_strokes_round_trip_their_block_and_widths() {
     let mut p = [(0i16, 0i16); 255];
     let mut w = [0u8; 255];
     let u = unpack_all(&out[..n], &mut p, &mut w);
-    assert_eq!((u.style, u.block, u.n, u.widths), (3 | SIZE_BOLD, 17, 40, true));
+    assert_eq!(
+        (u.style, u.block, u.n, u.widths),
+        (3 | SIZE_BOLD, 17, 40, true)
+    );
     assert_eq!(&p[..40], &pts[..]);
     assert_eq!(&w[..40], &ws[..]);
     // A long step is split; a cut stroke is no stroke.
@@ -391,7 +430,10 @@ fn exported(pim: &Pim, id: u32, fmt: export::Format, block: u8) -> Vec<u8> {
 #[test]
 fn text_and_markdown_say_the_note_as_written() {
     let pim = store();
-    let id = new_note(pim, b"Pack light\n\x02 and early\n[ ] Charger\n[x] Ticket\n\x01\nDone");
+    let id = new_note(
+        pim,
+        b"Pack light\n\x02 and early\n[ ] Charger\n[x] Ticket\n\x01\nDone",
+    );
     let md = exported(pim, id, export::Format::Markdown, 0);
     assert_eq!(
         std::str::from_utf8(&md).unwrap(),
@@ -413,7 +455,9 @@ fn inked(pim: &Pim) -> u32 {
     let id = new_note(pim, b"\x01");
     let mut out = [0u8; STROKE_MAX];
     let mut ink = Vec::new();
-    let a: Vec<(i16, i16)> = (0..30).map(|k| (20 + k * 12, 60 + ((k * 13) % 40))).collect();
+    let a: Vec<(i16, i16)> = (0..30)
+        .map(|k| (20 + k * 12, 60 + ((k * 13) % 40)))
+        .collect();
     let n = encode_stroke(&a, Some(&[8; 30]), 2, 0, &mut out).unwrap();
     ink.extend_from_slice(&out[..n]);
     let n = encode_stroke(&[(30, 150), (300, 160)], None, MARKER, 0, &mut out).unwrap();
@@ -429,18 +473,45 @@ fn svg_is_the_screen_s_own_curve() {
     let id = inked(pim);
     let svg = std::string::String::from_utf8(exported(pim, id, export::Format::Svg, 0)).unwrap();
     assert!(svg.starts_with("<?xml") && svg.trim_end().ends_with("</svg>"));
-    assert!(svg.contains("width=\"448\" height=\"224\""), "the marker at y 160 needs 8 rows");
+    assert!(
+        svg.contains("width=\"448\" height=\"224\""),
+        "the marker at y 160 needs 8 rows"
+    );
     assert!(svg.contains("stroke=\"#c03030\""), "the red pen");
-    assert!(svg.contains("stroke=\"#ffe040\" stroke-opacity=\"0.4"), "the marker see-through: {svg}");
-    assert!(svg.contains("stroke=\"#c03030\" stroke-width"), "a pen opaque");
+    assert!(
+        svg.contains("stroke=\"#ffe040\" stroke-opacity=\"0.4"),
+        "the marker see-through: {svg}"
+    );
+    assert!(
+        svg.contains("stroke=\"#c03030\" stroke-width"),
+        "a pen opaque"
+    );
     // The first segment's Bezier: p1 (20,60), its controls p1 + (p2 - p0)/6
     // and p2 - (p3 - p1)/6, as the brush's Catmull-Rom.
     let p = |k: i32| (20 + k * 12, 60 + ((k * 13) % 40));
     let (p0, p1, p2, p3) = (p(0), p(0), p(1), p(2));
-    let c1 = ((p1.0 * 10 + (p2.0 - p0.0) * 10 / 6), (p1.1 * 10 + (p2.1 - p0.1) * 10 / 6));
-    let c2 = ((p2.0 * 10 - (p3.0 - p1.0) * 10 / 6), (p2.1 * 10 - (p3.1 - p1.1) * 10 / 6));
-    let t = |v: i32| if v % 10 == 0 { std::format!("{}", v / 10) } else { std::format!("{}.{}", v / 10, v % 10) };
-    let want = std::format!("M20 60C{} {} {} {} 32 73", t(c1.0), t(c1.1), t(c2.0), t(c2.1));
+    let c1 = (
+        (p1.0 * 10 + (p2.0 - p0.0) * 10 / 6),
+        (p1.1 * 10 + (p2.1 - p0.1) * 10 / 6),
+    );
+    let c2 = (
+        (p2.0 * 10 - (p3.0 - p1.0) * 10 / 6),
+        (p2.1 * 10 - (p3.1 - p1.1) * 10 / 6),
+    );
+    let t = |v: i32| {
+        if v % 10 == 0 {
+            std::format!("{}", v / 10)
+        } else {
+            std::format!("{}.{}", v / 10, v % 10)
+        }
+    };
+    let want = std::format!(
+        "M20 60C{} {} {} {} 32 73",
+        t(c1.0),
+        t(c1.1),
+        t(c2.0),
+        t(c2.1)
+    );
     assert!(svg.contains(&want), "{want} in {svg}");
 }
 
@@ -454,9 +525,18 @@ fn inflate_png(png: &[u8]) -> (u32, u32, Vec<u8>, Vec<u8>) {
         let ty = &png[at + 4..at + 8];
         let data = &png[at + 8..at + 8 + len];
         let crc = u32::from_be_bytes(png[at + 8 + len..at + 12 + len].try_into().unwrap());
-        assert_eq!(crc, rp_pim::store::crc32(&png[at + 4..at + 8 + len]), "chunk CRC");
+        assert_eq!(
+            crc,
+            rp_pim::store::crc32(&png[at + 4..at + 8 + len]),
+            "chunk CRC"
+        );
         match ty {
-            b"IHDR" => size = (u32::from_be_bytes(data[..4].try_into().unwrap()), u32::from_be_bytes(data[4..8].try_into().unwrap())),
+            b"IHDR" => {
+                size = (
+                    u32::from_be_bytes(data[..4].try_into().unwrap()),
+                    u32::from_be_bytes(data[4..8].try_into().unwrap()),
+                )
+            }
             b"IDAT" => z.extend_from_slice(data),
             b"tRNS" => trns = data.to_vec(),
             _ => {}
@@ -464,7 +544,11 @@ fn inflate_png(png: &[u8]) -> (u32, u32, Vec<u8>, Vec<u8>) {
         at += 12 + len;
     }
     assert_eq!(z[0] & 15, 8);
-    assert_eq!((u16::from(z[0]) << 8 | u16::from(z[1])) % 31, 0, "zlib header check");
+    assert_eq!(
+        (u16::from(z[0]) << 8 | u16::from(z[1])) % 31,
+        0,
+        "zlib header check"
+    );
     let mut bit = 16usize;
     let mut get = |n: u32| -> u32 {
         let mut v = 0;
@@ -478,10 +562,21 @@ fn inflate_png(png: &[u8]) -> (u32, u32, Vec<u8>, Vec<u8>) {
     assert_eq!(get(2), 1, "fixed codes");
     let mut out: Vec<u8> = Vec::new();
     let rev = |get: &mut dyn FnMut(u32) -> u32, n: u32| (0..n).fold(0, |v, _| (v << 1) | get(1));
-    let lb = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
-    let le = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-    let db = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
-    let de = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+    let lb = [
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
+        131, 163, 195, 227, 258,
+    ];
+    let le = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+    ];
+    let db = [
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+        2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    ];
+    let de = [
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
+        13, 13,
+    ];
     loop {
         let mut c = rev(&mut get, 7);
         let sym = if c <= 23 {
@@ -528,7 +623,11 @@ fn png_decodes_to_the_brush_s_own_coverage_and_is_small() {
     let png = exported(pim, id, export::Format::Png, 0);
     let (w, h, px, trns) = inflate_png(&png);
     assert_eq!((w, h), (448, 224));
-    std::println!("PNG {} bytes for a {w} x {h} block ({} raw)", png.len(), w * h);
+    std::println!(
+        "PNG {} bytes for a {w} x {h} block ({} raw)",
+        png.len(),
+        w * h
+    );
     assert!(png.len() * 8 < (w * h) as usize, "{}", png.len());
     // Where the red stroke starts: red, nearly opaque; empty paper clear.
     let at = |x: usize, y: usize| px[y * w as usize + x];
@@ -562,7 +661,10 @@ fn the_app_exports_through_the_shell_a_piece_at_a_time() {
     let id = inked(pim);
     {
         let mut g = pim.borrow_mut();
-        g.as_mut().unwrap().change(id, &[(tag::TEXT, b"\x01\nHello"), (tag::TITLE, b"Trip")]).unwrap();
+        g.as_mut()
+            .unwrap()
+            .change(id, &[(tag::TEXT, b"\x01\nHello"), (tag::TITLE, b"Trip")])
+            .unwrap();
     }
     let cx = ctx(pim);
     let mut n = opened(19_723);
@@ -615,13 +717,22 @@ fn text_files_come_in_as_lines_tasks_as_items() {
     let got = read_all(file.as_bytes(), 3).unwrap();
     assert_eq!(
         got,
-        [&b"# Plan"[..], b"[ ] Call Sam", b"[x] Book", "Caf\u{e9} at 9 sharp".as_bytes(), b"last"]
+        [
+            &b"# Plan"[..],
+            b"[ ] Call Sam",
+            b"[x] Book",
+            "Caf\u{e9} at 9 sharp".as_bytes(),
+            b"last"
+        ]
     );
     // A line longer than a chunk goes on as continuations, whole.
     let long = "word ".repeat(1000);
     let got = read_all(long.as_bytes(), 4096).unwrap();
     assert!(got.len() > 4 && got[1..].iter().all(|l| l[0] == doc::CONT));
-    let joined: Vec<u8> = got.iter().flat_map(|l| l.strip_prefix(&[doc::CONT]).unwrap_or(l).to_vec()).collect();
+    let joined: Vec<u8> = got
+        .iter()
+        .flat_map(|l| l.strip_prefix(&[doc::CONT]).unwrap_or(l).to_vec())
+        .collect();
     assert_eq!(joined, long.as_bytes());
     // Every piece size reads the same.
     let file = "a\u{1F600}b\u{e9}\nsecond line\n".repeat(50);
@@ -683,9 +794,21 @@ fn the_app_imports_into_the_note_and_takes_a_damaged_file_back_out() {
     // The menu's IMPORT lists the folder; a .txt among others is offered.
     n.event(Event::Key(Key::SoftRight), &cx);
     let r = menu_key(4, 6);
-    n.event(Event::PenUp { x: r.x + 9, y: r.y + 9 }, &cx);
-    assert!(matches!(n.file_ask(), Some(rp_app::FileAsk::List { dir: b"Notes" })));
-    n.file_answer(rp_app::FileAnswer::Listed(b"photo.jpg\nplan.TXT\nreadme.md"), &cx);
+    n.event(
+        Event::PenUp {
+            x: r.x + 9,
+            y: r.y + 9,
+        },
+        &cx,
+    );
+    assert!(matches!(
+        n.file_ask(),
+        Some(rp_app::FileAsk::List { dir: b"Notes" })
+    ));
+    n.file_answer(
+        rp_app::FileAnswer::Listed(b"photo.jpg\nplan.TXT\nreadme.md"),
+        &cx,
+    );
     assert_eq!(n.n_files, 2);
     n.event(Event::PenUp { x: 100, y: 170 }, &cx);
     let Some(rp_app::FileAsk::Read { name, .. }) = n.file_ask() else {
@@ -693,19 +816,53 @@ fn the_app_imports_into_the_note_and_takes_a_damaged_file_back_out() {
     };
     assert_eq!(name.get(), b"plan.TXT");
     let file = b"Pack\n- [ ] Charger\nShoes";
-    n.file_answer(rp_app::FileAnswer::Piece { off: 0, total: 24, bytes: &file[..10] }, &cx);
-    n.file_answer(rp_app::FileAnswer::Piece { off: 10, total: 24, bytes: &file[10..] }, &cx);
-    assert_eq!(lines(pim, id), [&b"Kept"[..], b"Pack", b"[ ] Charger", b"Shoes"]);
+    n.file_answer(
+        rp_app::FileAnswer::Piece {
+            off: 0,
+            total: 24,
+            bytes: &file[..10],
+        },
+        &cx,
+    );
+    n.file_answer(
+        rp_app::FileAnswer::Piece {
+            off: 10,
+            total: 24,
+            bytes: &file[10..],
+        },
+        &cx,
+    );
+    assert_eq!(
+        lines(pim, id),
+        [&b"Kept"[..], b"Pack", b"[ ] Charger", b"Shoes"]
+    );
     assert_eq!(n.said, b"IMPORTED");
     // A damaged one: what it put in goes back out; the note is as it was.
     n.job = Job::Read { id, put: 0 };
     let bad = b"one\ntwo\nthr\xffee";
-    n.file_answer(rp_app::FileAnswer::Piece { off: 0, total: bad.len() as u32, bytes: bad }, &cx);
-    assert_eq!(lines(pim, id), [&b"Kept"[..], b"Pack", b"[ ] Charger", b"Shoes"]);
+    n.file_answer(
+        rp_app::FileAnswer::Piece {
+            off: 0,
+            total: bad.len() as u32,
+            bytes: bad,
+        },
+        &cx,
+    );
+    assert_eq!(
+        lines(pim, id),
+        [&b"Kept"[..], b"Pack", b"[ ] Charger", b"Shoes"]
+    );
     assert_eq!(n.said, b"NOT IMPORTED: NOT UTF-8 TEXT");
     // Too big: refused before a byte is read.
     n.job = Job::Read { id, put: 0 };
-    n.file_answer(rp_app::FileAnswer::Piece { off: 0, total: 300_000, bytes: b"a" }, &cx);
+    n.file_answer(
+        rp_app::FileAnswer::Piece {
+            off: 0,
+            total: 300_000,
+            bytes: b"a",
+        },
+        &cx,
+    );
     assert_eq!(n.said, b"NOT IMPORTED: OVER 256 KB");
     assert_eq!(lines(pim, id).len(), 4);
 }
@@ -737,7 +894,10 @@ fn the_dictionary_is_small_and_finds_words_by_prefix() {
 fn words_the_user_wrote_are_learned_and_offered_first() {
     let d = words::Dict::default_lang();
     let mut l = words::Learned::new();
-    l.count_in(b"Meet Priyanka at Powell's. Priyanka has the tickets.", d.as_ref());
+    l.count_in(
+        b"Meet Priyanka at Powell's. Priyanka has the tickets.",
+        d.as_ref(),
+    );
     let mut out = [[0u8; words::WORD_MAX]; 3];
     let n = words::suggest(b"Pri", d.as_ref(), &l, &mut out);
     assert_eq!(&out[0][..n[0]], b"Priyanka");
@@ -764,7 +924,13 @@ fn typing_in_the_app_offers_words_and_capitals() {
     let mut n = opened(19_723);
     n.show(View::Note(0));
     draw(&mut n, &cx);
-    n.event(Event::PenUp { x: tool_key(3).x + 9, y: tool_key(3).y + 9 }, &cx);
+    n.event(
+        Event::PenUp {
+            x: tool_key(3).x + 9,
+            y: tool_key(3).y + 9,
+        },
+        &cx,
+    );
     assert_eq!(n.caps(), Some(true), "a new paragraph starts a sentence");
     for &c in b"Ru" {
         n.event(Event::Char(c), &cx);

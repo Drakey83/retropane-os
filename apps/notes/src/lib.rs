@@ -902,8 +902,10 @@ pub struct Notes {
     sugg_n: [usize; 3],
     learned: words::Learned,
     learned_at: Option<u32>,
-    /// Whether the next letter typed is a capital.
+    /// Whether the next letter typed is a capital, and whether the
+    /// suggestions wait to be worked out at the next frame (a preview).
     caps_next: bool,
+    sugg_stale: bool,
 }
 
 /// What a line of an open note is.
@@ -939,7 +941,10 @@ enum Job {
     /// The folder listed for import.
     List,
     /// A file read into note `id`: its lines put in so far.
-    Read { id: u32, put: u32 },
+    Read {
+        id: u32,
+        put: u32,
+    },
 }
 
 /// The open note's first row's top (under its title) and a row's height.
@@ -1070,8 +1075,14 @@ fn brush_at(
             // A segment wholly off the picture (an ink block scrolled
             // past) costs nothing: the curve stays within its four points.
             let reach = rad * 2;
-            let (lo_x, hi_x) = (p0.0.min(p1.0).min(p2.0).min(p3.0), p0.0.max(p1.0).max(p2.0).max(p3.0));
-            let (lo_y, hi_y) = (p0.1.min(p1.1).min(p2.1).min(p3.1), p0.1.max(p1.1).max(p2.1).max(p3.1));
+            let (lo_x, hi_x) = (
+                p0.0.min(p1.0).min(p2.0).min(p3.0),
+                p0.0.max(p1.0).max(p2.0).max(p3.0),
+            );
+            let (lo_y, hi_y) = (
+                p0.1.min(p1.1).min(p2.1).min(p3.1),
+                p0.1.max(p1.1).max(p2.1).max(p3.1),
+            );
             if hi_x + reach < 0 || lo_x - reach > wpx || hi_y + reach < 0 || lo_y - reach > hpx {
                 continue;
             }
@@ -1139,18 +1150,28 @@ pub fn paint_cover_at(
     dy: i32,
     want: Argb,
 ) {
-    brush_at(INK_W, INK_H, 256, strokes, styles, widths, (0, dy), None, &mut |i, a, c| {
-        if c != want {
-            return;
-        }
-        let n = ((a + 8) / 17).min(15);
-        let shift = 8 * ((i / 2) % 4) as u32 + if i.is_multiple_of(2) { 4 } else { 0 };
-        if let Some(word) = words.get_mut(i / 8)
-            && n > (*word >> shift) & 15
-        {
-            *word = (*word & !(15 << shift)) | (n << shift);
-        }
-    });
+    brush_at(
+        INK_W,
+        INK_H,
+        256,
+        strokes,
+        styles,
+        widths,
+        (0, dy),
+        None,
+        &mut |i, a, c| {
+            if c != want {
+                return;
+            }
+            let n = ((a + 8) / 17).min(15);
+            let shift = 8 * ((i / 2) % 4) as u32 + if i.is_multiple_of(2) { 4 } else { 0 };
+            if let Some(word) = words.get_mut(i / 8)
+                && n > (*word >> shift) & 15
+            {
+                *word = (*word & !(15 << shift)) | (n << shift);
+            }
+        },
+    );
 }
 
 /// Every packed stroke of note `id` in the order written (the note's own
@@ -1172,25 +1193,31 @@ pub(crate) fn each_stroke(store: &rp_pim::store::Store<'_>, id: u32, f: &mut dyn
 pub const BLOCKS: usize = 95;
 /// A new ink block's height in ruled rows (196 px, the first panel's).
 pub const BLOCK_ROWS: u8 = 7;
+/// A written ink block's least height in rows (a line of writing and room
+/// under it).
+pub const WRITTEN_ROWS: i32 = 3;
 
 /// Each ink block's height in ruled rows (28 px): its lowest stroke and a
-/// row and a half below it, [`BLOCK_ROWS`] at least, so a block grows as
-/// it is written lower and never cuts a stroke.
+/// row and a half below it (where the pen goes on and the block grows),
+/// [`WRITTEN_ROWS`] at least; [`BLOCK_ROWS`] while it is empty. A block
+/// never cuts a stroke.
 #[must_use]
 pub(crate) fn block_rows(store: &rp_pim::store::Store<'_>, id: u32) -> [u8; BLOCKS] {
-    let mut low = [0i32; BLOCKS];
+    let mut low = [-1i32; BLOCKS];
     let mut pts = [(0i16, 0i16); 255];
     each_stroke(store, id, &mut |p| {
         let (_, n) = unpack(p, &mut pts);
         if let Some(l) = low.get_mut(usize::from(block_of(p))) {
             for q in &pts[..n] {
-                *l = (*l).max(i32::from(q.1));
+                *l = (*l).max(i32::from(q.1).max(0));
             }
         }
     });
     let mut rows = [BLOCK_ROWS; BLOCKS];
     for (r, l) in rows.iter_mut().zip(low) {
-        *r = ((l + 40 + 27) / 28).clamp(i32::from(BLOCK_ROWS), 255) as u8;
+        if l >= 0 {
+            *r = ((l + 40 + 27) / 28).clamp(WRITTEN_ROWS, 255) as u8;
+        }
     }
     rows
 }
@@ -1221,14 +1248,25 @@ fn ink_pic(cx: &Ctx, id: u32, w: u16, h: u16, c: Argb) -> Option<Pic> {
             let u = unpack_all(packed, &mut pts, &mut ws);
             let off = (0, top[usize::from(u.block).min(BLOCKS - 1)]);
             let widths: &[u8] = if u.widths { &ws[..u.n] } else { &[] };
-            let s = (i32::from(w) * 256 / i32::from(INK_W)).min(i32::from(h) * 256 / i32::from(INK_H));
-            brush_at(w, h, s, &[&pts[..u.n]], &[u.style], &[widths], off, Some(c), &mut |i, a, c| {
-                if let Some(q) = px.get_mut(i)
-                    && a > *q >> 24
-                {
-                    *q = (c & 0x00FF_FFFF) | (a << 24);
-                }
-            });
+            let s =
+                (i32::from(w) * 256 / i32::from(INK_W)).min(i32::from(h) * 256 / i32::from(INK_H));
+            brush_at(
+                w,
+                h,
+                s,
+                &[&pts[..u.n]],
+                &[u.style],
+                &[widths],
+                off,
+                Some(c),
+                &mut |i, a, c| {
+                    if let Some(q) = px.get_mut(i)
+                        && a > *q >> 24
+                    {
+                        *q = (c & 0x00FF_FFFF) | (a << 24);
+                    }
+                },
+            );
         });
     });
     Some(p)
@@ -1321,12 +1359,43 @@ impl Notes {
             learned: words::Learned::new(),
             learned_at: None,
             caps_next: true,
+            sugg_stale: false,
         }
     }
 
     /// Shows `view`.
     pub fn show(&mut self, view: View) {
         self.view = view;
+    }
+
+    /// The previews' states (`cargo xtask ui-preview`): the tool (0 the
+    /// pen, 1 the marker, 2 the eraser part way along a path over the first
+    /// ink block), the menu's row (none: closed), and typing at the end of
+    /// line `typing`.
+    pub fn preview(&mut self, tool: u8, menu_row: Option<u8>, typing: Option<usize>) {
+        self.tool = match tool {
+            1 => Tool::Marker,
+            2 => Tool::Erase,
+            _ => Tool::Pen,
+        };
+        if tool == 1 {
+            self.marker_hue = Some(4);
+        }
+        if tool == 2 {
+            for (k, p) in self.live.iter_mut().enumerate().take(14) {
+                *p = (150 + k as i16 * 7, 46 + ((k as i16 * 5) % 11));
+            }
+            self.live_n = 14;
+            self.live_dy = 0;
+        }
+        self.menu = menu_row.is_some();
+        self.menu_row = menu_row.unwrap_or(0);
+        if let Some(k) = typing {
+            self.typing = true;
+            self.cursor = Some(k);
+            self.tool = Tool::Text;
+            self.sugg_stale = true;
+        }
     }
 
     /// The notes copied again from the store when its records changed.
@@ -1394,7 +1463,8 @@ impl Notes {
         let mut dy = [None::<i32>; BLOCKS];
         for v in &self.vis[..self.n_vis] {
             if let Item::Ink(b) = v.item {
-                dy[usize::from(b)] = Some(i32::from(ROW) * (i32::from(v.row) - i32::from(self.scroll)));
+                dy[usize::from(b)] =
+                    Some(i32::from(ROW) * (i32::from(v.row) - i32::from(self.scroll)));
             }
         }
         let mut pts = [(0i16, 0i16); 255];
@@ -1409,7 +1479,9 @@ impl Notes {
             if let Some(l) = self.layer_for(pics, colour)
                 && let Some((_, p)) = self.ink[l]
             {
-                pics.write(p, |w| paint_cover_at(w, &[&pts[..u.n]], &[u.style], &[widths], d, colour));
+                pics.write(p, |w| {
+                    paint_cover_at(w, &[&pts[..u.n]], &[u.style], &[widths], d, colour)
+                });
             }
         });
     }
@@ -1485,7 +1557,10 @@ impl Notes {
                 let (item, rows) = match doc::ink_block(l) {
                     Some(b) => {
                         next_block = next_block.max(b + 1);
-                        (Item::Ink(b), u16::from(rows_of[usize::from(b).min(BLOCKS - 1)]))
+                        (
+                            Item::Ink(b),
+                            u16::from(rows_of[usize::from(b).min(BLOCKS - 1)]),
+                        )
                     }
                     None if l.starts_with(b"[ ] ") => (Item::Check(false), 1),
                     None if l.starts_with(b"[x] ") => (Item::Check(true), 1),
@@ -1495,7 +1570,12 @@ impl Notes {
                     cursor_at = Some((row, rows));
                 }
                 if row + rows > top && row < top + view && nv < vis.len() {
-                    vis[nv] = Vis { line: k, row, rows, item };
+                    vis[nv] = Vis {
+                        line: k,
+                        row,
+                        rows,
+                        item,
+                    };
                     nv += 1;
                 }
                 last = Some((item, row));
@@ -1509,7 +1589,9 @@ impl Notes {
             let want = match (self.follow, cursor_at) {
                 (true, Some((r, n))) if r + n > top + view => Some(r + n - view.min(r + n)),
                 (true, Some((r, _))) if r < top => Some(r),
-                (true, None) if self.cursor.is_none() && row + 1 > top + view => Some(row + 1 - view),
+                (true, None) if self.cursor.is_none() && row + 1 > top + view => {
+                    Some(row + 1 - view)
+                }
                 _ => None,
             };
             self.follow = false;
@@ -2016,12 +2098,24 @@ impl Notes {
             }
             let (x, yy) = self.live[self.live_n - 1];
             let sy = i32::from(yy) + self.live_dy + i32::from(iy);
-            if sy >= i32::from(TOP) + 8 {
-                f.push(rp_app::Cmd::Outline {
-                    r: Rect::new((ix + x as u16).saturating_sub(8), sy as u16 - 8, 17, 17),
-                    color: kit::keep(0xC020_2A38),
+            if sy >= i32::from(TOP) + 12
+                && let Some(ring) = self.ring
+            {
+                f.push(rp_app::Cmd::Pic {
+                    x: (ix + x as u16).saturating_sub(12),
+                    y: (sy - 12) as i16,
+                    pic: ring,
                 });
             }
+        }
+        // Under the last whole row the paper again: a row cut by the tray
+        // shows neither its writing nor its ink.
+        let bottom = TOP + self.view_rows() * ROW;
+        if bottom + 2 < TRAY.y {
+            f.push(rp_app::Cmd::Fill {
+                r: Rect::new(paper.x + 6, bottom + 2, paper.w - 6, TRAY.y - bottom - 2),
+                color: kit::keep(0xFFCE_C8B6),
+            });
         }
         if self.menu {
             self.draw_menu(f, cx, &note);
@@ -2086,7 +2180,8 @@ impl Notes {
                 let Some(v) = vis[..nv].iter().find(|v| v.line == k) else {
                     return true;
                 };
-                let row_y = |r: u16| i32::from(TOP) + i32::from(ROW) * (i32::from(r) - i32::from(scroll));
+                let row_y =
+                    |r: u16| i32::from(TOP) + i32::from(ROW) * (i32::from(r) - i32::from(scroll));
                 match v.item {
                     Item::Text => {
                         let t = l.strip_prefix(&[doc::CONT]).unwrap_or(l);
@@ -2123,7 +2218,8 @@ impl Notes {
                                 });
                             }
                             if caret == Some(k) {
-                                caret_at = Some((x0 + 34 + font.width(t).min(max - 34), row_y(v.row)));
+                                caret_at =
+                                    Some((x0 + 34 + font.width(t).min(max - 34), row_y(v.row)));
                             }
                         }
                     }
@@ -2136,9 +2232,8 @@ impl Notes {
         self.n_checks = checks.1;
         // The caret: typing at the end of its line (or a new one).
         if self.typing {
-            let at = caret_at.or_else(|| {
-                (self.cursor.is_none()).then(|| (x0, self.screen_y(self.total_rows)))
-            });
+            let at = caret_at
+                .or_else(|| (self.cursor.is_none()).then(|| (x0, self.screen_y(self.total_rows))));
             if let Some((x, y)) = at
                 && y >= i32::from(TOP)
                 && y + i32::from(ROW) <= i32::from(bottom)
@@ -2152,10 +2247,13 @@ impl Notes {
         // Where the view is in a note longer than the screen.
         if self.total_rows > view {
             let track = view * ROW;
-            let h = (u32::from(track) * u32::from(view) / u32::from(self.total_rows)).max(24) as u16;
+            let h =
+                (u32::from(track) * u32::from(view) / u32::from(self.total_rows)).max(24) as u16;
             let room = track - h;
             let max_scroll = self.total_rows - view;
-            let y = TOP + (u32::from(room) * u32::from(self.scroll.min(max_scroll)) / u32::from(max_scroll.max(1))) as u16;
+            let y = TOP
+                + (u32::from(room) * u32::from(self.scroll.min(max_scroll))
+                    / u32::from(max_scroll.max(1))) as u16;
             kit::round_rect(
                 f,
                 cx,
@@ -2174,13 +2272,56 @@ impl Notes {
         for (k, w) in words.iter().enumerate().take(usize::from(n)) {
             let r = menu_key(k as u16, n);
             let danger = self.menu_row == 0 && k == 5;
-            kit::key(f, cx, r, if danger { kit::KeyState::Down } else { kit::KeyState::Rest });
-            kit::centred(f, r, r.y + 23, cx.fonts.label, if danger { kit::LATE } else { TEXT }, w);
+            kit::key(
+                f,
+                cx,
+                r,
+                if danger {
+                    kit::KeyState::Down
+                } else {
+                    kit::KeyState::Rest
+                },
+            );
+            kit::centred(
+                f,
+                r,
+                r.y + 23,
+                cx.fonts.label,
+                if danger { kit::LATE } else { TEXT },
+                w,
+            );
+        }
+        if self.menu_row == 1 {
+            let hint = Rect::new(TRAY.x, TRAY.y + 40, TRAY.w, 50);
+            kit::panel(f, cx, hint);
+            kit::centred(
+                f,
+                hint,
+                hint.y + 22,
+                cx.fonts.label,
+                DIM,
+                b"EXPORT TO THE CARD, RETROPANE\\NOTES",
+            );
+            kit::centred(
+                f,
+                hint,
+                hint.y + 40,
+                cx.fonts.label,
+                DIM,
+                b"INK AS ONE FILE A BLOCK; BACK RETURNS",
+            );
         }
         if self.menu_row == 2 {
             let list = Rect::new(PAPER.x + 16, 120, PAPER.w - 32, 40 * 8 + 44);
             kit::panel(f, cx, list);
-            kit::text(f, list.x + 14, list.y + 26, cx.fonts.label, DIM, b"IMPORT A TEXT FILE FROM RETROPANE\\NOTES");
+            kit::text(
+                f,
+                list.x + 14,
+                list.y + 26,
+                cx.fonts.label,
+                DIM,
+                b"IMPORT A TEXT FILE FROM RETROPANE\\NOTES",
+            );
             if self.n_files == 0 {
                 kit::text(
                     f,
@@ -2188,13 +2329,25 @@ impl Notes {
                     list.y + 70,
                     cx.fonts.ui,
                     DIM,
-                    if matches!(self.job, Job::List) { b"Looking..." } else { b"No .txt or .md files there" },
+                    if matches!(self.job, Job::List) {
+                        b"Looking..."
+                    } else {
+                        b"No .txt or .md files there"
+                    },
                 );
             }
             for (k, name) in self.files[..self.n_files].iter().enumerate() {
                 let r = Rect::new(list.x + 8, list.y + 40 + k as u16 * 40, list.w - 16, 36);
                 kit::key(f, cx, r, kit::KeyState::Rest);
-                kit::fitted(f, r.x + 12, r.y + 24, cx.fonts.ui, TEXT, name.get(), r.w - 24);
+                kit::fitted(
+                    f,
+                    r.x + 12,
+                    r.y + 24,
+                    cx.fonts.ui,
+                    TEXT,
+                    name.get(),
+                    r.w - 24,
+                );
             }
         }
     }
@@ -2202,7 +2355,7 @@ impl Notes {
     /// The menu row's words.
     fn menu_words(&self, note: &Row) -> [&'static [u8]; 6] {
         match self.menu_row {
-            1 => [b"TEXT", b"MARKDOWN", b"SVG", b"PNG", b"BACK", b""],
+            1 => [b"TEXT", b"MARKDOWN", b"SVG", b"PNG", b"", b""],
             2 => [b"BACK", b"", b"", b"", b"", b""],
             _ => [
                 if note.pinned { b"UNPIN" } else { b"PIN" },
@@ -2210,7 +2363,11 @@ impl Notes {
                 [&b"RULED"[..], b"PLAIN", b"GRID"][usize::from(note.paper)],
                 b"EXPORT",
                 b"IMPORT",
-                if self.confirm_delete { b"DELETE?" } else { b"DELETE" },
+                if self.confirm_delete {
+                    b"DELETE?"
+                } else {
+                    b"DELETE"
+                },
             ],
         }
     }
@@ -2229,7 +2386,12 @@ impl Notes {
                 Some(usize::from(self.pen))
             };
             if chosen == Some(i) {
-                kit::key(f, cx, Rect::new(r.x - 5, r.y - 5, 50, 50), kit::KeyState::On);
+                kit::key(
+                    f,
+                    cx,
+                    Rect::new(r.x - 5, r.y - 5, 50, 50),
+                    kit::KeyState::On,
+                );
             }
             if let Some(p) = *p {
                 f.push(rp_app::Cmd::Pic {
@@ -2265,13 +2427,21 @@ impl Notes {
                 f,
                 cx,
                 r,
-                if i == usize::from(self.size) { kit::KeyState::On } else { kit::KeyState::Rest },
+                if i == usize::from(self.size) {
+                    kit::KeyState::On
+                } else {
+                    kit::KeyState::Rest
+                },
             );
             kit::round_rect(
                 f,
                 cx,
                 Rect::new(r.x + (44 - d) / 2, r.y + (44 - d) / 2, *d, *d),
-                if cx.look.light { kit::keep(0xFF28_3038) } else { TEXT },
+                if cx.look.light {
+                    kit::keep(0xFF28_3038)
+                } else {
+                    TEXT
+                },
             );
         }
         let chosen = match self.tool {
@@ -2283,7 +2453,16 @@ impl Notes {
         };
         for (k, t) in TOOLS.iter().enumerate() {
             let r = tool_key(k);
-            kit::key(f, cx, r, if k == chosen { kit::KeyState::On } else { kit::KeyState::Rest });
+            kit::key(
+                f,
+                cx,
+                r,
+                if k == chosen {
+                    kit::KeyState::On
+                } else {
+                    kit::KeyState::Rest
+                },
+            );
             // REDO is dim while there is nothing to put back.
             let col = if k == 6 && (self.redo_n == 0 || self.redo_of != Some(id)) {
                 kit::alpha(DIM, 0x80)
@@ -2295,8 +2474,9 @@ impl Notes {
     }
 }
 
-/// Menu key `k` of `n` across the strip.
-const fn menu_key(k: u16, n: u16) -> Rect {
+/// Menu key `k` of `n` across the strip (the emulator's checks tap them).
+#[must_use]
+pub const fn menu_key(k: u16, n: u16) -> Rect {
     let w = (STRIP.w - 12) / n;
     Rect::new(STRIP.x + 6 + k * w, STRIP.y + 6, w - 4, 36)
 }
@@ -2366,7 +2546,9 @@ impl Notes {
         let marker = style & MARKER != 0;
         let ws: &[u8] = if marker { &[] } else { &self.live_w[from..n] };
         let dy = self.live_dy;
-        pics.write(p, |w| paint_cover_at(w, &[pts], &[style], &[ws], dy, colour));
+        pics.write(p, |w| {
+            paint_cover_at(w, &[pts], &[style], &[ws], dy, colour)
+        });
     }
 
     /// The style of a stroke written now: the pen's colour or the marker,
@@ -2475,11 +2657,16 @@ impl Notes {
     /// a new line after it (or at the note's end).
     fn typing_line(&mut self, cx: &Ctx, id: u32) -> Option<usize> {
         if let Some(k) = self.cursor
-            && self.line_item(cx, id, k).is_some_and(|i| !matches!(i, Item::Ink(_)))
+            && self
+                .line_item(cx, id, k)
+                .is_some_and(|i| !matches!(i, Item::Ink(_)))
         {
             return Some(k);
         }
-        let at = self.cursor.map_or(self.n_lines, |k| k + 1).min(self.n_lines);
+        let at = self
+            .cursor
+            .map_or(self.n_lines, |k| k + 1)
+            .min(self.n_lines);
         text_op(cx, id, &doc::Edit::Insert(at, b"")).ok()?;
         // An empty note holds no empty line: the first character makes it.
         self.n_lines = cx
@@ -2615,7 +2802,11 @@ impl Notes {
             }
             return;
         }
-        let start: &[u8] = if matches!(item, Some(Item::Check(_))) { b"[ ] " } else { b"" };
+        let start: &[u8] = if matches!(item, Some(Item::Check(_))) {
+            b"[ ] "
+        } else {
+            b""
+        };
         if text_op(cx, id, &doc::Edit::Insert(at, start)).is_ok() {
             self.cursor = Some(at);
             self.n_lines += 1;
@@ -2627,19 +2818,7 @@ impl Notes {
 
     /// Checklist line `line` ticked or unticked.
     fn toggle(&mut self, cx: &Ctx, id: u32, line: usize) {
-        let mut b = [0u8; 2100];
-        let Some(n) = cx
-            .pim
-            .and_then(|c| c.try_borrow().ok())
-            .and_then(|g| g.as_ref().and_then(|s| doc::line(s, id, line, &mut b)))
-        else {
-            return;
-        };
-        if n < 4 || !(b.starts_with(b"[ ] ") || b.starts_with(b"[x] ")) {
-            return;
-        }
-        b[1] = if b[1] == b'x' { b' ' } else { b'x' };
-        let _ = text_op(cx, id, &doc::Edit::Set(line, &b[..n]));
+        let _ = text_op(cx, id, &doc::Edit::Tick(line));
     }
 
     /// A new note, empty, its ink block ready: its place in the list.
@@ -2710,7 +2889,11 @@ impl Notes {
             None
         } else {
             match self.item_at(y) {
-                Some(Vis { item: Item::Ink(b), row, .. }) => Some((b, row)),
+                Some(Vis {
+                    item: Item::Ink(b),
+                    row,
+                    ..
+                }) => Some((b, row)),
                 Some(_) => None,
                 None if self.tool == Tool::Erase => None,
                 None => match self.last {
@@ -2786,7 +2969,11 @@ impl Notes {
         let steps = (d / i32::from(ROW)) as i16;
         let max = self.total_rows.saturating_sub(self.view_rows()) as i32;
         let s = (i32::from(self.scroll) - i32::from(steps)).clamp(0, max.max(0)) as u16;
-        self.tap = Some((x0, (i32::from(y0) + i32::from(steps) * i32::from(ROW)) as u16, true));
+        self.tap = Some((
+            x0,
+            (i32::from(y0) + i32::from(steps) * i32::from(ROW)) as u16,
+            true,
+        ));
         if s == self.scroll {
             return Reply::Nothing;
         }
@@ -2829,13 +3016,18 @@ impl Notes {
             Some(v) if !matches!(v.item, Item::Ink(_)) => {
                 self.cursor = Some(v.line);
                 self.typing = true;
-                self.tool = if matches!(v.item, Item::Check(_)) { Tool::List } else { Tool::Text };
+                self.tool = if matches!(v.item, Item::Check(_)) {
+                    Tool::List
+                } else {
+                    Tool::Text
+                };
             }
             None => {
                 // Below the last line: typing goes on at the end.
-                self.cursor = self.n_lines.checked_sub(1).filter(|&k| {
-                    !matches!(self.line_item(cx, id, k), Some(Item::Ink(_)))
-                });
+                self.cursor = self
+                    .n_lines
+                    .checked_sub(1)
+                    .filter(|&k| !matches!(self.line_item(cx, id, k), Some(Item::Ink(_))));
                 if self.cursor.is_none() {
                     self.cursor = None;
                 }
@@ -2875,7 +3067,7 @@ impl Notes {
         let block = if ink { left.trailing_zeros() as u8 } else { 0 };
         let mut count = export::Count::default();
         let mut title = Text::<64>::EMPTY;
-        let mut png = core::mem::replace(&mut self.png, export::PngWork::new());
+        let mut png = core::mem::take(&mut self.png);
         if let Some(g) = cx.pim.and_then(|c| c.try_borrow().ok())
             && let Some(store) = g.as_ref()
         {
@@ -2959,6 +3151,13 @@ impl Notes {
             return;
         };
         let Some(store) = guard.as_ref() else { return };
+        self.suggest_in(store, id);
+    }
+
+    /// [`Self::suggest_now`] from the store itself (the previews': the
+    /// shell draws the strip before the program's frame).
+    pub fn suggest_in(&mut self, store: &rp_pim::store::Store<'_>, id: u32) {
+        self.sugg_stale = false;
         if self.learned_at != Some(store.changes()) {
             // The user's own words, counted from every note.
             self.learned.clear();
@@ -2971,13 +3170,18 @@ impl Notes {
             }
             self.learned_at = Some(store.changes());
         }
-        let mut b = [0u8; 2100];
-        let n = self
+        // The caret's line's end: the word being typed and its sentence.
+        let mut b = [0u8; 64];
+        let (n, whole) = self
             .cursor
-            .and_then(|k| doc::line(store, id, k, &mut b))
-            .unwrap_or(0);
+            .and_then(|k| doc::line_tail(store, id, k, &mut b))
+            .unwrap_or((0, true));
         let line = &b[..n];
-        self.caps_next = words::sentence_starts(line);
+        self.caps_next = if whole || line.iter().any(|&c| c != b' ') {
+            words::sentence_starts(line) && (whole || line.trim_ascii_end().len() < n)
+        } else {
+            false
+        };
         let start = line
             .iter()
             .rposition(|c| !(c.is_ascii_alphabetic() || *c == b'\''))
@@ -2995,11 +3199,11 @@ impl Notes {
         if n == 0 {
             return;
         }
-        let mut b = [0u8; 2100];
-        let Some(len) = cx
+        let mut b = [0u8; 64];
+        let Some((len, _)) = cx
             .pim
             .and_then(|c| c.try_borrow().ok())
-            .and_then(|g| g.as_ref().and_then(|s| doc::line(s, id, line, &mut b)))
+            .and_then(|g| g.as_ref().and_then(|s| doc::line_tail(s, id, line, &mut b)))
         else {
             return;
         };
@@ -3074,6 +3278,9 @@ impl Program for Notes {
         self.find(cx);
         if let Some(id) = self.open_id() {
             self.layout(cx, id);
+            if self.sugg_stale && self.typing {
+                self.suggest_now(cx, id);
+            }
         }
         self.paint(cx);
         match self.view {
@@ -3114,7 +3321,14 @@ impl Program for Notes {
         let reply = self.event_in(e, cx, id);
         // What typing changed: the suggestions and the next capital.
         if let (Some(id), true) = (self.open_id(), self.typing)
-            && matches!(e, Event::Char(_) | Event::Delete | Event::Done | Event::Suggestion(_) | Event::PenUp { .. })
+            && matches!(
+                e,
+                Event::Char(_)
+                    | Event::Delete
+                    | Event::Done
+                    | Event::Suggestion(_)
+                    | Event::PenUp { .. }
+            )
         {
             self.suggest_now(cx, id);
         }
@@ -3191,7 +3405,9 @@ impl Program for Notes {
             (rp_app::FileAnswer::Listed(names), Job::List) => {
                 self.n_files = 0;
                 for n in names.split(|&c| c == b'\n') {
-                    let low = |e: &[u8]| n.len() > e.len() && n[n.len() - e.len()..].eq_ignore_ascii_case(e);
+                    let low = |e: &[u8]| {
+                        n.len() > e.len() && n[n.len() - e.len()..].eq_ignore_ascii_case(e)
+                    };
                     if (low(b".txt") || low(b".md")) && self.n_files < self.files.len() {
                         self.files[self.n_files] = Text::of(n);
                         self.n_files += 1;
@@ -3237,7 +3453,10 @@ impl Notes {
             }
             // A file to import, from the list over the paper.
             (Event::PenUp { x, y }, View::Note(_))
-                if self.menu && self.menu_row == 2 && y >= 160 && y < 160 + 40 * 8 && !STRIP.contains_point(x, y) =>
+                if self.menu
+                    && self.menu_row == 2
+                    && (160..160 + 40 * 8).contains(&y)
+                    && !STRIP.contains_point(x, y) =>
             {
                 let k = usize::from((y - 160) / 40);
                 if let (Some(id), true) = (id, k < self.n_files) {
@@ -3273,7 +3492,7 @@ impl Notes {
                         self.menu = false;
                         self.menu_row = 0;
                     }
-                    (1 | 2, _) => self.menu_row = 0,
+                    (2, _) => self.menu_row = 0,
                     (_, 0) => self.set_num(cx, row.id, tag::PINNED, (!row.pinned).then_some(1)),
                     (_, 1) => {
                         let c = kit::IDENTITY
@@ -3282,7 +3501,9 @@ impl Notes {
                             .unwrap_or(1);
                         self.set_num(cx, row.id, tag::COLOUR, Some(((c + 1) % 8) as u32));
                     }
-                    (_, 2) => self.set_num(cx, row.id, tag::PAPER, Some(u32::from((row.paper + 1) % 3))),
+                    (_, 2) => {
+                        self.set_num(cx, row.id, tag::PAPER, Some(u32::from((row.paper + 1) % 3)))
+                    }
                     (_, 3) => self.menu_row = 1,
                     (_, 4) => {
                         self.menu_row = 2;
@@ -3496,7 +3717,10 @@ impl Notes {
                         self.tool = if k == 3 { Tool::Text } else { Tool::List };
                         self.typing = true;
                         if let Some(id) = id {
-                            let at = self.cursor.map_or(self.n_lines, |c| c + 1).min(self.n_lines);
+                            let at = self
+                                .cursor
+                                .map_or(self.n_lines, |c| c + 1)
+                                .min(self.n_lines);
                             let start: &[u8] = if k == 3 { b"" } else { b"[ ] " };
                             if text_op(cx, id, &doc::Edit::Insert(at, start)).is_ok() {
                                 self.cursor = Some(at);
@@ -3524,12 +3748,16 @@ impl Notes {
             (Event::PenUp { x, y }, View::Note(_))
                 if !self.inking
                     && !self.menu
-                    && self.checks[..self.n_checks].iter().any(|(r, _)| r.contains_point(x, y)) =>
+                    && self.checks[..self.n_checks]
+                        .iter()
+                        .any(|(r, _)| r.contains_point(x, y)) =>
             {
                 self.tap = None;
                 if let (Some(id), Some(&(_, line))) = (
                     id,
-                    self.checks[..self.n_checks].iter().find(|(r, _)| r.contains_point(x, y)),
+                    self.checks[..self.n_checks]
+                        .iter()
+                        .find(|(r, _)| r.contains_point(x, y)),
                 ) {
                     self.toggle(cx, id, line);
                 }
@@ -3537,15 +3765,20 @@ impl Notes {
             }
             // The paper: writing, ticking, placing the caret, scrolling.
             (Event::PenDown { x, y }, View::Note(_))
-                if !self.menu && (TOP..TOP + self.view_rows() * ROW).contains(&y) && PAPER.contains_point(x, y) =>
+                if !self.menu
+                    && (TOP..TOP + self.view_rows() * ROW).contains(&y)
+                    && PAPER.contains_point(x, y) =>
             {
                 match id {
                     Some(id) => self.pen_down(cx, id, x, y),
                     None => Reply::Nothing,
                 }
             }
-            (Event::PenMove { x, y }, View::Note(_)) if self.inking || self.tap.is_some() => self.pen_move(cx, x, y),
-            (Event::PenUp { x, y }, View::Note(_)) if self.inking || self.tap.is_some() => match id {
+            (Event::PenMove { x, y }, View::Note(_)) if self.inking || self.tap.is_some() => {
+                self.pen_move(cx, x, y)
+            }
+            (Event::PenUp { x, y }, View::Note(_)) if self.inking || self.tap.is_some() => match id
+            {
                 Some(id) => self.pen_up(cx, id, x, y),
                 None => Reply::Nothing,
             },
@@ -3609,7 +3842,7 @@ impl Notes {
         };
         if self.menu {
             let k = match self.menu_row {
-                1 => 5,
+                1 => 4,
                 2 => 1,
                 _ => 6,
             };

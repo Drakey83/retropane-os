@@ -15,7 +15,9 @@ fn main() {
     }
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
     let out = std::env::var("OUT_DIR").expect("set by cargo");
-    let mut list = String::from("/// The packed word lists: (language tag, dictionary).\npub static DICTS: &[(&str, &[u8])] = &[\n");
+    let mut list = String::from(
+        "/// The packed word lists: (language tag, dictionary).\npub static DICTS: &[(&str, &[u8])] = &[\n",
+    );
     let mut names: Vec<_> = std::fs::read_dir(format!("{dir}/words"))
         .expect("the word lists")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -66,7 +68,10 @@ fn pack(text: &str) -> Vec<u8> {
             0
         } else {
             let prev = ranked[i - 1].0.as_bytes();
-            w.bytes().zip(prev.iter()).take_while(|(a, b)| a == *b).count()
+            w.bytes()
+                .zip(prev.iter())
+                .take_while(|(a, b)| a == *b)
+                .count()
         };
         let own = &w.as_bytes()[shared..];
         data.push(shared as u8);

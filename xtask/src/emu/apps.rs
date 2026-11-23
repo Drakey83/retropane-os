@@ -238,6 +238,40 @@ fn tap(r: rp_draw::Rect) -> [Input; 2] {
     [Input::PenDown { x, y }, Input::PenUp { x, y }]
 }
 
+/// The files Notes exported on the image (Markdown, then the ink as SVG)
+/// read off the card: the Markdown names the ink's file, the SVG holds the
+/// stroke written.
+fn notes_exported(sd: &Path) -> Result<(), String> {
+    let data = std::fs::read(sd).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let mut vol = rp_fat::AnyVolume::mount(card::Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut read = |name: &str| -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        vol.read_range(name, 0, u64::MAX, &mut [0u8; 4096], &mut |b| {
+            out.extend_from_slice(b)
+        })
+        .map_err(|e| format!("notes export: {name} on the card: {}", e.name()))?;
+        Ok(out)
+    };
+    let md = read("RetroPane/Notes/Note.md")?;
+    if md != b"![Ink 1](Note-1.svg)\n" {
+        return Err(format!(
+            "notes export: Note.md is {:?}",
+            String::from_utf8_lossy(&md)
+        ));
+    }
+    let svg = String::from_utf8(read("RetroPane/Notes/Note-1.svg")?).map_err(|e| e.to_string())?;
+    if !(svg.starts_with("<?xml") && svg.contains("<path") && svg.trim_end().ends_with("</svg>")) {
+        return Err(format!("notes export: Note-1.svg is {svg}"));
+    }
+    eprintln!(
+        "    notes export: Note.md ({} B) and Note-1.svg ({} B) on the card",
+        md.len(),
+        svg.len()
+    );
+    Ok(())
+}
+
 /// `cargo xtask emu-apps`.
 pub fn apps(root: &Path) -> Result<(), String> {
     let release = crate::arm_release(root);
@@ -284,6 +318,15 @@ pub fn apps(root: &Path) -> Result<(), String> {
     }
     steps.push(Input::PenUp { x: 300, y: 220 });
     at.push(("notes-ink".into(), steps.len()));
+    // Group D (notes-rule0.md, Export): the note written as Markdown,
+    // then its ink as SVG, through the image's own file step on the card
+    // (rp_today::appfiles); the files are read off the card after the run.
+    let menu = rp_draw::Rect::new(rp_today::W as u16 - 160, rp_today::H as u16 - 40, 160, 40);
+    for format in [1, 2] {
+        steps.extend(tap(menu));
+        steps.extend(tap(rp_app_notes::menu_key(3, 6)));
+        steps.extend(tap(rp_app_notes::menu_key(format, 4)));
+    }
     steps.push(Input::Key(Key::Calendar));
     at.push(("calendar-button".into(), steps.len()));
     // Calendar's views along the foot: Week is the fourth of five.
@@ -367,6 +410,7 @@ pub fn apps(root: &Path) -> Result<(), String> {
     if let Some(e) = failed.borrow().clone() {
         return Err(e);
     }
+    notes_exported(&sd)?;
     // The stack's depth is required, not only checked when present: a run
     // whose image never reported it proves nothing about the programs'
     // stack (the overflow of 2026-11-14 was found here).

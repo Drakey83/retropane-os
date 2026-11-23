@@ -394,7 +394,91 @@ fn notes(s: &mut rp_shell::Shell, view: rp_app_notes::View) -> Notes {
     n
 }
 
-/// The sample notes, as written.
+/// A stroke packed with widths from its own speed (a step's length, as the
+/// pen filter gives them): the sample's handwriting.
+fn packed(st: &[(i16, i16)], style: u8, block: u8, out: &mut Vec<u8>) {
+    let mut w = Vec::with_capacity(st.len());
+    let mut last = st[0];
+    for &p in st {
+        let d = (p.0 - last.0).abs() + (p.1 - last.1).abs();
+        w.push((11 - d / 2).clamp(5, 11) as u8);
+        last = p;
+    }
+    let widths = (style & rp_app_notes::MARKER == 0).then_some(&w[..]);
+    let mut buf = [0u8; 1024];
+    let n = rp_app_notes::encode_stroke(st, widths, style, block, &mut buf).expect("a stroke fits");
+    out.extend_from_slice(&buf[..n]);
+}
+
+/// The blocks sample: "Saturday market" with an ink block, a paragraph, a
+/// checklist and a second ink block (a sketch with a marker band), in look
+/// `design`, with the preview's tool, menu row and typing.
+fn block_note(
+    s: &mut rp_shell::Shell,
+    design: u8,
+    tool: u8,
+    menu: Option<u8>,
+    typing: Option<usize>,
+) -> Notes {
+    use rp_pim::store::{Kind, tag};
+    crate::emu::empty_organiser(s);
+    let mut ink = Vec::new();
+    packed(&cursive(40, 20, 230), 0, 0, &mut ink);
+    packed(&cursive(40, 256, 380), 0, 0, &mut ink);
+    packed(&cursive(96, 20, 170), 1, 0, &mut ink);
+    let circle: Vec<(i16, i16)> = (0..=40i16)
+        .map(|k| {
+            let a = f32::from(k) * 0.165;
+            (
+                (300.0 + 46.0 * a.cos()) as i16,
+                (80.0 + 36.0 * a.sin()) as i16,
+            )
+        })
+        .collect();
+    packed(&circle, 2, 1, &mut ink);
+    packed(&[(40, 96), (210, 98)], rp_app_notes::MARKER, 1, &mut ink);
+    packed(&cursive(90, 40, 200), 0, 1, &mut ink);
+    packed(&[(206, 70), (240, 76), (252, 80)], 2, 1, &mut ink);
+    packed(&[(240, 70), (254, 80), (240, 90)], 2, 1, &mut ink);
+    let text: &[u8] = b"\x01\nBring the big basket and cash for the bakery; they don't take cards.\n[ ] Tomatoes\n[x] Honey\n[ ] Flowers for Mom\n\x01!";
+    // (Typing: a word half written, for the suggestions.)
+    let typed: Vec<u8> = if typing.is_some() {
+        let mut t = text.to_vec();
+        let at = t.windows(6).position(|w| w == b"cards.").expect("the line") + 6;
+        t.splice(at..at, b" Ask if they open tomor".iter().copied());
+        t
+    } else {
+        text.to_vec()
+    };
+    if let Some(store) = s.pim() {
+        store
+            .put(
+                Kind::Note,
+                None,
+                &[
+                    (tag::TITLE, b"Saturday market"),
+                    (tag::TEXT, &typed),
+                    (tag::INK, &ink),
+                    (tag::COLOUR, &5u32.to_le_bytes()),
+                ],
+            )
+            .expect("the sample fits");
+    }
+    s.pim_loaded();
+    let mut n = Notes::new(&[]);
+    n.show(rp_app_notes::View::Note(0));
+    n.design = design;
+    n.preview(tool, menu, typing);
+    if let Some(store) = s.pim()
+        && let Some(r) = store.all(Kind::Note).next()
+    {
+        let id = r.id;
+        n.suggest_in(store, id);
+    }
+    n
+}
+
+/// The sample notes, as written./// The sample notes, as written.
 fn sample_notes() -> &'static [Note] {
     let ink = ink();
     let blocks = |b: Vec<Block>| -> &'static [Block] { Box::leak(b.into_boxed_slice()) };
@@ -828,6 +912,64 @@ fn base() -> Vec<Mock> {
             what: "Notes: text, a checklist and handwriting in one note on ruled paper",
             prepare: Box::new(|s| {
                 let n = notes(s, rp_app_notes::View::Note(0));
+                open(s, n);
+            }),
+        },
+        // Group D (2026-11-23): a note as blocks, in the three looks the
+        // owner picks from, and the ink tools.
+        Mock {
+            name: "v3-notes-blocks-a-open",
+            what: "Notes blocks, look A (open sheet): ink, a paragraph, a checklist and a second ink block on one ruled sheet, the ink blocks unmarked like paper",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 0, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-blocks-b-framed",
+            what: "Notes blocks, look B (framed pads): each ink block a sunken pad of the paper a shade deeper",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 1, 0, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-blocks-c-margin",
+            what: "Notes blocks, look C (margin marks): each ink block marked by a bar in the note's colour in the margin",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 2, 0, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-ink-marker",
+            what: "Notes ink tools: the marker chosen, its see-through band over each colour well, an orange hue picked",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 1, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-ink-eraser",
+            what: "Notes ink tools: the stroke eraser part way along its path (its trail and the ring where it is)",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 2, None, None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-export",
+            what: "Notes: Menu, Export: text, Markdown, SVG or PNG to RetroPane\\Notes on the card",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 0, Some(1), None);
+                open(s, n);
+            }),
+        },
+        Mock {
+            name: "v3-notes-typing",
+            what: "Notes: typing a paragraph, the caret at its end, word suggestions on the keyboard's strip",
+            prepare: Box::new(|s| {
+                let n = block_note(s, 0, 0, None, Some(1));
                 open(s, n);
             }),
         },

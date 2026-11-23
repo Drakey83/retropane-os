@@ -10,12 +10,16 @@ impl Shell {
         if self.screen != Screen::Program {
             return None;
         }
-        self.program.borrow_mut().as_mut().and_then(|p| p.file_ask())
+        self.program
+            .borrow_mut()
+            .as_mut()
+            .and_then(|p| p.file_ask())
     }
 
     /// Bytes of the file the open program is writing, from `off`.
     pub fn file_piece(&mut self, off: u32, out: &mut [u8]) -> usize {
-        self.with_program(|p, cx| p.file_piece(off, out, cx)).unwrap_or(0)
+        self.with_program(|p, cx| p.file_piece(off, out, cx))
+            .unwrap_or(0)
     }
 
     /// The answer to the open program's file step.
@@ -42,7 +46,10 @@ impl Shell {
     }
 
     /// `f` run on the open program with its context.
-    fn with_program<R>(&mut self, f: impl FnOnce(&mut dyn rp_app::Program, &rp_app::Ctx) -> R) -> Option<R> {
+    fn with_program<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn rp_app::Program, &rp_app::Ctx) -> R,
+    ) -> Option<R> {
         let (fonts, look) = (self.program_fonts(), self.program_look());
         let cx = rp_app::Ctx {
             fonts: &fonts,

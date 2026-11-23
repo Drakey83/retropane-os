@@ -136,6 +136,24 @@ pub fn line(store: &Store<'_>, id: u32, k: usize, out: &mut [u8]) -> Option<usiz
     got
 }
 
+/// The last `out.len()` bytes of line `k` (the caret is at a line's end:
+/// the word being typed and the sentence it is in): how many, and whether
+/// that is the whole line.
+pub fn line_tail(store: &Store<'_>, id: u32, k: usize, out: &mut [u8]) -> Option<(usize, bool)> {
+    let mut got = None;
+    for_lines(store, id, &mut |i, l| {
+        if i == k {
+            let n = l.len().min(out.len());
+            out[..n].copy_from_slice(&l[l.len() - n..]);
+            got = Some((n, n == l.len()));
+            false
+        } else {
+            true
+        }
+    });
+    got
+}
+
 /// Where line `k` lies: its chunk's place in [`chunks`], the chunk's id,
 /// and the line's start in the chunk's text. For `k` one past the last
 /// line, the end of the last chunk holding text (or the note's own).
@@ -181,6 +199,8 @@ pub enum Edit<'a> {
     Push(&'a [u8]),
     /// The last line taken out (an import taken back).
     DropLast,
+    /// Checklist item `k` ticked or unticked (`[ ] ` and `[x] `).
+    Tick(usize),
 }
 
 /// Why an edit didn't apply.
@@ -220,13 +240,17 @@ pub fn edit(store: &mut Store<'_>, id: u32, e: &Edit<'_>) -> Result<([u8; 4], us
             Edit::Remove(k) => Edit::Remove(*k),
             Edit::Set(k, b) => Edit::Set(*k, b),
             Edit::Push(b) => Edit::Push(b),
+            Edit::Tick(k) => Edit::Tick(*k),
             _ => Edit::DropLast,
         },
     };
     let (place, rec, at, end) = match e {
-        Edit::Append(k, _) | Edit::Pop(k) | Edit::Remove(k) | Edit::Set(k, _) | Edit::Insert(k, _) => {
-            find(store, id, *k).ok_or(Refused::NoLine)?
-        }
+        Edit::Append(k, _)
+        | Edit::Pop(k)
+        | Edit::Remove(k)
+        | Edit::Set(k, _)
+        | Edit::Insert(k, _)
+        | Edit::Tick(k) => find(store, id, *k).ok_or(Refused::NoLine)?,
         Edit::Push(_) | Edit::DropLast => {
             let (ids, n) = chunks(store, id);
             let (place, c) = (0..n)
@@ -253,7 +277,12 @@ pub fn edit(store: &mut Store<'_>, id: u32, e: &Edit<'_>) -> Result<([u8; 4], us
     let r = store.get(rec).ok_or(Refused::NoLine)?;
     let mut n = r.text(tag::TEXT).len().min(TEXT_MAX);
     buf[..n].copy_from_slice(&r.text(tag::TEXT)[..n]);
-    let line_end = |buf: &[u8], n: usize| at + buf[at..n].iter().position(|&b| b == b'\n').unwrap_or(n - at);
+    let line_end = |buf: &[u8], n: usize| {
+        at + buf[at..n]
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(n - at)
+    };
     let mut taken = ([0u8; 4], 0usize);
     let put = |buf: &mut [u8], n: &mut usize, pos: usize, bytes: &[u8]| -> Result<(), Refused> {
         if *n + bytes.len() > buf.len() {
@@ -299,6 +328,11 @@ pub fn edit(store: &mut Store<'_>, id: u32, e: &Edit<'_>) -> Result<([u8; 4], us
                 put(&mut buf, &mut n, at, bytes)?;
             }
         }
+        Edit::Tick(_) => match buf.get(at..at + 4) {
+            Some(b"[ ] ") => buf[at + 1] = b'x',
+            Some(b"[x] ") => buf[at + 1] = b' ',
+            _ => return Err(Refused::NoLine),
+        },
         Edit::Remove(_) | Edit::DropLast => {
             let le = line_end(&buf, n);
             // The line and its newline (the one before it for the last).
@@ -351,62 +385,57 @@ fn write_chunk(
             return Ok(());
         }
     }
-    // Split: the first part stays, the rest goes to a new page after it.
-    let limit = n / 2 + 1;
+    // Split once, in place (no second buffer: programs run on the image's
+    // 24 KiB stack): the first part stays, the rest goes to a new page
+    // after it, both within a chunk's room. The cut: the line end nearest
+    // the middle that leaves both parts in room; else (lines longer than
+    // that) a character boundary there, the rest a continuation line.
+    let mid = n / 2;
+    let lo = n.saturating_sub(TEXT_MAX - 1).max(1);
+    let hi = TEXT_MAX.min(n.saturating_sub(1));
     let cut = buf[..n]
         .iter()
         .enumerate()
-        .filter(|&(_, &b)| b == b'\n')
+        .filter(|&(i, &b)| b == b'\n' && (lo..=hi).contains(&i))
         .map(|(i, _)| i)
-        .min_by_key(|&i| i.abs_diff(limit));
+        .min_by_key(|&i| i.abs_diff(mid));
     let (first, rest_from, cont) = match cut {
-        Some(i) if i > 0 => (i, i + 1, false),
-        // One line longer than a chunk: cut at a character boundary near
-        // the middle, the rest a continuation line.
-        _ => {
-            let mut i = limit.min(n);
-            while i > 1 && buf[i] & 0xC0 == 0x80 {
+        Some(i) => (i, i + 1, false),
+        None => {
+            let mut i = mid.clamp(lo, hi.max(lo));
+            while i > lo && buf[i] & 0xC0 == 0x80 {
                 i -= 1;
             }
             (i, i, true)
         }
     };
-    let mut second = [0u8; TEXT_MAX + EDIT_ROOM];
-    let mut m = 0;
-    if cont {
-        second[0] = CONT;
-        m = 1;
-    }
-    let tail = n - rest_from;
-    if m + tail > second.len() {
-        return Err(Refused::Full);
-    }
-    second[m..m + tail].copy_from_slice(&buf[rest_from..n]);
-    m += tail;
     // The new page's order: between this chunk and the next.
     let order = order_after(store, note, place)?;
     let o = order.to_le_bytes();
     let p = note.to_le_bytes();
+    // A continuation's mark goes in the byte before the rest for the page's
+    // write (that byte put back after: it is the first part's last).
+    let from = if cont { rest_from - 1 } else { rest_from };
+    let kept = buf[from];
+    if cont {
+        buf[from] = CONT;
+    }
     // The new page first (holding what would be lost), then the old chunk
     // cut down: a failure between leaves a line twice, never none.
-    let first_part = m.min(TEXT_MAX);
-    let new = store
-        .put(
-            Kind::Ink,
-            None,
-            &[(tag::PARENT, &p), (tag::ORDER, &o), (tag::TEXT, &second[..first_part])],
-        )
-        .map_err(|_| Refused::Full)?;
+    let put = store.put(
+        Kind::Ink,
+        None,
+        &[
+            (tag::PARENT, &p),
+            (tag::ORDER, &o),
+            (tag::TEXT, &buf[from..n]),
+        ],
+    );
+    buf[from] = kept;
+    let new = put.map_err(|_| Refused::Full)?;
     if let Err(e) = write_chunk(store, note, place, rec, buf, first) {
         let _ = store.remove(new);
         return Err(e);
-    }
-    if m > first_part {
-        // Still too long (an edit's room past a full chunk): the new page
-        // splits again.
-        let (ids, cn) = chunks(store, note);
-        let at = ids[..cn].iter().position(|&i| i == new).ok_or(Refused::Full)?;
-        return write_chunk(store, note, at, new, &mut second, m);
     }
     Ok(())
 }

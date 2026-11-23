@@ -357,7 +357,14 @@ fn typing_and_ink_keep_the_paper_colour_pin_and_unknown_fields() {
 }
 
 /// A stroke from (`x0`, `y0`) going right `n` samples, `dy(k)` its rise.
-pub(super) fn stroke(n: &mut Notes, cx: &Ctx, x0: u16, y0: u16, samples: u16, dy: impl Fn(u16) -> u16) {
+pub(super) fn stroke(
+    n: &mut Notes,
+    cx: &Ctx,
+    x0: u16,
+    y0: u16,
+    samples: u16,
+    dy: impl Fn(u16) -> u16,
+) {
     n.event(Event::PenDown { x: x0, y: y0 }, cx);
     for k in 1..samples {
         n.event(

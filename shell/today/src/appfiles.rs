@@ -94,7 +94,13 @@ fn says(e: Error) -> &'static str {
 /// Does `ask` on the card at partition `start`, answering `host` (a piece
 /// at a time for a read; once for a list or a write). `buf` holds
 /// [`BUF`] bytes.
-pub fn serve<D: BlockDevice>(card: D, start: u32, ask: FileAsk, host: &mut dyn Host, buf: &mut [u8]) {
+pub fn serve<D: BlockDevice>(
+    card: D,
+    start: u32,
+    ask: FileAsk,
+    host: &mut dyn Host,
+    buf: &mut [u8],
+) {
     let Ok(mut vol) = AnyVolume::mount(card, start) else {
         host.answer(FileAnswer::Failed("NO CARD"));
         return;
@@ -108,7 +114,9 @@ pub fn serve<D: BlockDevice>(card: D, start: u32, ask: FileAsk, host: &mut dyn H
                 host.answer(FileAnswer::Failed("NOT A NAME"));
                 return;
             };
-            let Ok(dir) = core::str::from_utf8(&p[..n]) else { return };
+            let Ok(dir) = core::str::from_utf8(&p[..n]) else {
+                return;
+            };
             // The names, a line each (a folder not there yet: none).
             let (mut k, mut count) = (0, 0);
             let r = vol.list(dir, &mut |name, is_dir, _| {
@@ -133,7 +141,9 @@ pub fn serve<D: BlockDevice>(card: D, start: u32, ask: FileAsk, host: &mut dyn H
                 host.answer(FileAnswer::Failed("NOT A NAME"));
                 return;
             };
-            let Ok(file) = core::str::from_utf8(&p[..n]) else { return };
+            let Ok(file) = core::str::from_utf8(&p[..n]) else {
+                return;
+            };
             let mut off = 0u64;
             loop {
                 let mut got = 0usize;
@@ -182,7 +192,9 @@ pub fn serve<D: BlockDevice>(card: D, start: u32, ask: FileAsk, host: &mut dyn H
                 host.answer(FileAnswer::Failed("NOT A NAME"));
                 return;
             };
-            let Ok(file) = core::str::from_utf8(&p[..n]) else { return };
+            let Ok(file) = core::str::from_utf8(&p[..n]) else {
+                return;
+            };
             if len > MAX {
                 host.answer(FileAnswer::Failed("TOO LARGE TO SAVE"));
                 return;
@@ -288,7 +300,9 @@ mod tests {
                     self.got.extend_from_slice(bytes);
                     self.said.push(std::format!("piece {total}"));
                 }
-                FileAnswer::Listed(n) => self.said.push(std::string::String::from_utf8(n.to_vec()).unwrap()),
+                FileAnswer::Listed(n) => self
+                    .said
+                    .push(std::string::String::from_utf8(n.to_vec()).unwrap()),
                 FileAnswer::Wrote => self.said.push("wrote".into()),
                 FileAnswer::Failed(w) => self.said.push(w.into()),
             }
@@ -303,62 +317,159 @@ mod tests {
     fn a_file_written_lists_reads_back_and_others_stay() {
         let (mut c, start) = card();
         let file: Vec<u8> = (0..10_000u32).map(|k| (k * 7) as u8).collect();
-        let mut app = App { file: file.clone(), got: Vec::new(), said: Vec::new() };
+        let mut app = App {
+            file: file.clone(),
+            got: Vec::new(),
+            said: Vec::new(),
+        };
         let mut buf = std::vec![0u8; BUF];
-        let w = FileAsk::Write { dir: b"Notes", name: name("Trip plan.md"), len: file.len() as u32 };
+        let w = FileAsk::Write {
+            dir: b"Notes",
+            name: name("Trip plan.md"),
+            len: file.len() as u32,
+        };
         serve(&mut c, start, w, &mut app, &mut buf);
         assert_eq!(app.said, ["wrote"]);
-        serve(&mut c, start, FileAsk::List { dir: b"Notes" }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::List { dir: b"Notes" },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.said[1], "Trip plan.md");
-        serve(&mut c, start, FileAsk::Read { dir: b"Notes", name: name("Trip plan.md") }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::Read {
+                dir: b"Notes",
+                name: name("Trip plan.md"),
+            },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.got, file);
         assert_eq!(app.said.len(), 2 + 3, "three pieces");
         // Written again shorter: the new one whole.
         app.file.truncate(10);
         app.got.clear();
-        let w = FileAsk::Write { dir: b"Notes", name: name("Trip plan.md"), len: 10 };
+        let w = FileAsk::Write {
+            dir: b"Notes",
+            name: name("Trip plan.md"),
+            len: 10,
+        };
         serve(&mut c, start, w, &mut app, &mut buf);
-        serve(&mut c, start, FileAsk::Read { dir: b"Notes", name: name("Trip plan.md") }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::Read {
+                dir: b"Notes",
+                name: name("Trip plan.md"),
+            },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.got, &file[..10]);
         // The card's other file is untouched.
         let mut v = AnyVolume::mount(&mut c, start).unwrap();
         let mut other = Vec::new();
-        v.read_range("RPIC0A.PAK", 0, 100, &mut [0u8; 4096], &mut |b| other.extend_from_slice(b))
-            .unwrap();
+        v.read_range("RPIC0A.PAK", 0, 100, &mut [0u8; 4096], &mut |b| {
+            other.extend_from_slice(b)
+        })
+        .unwrap();
         assert_eq!(other, b"the icon pack");
     }
 
     #[test]
     fn names_that_could_reach_out_of_the_folder_are_refused() {
-        for bad in ["", "..", "../x.txt", "a/b.txt", "a\\b.txt", ".hidden", "x.", " x", "CON:", "a..b"] {
+        for bad in [
+            "", "..", "../x.txt", "a/b.txt", "a\\b.txt", ".hidden", "x.", " x", "CON:", "a..b",
+        ] {
             assert!(!name_ok(bad.as_bytes()), "{bad}");
         }
         for good in ["Trip plan.md", "Note-1.svg", "a_b.c.txt"] {
             assert!(name_ok(good.as_bytes()), "{good}");
         }
         let (mut c, start) = card();
-        let mut app = App { file: Vec::new(), got: Vec::new(), said: Vec::new() };
+        let mut app = App {
+            file: Vec::new(),
+            got: Vec::new(),
+            said: Vec::new(),
+        };
         let mut buf = std::vec![0u8; BUF];
-        serve(&mut c, start, FileAsk::Read { dir: b"Notes", name: name("../RPIC0A.PAK") }, &mut app, &mut buf);
-        serve(&mut c, start, FileAsk::List { dir: b".." }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::Read {
+                dir: b"Notes",
+                name: name("../RPIC0A.PAK"),
+            },
+            &mut app,
+            &mut buf,
+        );
+        serve(
+            &mut c,
+            start,
+            FileAsk::List { dir: b".." },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.said, ["NOT A NAME", "NOT A NAME"]);
         // A file not there, a folder not made yet.
-        serve(&mut c, start, FileAsk::Read { dir: b"Notes", name: name("none.txt") }, &mut app, &mut buf);
-        serve(&mut c, start, FileAsk::List { dir: b"Notes" }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::Read {
+                dir: b"Notes",
+                name: name("none.txt"),
+            },
+            &mut app,
+            &mut buf,
+        );
+        serve(
+            &mut c,
+            start,
+            FileAsk::List { dir: b"Notes" },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.said[2..], ["NOT FOUND ON THE CARD", ""]);
         // An app whose bytes run short: nothing linked, said.
         app.file = std::vec![1; 100];
-        let w = FileAsk::Write { dir: b"Notes", name: name("short.txt"), len: 5000 };
+        let w = FileAsk::Write {
+            dir: b"Notes",
+            name: name("short.txt"),
+            len: 5000,
+        };
         serve(&mut c, start, w, &mut app, &mut buf);
         assert_eq!(app.said[4], "THE NOTE CHANGED: NOT SAVED");
-        serve(&mut c, start, FileAsk::List { dir: b"Notes" }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::List { dir: b"Notes" },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.said[5], "");
         // An empty file reads as one empty piece.
         app.file.clear();
-        let w = FileAsk::Write { dir: b"Notes", name: name("empty.txt"), len: 0 };
+        let w = FileAsk::Write {
+            dir: b"Notes",
+            name: name("empty.txt"),
+            len: 0,
+        };
         serve(&mut c, start, w, &mut app, &mut buf);
         app.got.clear();
-        serve(&mut c, start, FileAsk::Read { dir: b"Notes", name: name("empty.txt") }, &mut app, &mut buf);
+        serve(
+            &mut c,
+            start,
+            FileAsk::Read {
+                dir: b"Notes",
+                name: name("empty.txt"),
+            },
+            &mut app,
+            &mut buf,
+        );
         assert_eq!(app.said[app.said.len() - 1], "piece 0");
     }
 }
