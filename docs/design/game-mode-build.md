@@ -292,7 +292,10 @@ X51v though it passed in the emulator: the XScale's fault address is the
 FCSE-relocated one (`0x0a103000`), the image's page fill took it as the
 process's own and found no page; QEMU reports the unrelocated address.
 Fixed in the one fault path, and the check gives it the relocated form
-directly, so the emulator covers it (docs/hw/emulator.md, R368).
+directly, so the emulator covers it (docs/hw/emulator.md, R368). Since
+rp-v0.34.0 the emulator's FAR is the relocated one too (R368 done), so the
+kernel's touch takes the device's path and the direct call checks the
+process's own form (a prefetch abort's PC) instead.
 
 **Run 4 (2026-11-23, `local/rp-kernel-g5-run4.txt`): `RETROPANE-KERNEL-OK`
 on the X51v, back at the loader. K1 is settled.** Every VM, Game Mode

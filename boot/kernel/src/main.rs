@@ -699,15 +699,15 @@ mod image {
         addr: u32,
         access: rp_kernel_mm::space::Access,
     ) -> Result<rp_kernel_mm::space::Outcome, rp_kernel_mm::space::FaultError> {
-        // The XScale's FAR holds the modified (FCSE-relocated) address, but
-        // QEMU reports the address before relocation, and prefetch aborts
-        // give the PC as the process saw it. Relocating is right for all
-        // three: addresses already at or above 32 MiB pass through.
+        // A data abort's FAR holds the modified (FCSE-relocated) address,
+        // on the XScale and in the emulator since rp-v0.34.0 (R368); a
+        // prefetch abort gives the PC as the process saw it. Relocating is
+        // right for both: addresses already at or above 32 MiB pass through.
         let mva = layout::mva(addr, s.pid);
         // The image's page cache works in the process's own addresses: the
         // relocated form taken back to them (G5 run 3 on the X51v: given
-        // `0x0a103000`, the fill found no image page; QEMU's unrelocated
-        // FAR always gave it `0x00103000`).
+        // `0x0a103000`, the fill found no image page; the emulator's FAR
+        // before rp-v0.34.0 always gave it `0x00103000`).
         let own = match layout::slot_of(mva) {
             Some(slot) if slot == s.pid => mva - layout::slot_base(slot),
             _ => addr,
@@ -1387,20 +1387,20 @@ mod image {
         // touch would be, the image's page loaded first. Before the clients
         // run, so their `.data` page isn't loaded yet (G5 run 2 on the
         // X51v: refused, "I/O error").
-        // Both forms of a fault address resolve: the XScale reports the
-        // FCSE-relocated one (`0x0a103000`), the emulator the process's own
-        // (`0x00103000`); the relocated form is given here directly, so the
-        // emulator checks the device's case too.
+        // Both forms of a fault address resolve. A data abort's FAR holds
+        // the FCSE-relocated one (`0x0a103000`) on the XScale, and in the
+        // emulator since rp-v0.34.0 (R368), so the touch takes the device's
+        // path; the process's own form (`0x00103000`, a prefetch abort's PC)
+        // is given here directly.
         let pid = STATE.with(|s| s.pid);
         let touched = rt::try_read((LOAD_BASE + DATA_RVA) as usize);
-        let relocated = with_vm(|vm, s| {
-            let at = layout::mva(LOAD_BASE + RDATA_RVA, s.pid);
-            resolve(vm, s, at, rp_kernel_mm::space::Access::Read).is_ok()
+        let own_form = with_vm(|vm, s| {
+            resolve(vm, s, LOAD_BASE + RDATA_RVA, rp_kernel_mm::space::Access::Read).is_ok()
         });
         ok &= report(
             &mut uart,
             "kernel touch of an unloaded image page",
-            pid == PROC_SLOT && touched.is_some() && relocated,
+            pid == PROC_SLOT && touched.is_some() && own_form,
             touched.unwrap_or(0),
         );
         RUN.with(|r| {
