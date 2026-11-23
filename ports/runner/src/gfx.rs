@@ -2822,9 +2822,16 @@ impl Open {
                         "rp-gfx: R340 event {n9}: frame {}, status 0x{st:08x}, render {} us old ({}), {} texture writes during it, chain {}",
                         c.frames,
                         if age == u32::MAX { 0 } else { age },
-                        if self.rendering.is_some() { "running" } else { "none" },
+                        if self.rendering.is_some() {
+                            "running"
+                        } else {
+                            "none"
+                        },
                         if self.rendering.is_some() { writes } else { 0 },
-                        match at { None => u32::MAX, Some(d) => d }
+                        match at {
+                            None => u32::MAX,
+                            Some(d) => d,
+                        }
                     ));
                 }
                 EV9.with(|e| {

@@ -425,7 +425,13 @@ impl Chain {
     /// stay the program's to keep until its next frame call, as an armed
     /// chain's do). False: the chain does not fit, nothing waits (the
     /// frame goes by the CPU, which clears for itself).
-    pub fn prepare(&mut self, l: &ta::Layout, bg: &[u32], parts: &[&[u32]], eps: Option<u32>) -> bool {
+    pub fn prepare(
+        &mut self,
+        l: &ta::Layout,
+        bg: &[u32],
+        parts: &[&[u32]],
+        eps: Option<u32>,
+    ) -> bool {
         let mut table = l.start_table();
         // R352 `-rpeps`: the TA's 0x854/0x858 in place of Dell's 1.0e-5
         if let Some(v) = eps {
