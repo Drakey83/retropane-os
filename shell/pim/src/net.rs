@@ -170,20 +170,19 @@ pub fn photon(answer: &[u8], out: &mut [Place]) -> usize {
     let mut n = 0;
     let mut at = 0;
     while n < out.len() {
-        // Each feature's properties object.
-        let Some(k) = find(&answer[at..], b"\"properties\"") else {
+        // Each feature whole (JSON fixes no key order: a feature's geometry
+        // may come before its properties or after), else, with no features
+        // list, the answer as one.
+        let Some(feature) = next_feature(answer, &mut at) else {
             break;
         };
-        let start = at + k;
-        let end = find(&answer[start..], b"}").map_or(answer.len(), |e| start + e);
-        let obj = &answer[start..end];
-        // The feature's geometry comes before its properties (Photon's
-        // order); a later feature's never reaches back past this one's
-        // start.
-        let geometry = &answer[at..start];
-        at = end;
+        let Some(k) = find(feature, b"\"properties\"") else {
+            continue;
+        };
+        // (Its braces matched outside strings: a name may hold one.)
+        let obj = object(&feature[k..]).unwrap_or(&feature[k..]);
         let mut p = Place::EMPTY;
-        p.at = coordinates(geometry);
+        p.at = coordinates(feature);
         let house = json_str(obj, b"housenumber");
         let street = json_str(obj, b"street").or_else(|| json_str(obj, b"name"));
         if let Some(h) = house {
@@ -210,6 +209,64 @@ pub fn photon(answer: &[u8], out: &mut [Place]) -> usize {
         }
     }
     n
+}
+
+/// The next object of the answer's `"features"` list from `*at` (its
+/// braces matched outside strings, escapes honoured; one cut short runs to
+/// the answer's end), `*at` moved past it. With no features list, the
+/// whole answer once.
+fn next_feature<'a>(answer: &'a [u8], at: &mut usize) -> Option<&'a [u8]> {
+    if *at == 0 {
+        match find(answer, b"\"features\"") {
+            Some(k) => *at = k + answer[k..].iter().position(|&c| c == b'[')? + 1,
+            None => {
+                // (Past the end: an empty answer is taken once too.)
+                *at = answer.len() + 1;
+                return Some(answer);
+            }
+        }
+    }
+    let start = *at
+        + answer
+            .get(*at..)?
+            .iter()
+            .position(|&c| c == b'{' || c == b']')?;
+    if answer[start] == b']' {
+        *at = answer.len();
+        return None;
+    }
+    let obj = object(&answer[start..]).unwrap_or(&answer[start..]);
+    *at = start + obj.len();
+    Some(obj)
+}
+
+/// The JSON object starting at the first `{` of `s`, its braces matched
+/// outside strings (escapes honoured); cut short, it runs to `s`'s end.
+/// `None` with no `{`.
+fn object(s: &[u8]) -> Option<&[u8]> {
+    let start = s.iter().position(|&c| c == b'{')?;
+    let (mut depth, mut in_str, mut esc) = (0u32, false, false);
+    for (k, &c) in s.iter().enumerate().skip(start) {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+        } else if c == b'{' {
+            depth += 1;
+        } else if c == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&s[start..=k]);
+            }
+        }
+    }
+    Some(&s[start..])
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -632,6 +689,14 @@ mod tests {
         // (never the first's carried over).
         assert_eq!(out[0].at, Some((47_610_000, -122_330_000)));
         assert_eq!(out[1].at, None);
+        // Geometry after the properties (JSON fixes no order), a string
+        // holding braces and quotes: each place still its own.
+        let after = br#"{"features":[{"type":"Feature","properties":{"name":"A {odd} \"one\"","street":"First St"},"geometry":{"coordinates":[1.5,2.5]}},{"properties":{"street":"Second St"},"geometry":{"coordinates":[-3,-4]}}]}"#;
+        let n = photon(after, &mut out);
+        assert_eq!(n, 2);
+        assert_eq!(out[0].street.get(), b"First St");
+        assert_eq!(out[0].at, Some((2_500_000, 1_500_000)));
+        assert_eq!(out[1].at, Some((-4_000_000, -3_000_000)));
     }
 
     #[test]

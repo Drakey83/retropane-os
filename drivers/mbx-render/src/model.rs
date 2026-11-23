@@ -71,6 +71,8 @@ pub struct Bus {
     dest: (u32, u32),
     src: (u32, u32),
     origin: u32,
+    /// The scale word's 32nds a destination pixel, across and down.
+    scale: (u32, u32),
     blend: u32,
     op: u32,
     colour: u32,
@@ -98,6 +100,7 @@ impl Bus {
             dest: (0, 0),
             src: (0, 0),
             origin: 0,
+            scale: (32, 32),
             blend: 0,
             op: 0,
             colour: 0,
@@ -125,7 +128,13 @@ impl Bus {
                     self.origin = w;
                     Want::Command
                 }
-                0x6 | 0x7 => Want::Command,
+                // The scale word (rp-mbx-blend B9): 32nds of a source pixel
+                // a destination pixel, each way.
+                0x6 => {
+                    self.scale = ((w >> 18) & 0x3FF, (w >> 4) & 0x3FF);
+                    Want::Command
+                }
+                0x7 => Want::Command,
                 0x8 => {
                     self.op = w;
                     if w & (1 << 16) != 0 {
@@ -241,9 +250,11 @@ impl Bus {
                             "model: 32 bpp and RGB565 sources only"
                         );
                         let spx = if sfmt == BPP32 { 4 } else { 2 };
+                        // Nearest pixel through the scale word (1:1 at 32).
+                        let (kx, ky) = (i64::from(self.scale.0), i64::from(self.scale.1));
                         let s_at = i64::from(self.src.1)
-                            + (sy + y - y0) * stride(self.src.0)
-                            + (sx + x - x0) * spx;
+                            + (sy + (((y - y0) * ky) >> 5)) * stride(self.src.0)
+                            + (sx + (((x - x0) * kx) >> 5)) * spx;
                         let s = rd(&m, s_at, sfmt);
                         if b {
                             blend(self.blend, s, rd(&m, d_at, dfmt))

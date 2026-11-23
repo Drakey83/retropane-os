@@ -155,6 +155,20 @@ on the engine, not the CPU, and only where something changed.
      was 602 KB, past the 384 KiB cache, and never drawn. Checked against
      the reference (rule 6): the same pixels widened, as a 32-bit `Pic`,
      in both renderers.
+   - `Layers` *(added 2026-11-23, group E: Calendar's zoom, the owner's
+     pick D)*: a frame-level operation, not a drawing. `Capture { part }`
+     draws the frame into layer B (the area cache's room) in two halves on
+     two frames, starting from a copy of the screen shown and drawing only
+     the shell's damage, and keeps the screen shown in layer A (the work
+     picture's room, free between frames); nothing is shown. `Show` copies
+     one layer whole into the back picture and the other's content area
+     through the scale word into a card (nearest pixel, `s = 32 x source /
+     destination`, B9), both 16-bit to 16-bit with no dither or conversion
+     pass. `Land` shows layer B whole as the screen's and goes on from it
+     (the other picture brought forward once), nothing drawn again; a zoom
+     left before it lands has the screens drawn whole. Every frame priced
+     under 33 ms (`cargo xtask motion-cost`, R369 for the device's times);
+     host-checked against the scaler's arithmetic and the CPU reference.
    Nothing in today's shell needs the CPU to draw pixels; the trait's
    "which commands did you take" (ADR-0022) stays for later commands.
 4. **2700G memory layout** (a table in docs/memory-budget.md): two

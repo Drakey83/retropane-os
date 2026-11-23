@@ -76,12 +76,12 @@ not.
 | Item | From | Status | Code |
 |---|---|---|---|
 | Agenda with colour bars, times, places and the large title with a live summary | sheet | built | apps/calendar/src/lib.rs |
-| Week strip that slides under the title | sheet | pending | |
+| Week strip that slides under the title | sheet | built | apps/calendar/src/motion.rs, apps/calendar/src/lib.rs, apps/calendar/src/tests.rs, shell/core/src/lib.rs |
 | The forecast's icon and high/low on the agenda's days | apps-and-packs: weather on the agenda's days | built | apps/calendar/src/lib.rs, shell/core/src/lib.rs |
 | Day view: blocks sized to their length, overlaps side by side, now line, all-day strip, free time folded | sheet | built | apps/calendar/src/lib.rs |
 | Week view (portrait, seven columns) | apps-and-packs: week view | built | apps/calendar/src/lib.rs |
 | Month view with coloured bars and the chosen day's list | sheet | built | apps/calendar/src/lib.rs |
-| Smooth zoom between month, week and day | apps-and-packs: Smooth zoom between views | pending | |
+| Smooth zoom between month, week and day | apps-and-packs: Smooth zoom between views | built | apps/calendar/src/motion.rs, apps/calendar/src/lib.rs, drivers/draw/src/lib.rs, drivers/mbx-render/src/lib.rs, drivers/mbx-render/src/model.rs, xtask/src/motion_cost.rs |
 | Quick add with the understood words highlighted and a preview card | apps-and-packs: quick add | built | apps/calendar/src/lib.rs, shell/pim/src/quick.rs |
 | Editor as grouped cards; address suggestions for Where; capitals at each word in titles | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Several calendars, a colour each, shown and hidden | apps-and-packs: a colour per calendar | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
@@ -101,6 +101,35 @@ not.
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |
 | Its own program, loaded when opened and released when left | owner 2026-11-14 | built | apps/calendar/src/main.rs, shell/today/src/program.rs |
 | Records in internal storage (the card only as the test stage's stand-in) | owner 2026-11-14 | blocked: owner 2026-11-15 sign off without it: internal storage waits on the flash driver; the card stands in, same code and format | |
+
+## Motion as built (group E, 2026-11-23; the owner's picks: strip B, zoom D)
+
+Mock-ups: [mockups/e-week-strip.jpg](mockups/e-week-strip.jpg),
+[mockups/e-zoom.jpg](mockups/e-zoom.jpg) (the choices; B and D drawn with the scaler's
+measured arithmetic, `tools/mockups/zoom_scaled.py`), and D as built by the real renderer path, [mockups/e-zoom-built.jpg](mockups/e-zoom-built.jpg).
+
+- **The week strip** follows the pen by the pixel (after 8 px; a tap stays
+  a tap) and, released, pages a week on a quarter of its width or a fling
+  (12 px between two touch samples), else goes back; the D-pad across a
+  week slides it in from that side. While it moves the arriving week's
+  dates ride on a blue glass chip (pick B). Six frames on a fitted ease
+  table (`motion.rs`: 1 - (1 - t)^3, each frame moving less than the last);
+  parts left of the screen are placed exactly (glyphs dropped, spans cut,
+  today's ring in four 10 px slices). Priced 4-6 ms a moving frame, the
+  landing 33 ms (`cargo xtask motion-cost`).
+- **The zoom** (pick D): the arriving view is captured into the 2D
+  renderer's layer B over two frames (the screen unchanged, kept in layer
+  A), then six frames grow it out of the chosen day's cell (the week's row,
+  the day's column) by the engine's scale word, or shrink the day back into
+  its cell over the month, and a last frame lands the captured view as the
+  screen's with nothing drawn again (`rp_draw::LayerOp`, ADR-0023 rule 3).
+  Month's chosen day tapped again, Week's wide column, the tabs and the
+  Calendar button all zoom between levels. Priced: capture halves ~30 ms,
+  moving frames 10-27 ms, landing 10 ms. A renderer without layers makes
+  the change at once.
+- **Found and fixed on the way:** every app reply drew the whole screen
+  (~47 ms for Day); replies now go through R191's draw-list difference
+  (shell `program_event`).
 
 ## What would overturn it
 

@@ -1,0 +1,2 @@
+cargo:rerun-if-changed=../link.x
+cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\boot\sdtime/../link.x

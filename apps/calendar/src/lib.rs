@@ -318,9 +318,6 @@ pub struct Calendar {
     /// Today's ring as four 10 px slices, painted the first time the ring
     /// is partly left of the screen in a sliding strip (motion.rs).
     ring_slices: [Option<Pic>; 4],
-    /// Design variants under the owner's pick (the previews set them).
-    chip: bool,
-    dim: bool,
 }
 
 /// Motion the user started (design-language.md "Motion": started only by
@@ -524,8 +521,6 @@ impl Calendar {
             drag: None,
             strip_at: None,
             ring_slices: [None; 4],
-            chip: false,
-            dim: false,
         }
     }
 
@@ -1410,13 +1405,6 @@ impl Calendar {
         }
     }
 
-    /// The previews' design variants: the week's dates on a chip while the
-    /// strip moves; the view under a zoom dimmed.
-    pub fn mock_variant(&mut self, chip: bool, dim: bool) {
-        self.chip = chip;
-        self.dim = dim;
-    }
-
     /// Chooses `day`.
     pub fn choose(&mut self, day: i32) {
         self.day = day;
@@ -1530,9 +1518,10 @@ impl Calendar {
             self.week_cells(f, cx, y, first + 7 * k, x0, false);
         }
         f.push(rp_app::Cmd::Clip { r: outer });
-        if self.chip {
+        {
             // The week nearest the middle: its dates on a glass chip over
-            // the weekday names.
+            // the weekday names (the owner's pick B, 2026-11-23: crossing a
+            // month is never a guess).
             let w = i32::from(motion::STRIP_W);
             let shift = (-i32::from(off) + w / 2).div_euclid(w);
             let a = date::date_of(first + 7 * shift);
@@ -1706,11 +1695,12 @@ impl Calendar {
             (Some(a), Some(b)) if a != b => {
                 self.drag = None;
                 self.slide = 0;
+                // Frame 0 captures the arriving view (motion.rs, pick D).
                 self.motion = Some(Motion::Zoom {
                     from,
                     to,
                     cell: self.zoom_cell(from, to, cx.us),
-                    k: 1,
+                    k: 0,
                 });
                 Reply::Animate
             }
@@ -1718,60 +1708,39 @@ impl Calendar {
         }
     }
 
-    /// A zoom's frame: the shallower view whole, the deeper one inside the
-    /// card growing out of (or shrinking into) the chosen day's cell, its
-    /// area first cleared to the window (so the view under is not drawn
-    /// twice there), a glass rim round it while it moves. The card's last
-    /// frame is the whole page: the arriving view's own picture, so the
-    /// motion ends with no pop.
+    /// A zoom's frame (the owner's pick D, 2026-11-23): the arriving view
+    /// drawn whole, and what the renderer does with it. Frames 0 and 1
+    /// capture it into the renderer's layer B, a half each (the screen stays
+    /// as it was, kept in layer A); the next [`motion::FRAMES`] show the shallower view's
+    /// picture whole and the deeper one's scaled into the card growing out
+    /// of the chosen day's cell (or shrinking back into it), two 16-bit
+    /// copies on the 2D engine (`rp_draw::LayerOp`); one frame more lands
+    /// the captured view as the screen's, nothing drawn again. A renderer
+    /// without layers draws the arriving view: the change at once.
     #[inline(never)]
     fn zoom_frame(&mut self, f: &mut Frame, cx: &Ctx, from: View, to: View, cell: Rect, k: u8) {
+        self.scene(f, cx, to);
         let deeper = motion::level(to) > motion::level(from);
-        let (under, over) = if deeper { (from, to) } else { (to, from) };
         let page = rp_app::CONTENT;
-        let r = if deeper {
-            motion::grow(cell, page, k)
+        // Frames 0 and 1 capture (a part each), 2 to FRAMES + 1 show the
+        // motion's frames 1 to FRAMES, then the landing.
+        let op = if k < 2 {
+            rp_app::LayerOp::Capture { part: k }
+        } else if k > motion::FRAMES + 1 {
+            rp_app::LayerOp::Land
         } else {
-            motion::grow(page, cell, k)
+            let k = k - 1;
+            rp_app::LayerOp::Show {
+                card: if deeper {
+                    motion::grow(cell, page, k)
+                } else {
+                    motion::grow(page, cell, k)
+                },
+                from: page,
+                arriving_in_card: deeper,
+            }
         };
-        // Only the arriving view's targets are kept (a key pressed mid-zoom
-        // lands it and walks the view it arrives at).
-        self.scene(f, cx, under);
-        if self.dim && deeper {
-            f.push(rp_app::Cmd::Fill {
-                r: page,
-                color: 0x6000_0000,
-            });
-        }
-        let n = if under == to { self.hits.len() } else { 0 };
-        let outer = f.clip_now();
-        f.push(rp_app::Cmd::Clip {
-            r: r.intersect(&outer),
-        });
-        f.push(rp_app::Cmd::Fill { r, color: 0 });
-        if under == to {
-            self.scene(f, cx, over);
-            self.hits.keep(n);
-        } else {
-            self.hits.clear();
-            self.scene(f, cx, over);
-        }
-        f.push(rp_app::Cmd::Clip { r: outer });
-        if r != page {
-            f.push(rp_app::Cmd::Outline {
-                r,
-                color: kit::alpha(0xFFFF_FFFF, 0x90),
-            });
-            f.push(rp_app::Cmd::Outline {
-                r: Rect::new(
-                    r.x.saturating_sub(1),
-                    r.y.saturating_sub(1),
-                    r.w + 2,
-                    r.h + 2,
-                ),
-                color: kit::alpha(0xFF00_0000, 0x50),
-            });
-        }
+        f.push(rp_app::Cmd::Layers { op });
     }
 
     /// A motion's next frame, or its landing.
@@ -1781,7 +1750,8 @@ impl Calendar {
                 self.motion = Some(Motion::Slide { from, to, k: k + 1 });
                 Reply::Animate
             }
-            Some(Motion::Zoom { from, to, cell, k }) if k < motion::FRAMES => {
+            // (A zoom's frame past the last lands the captured view.)
+            Some(Motion::Zoom { from, to, cell, k }) if k <= motion::FRAMES + 1 => {
                 self.motion = Some(Motion::Zoom {
                     from,
                     to,

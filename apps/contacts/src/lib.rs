@@ -251,10 +251,8 @@ const fn suggestion_row(k: u16) -> Rect {
 
 /// The Contacts program.
 pub struct Contacts {
-    /// The map page while it is up (map.rs), and its layout variant
-    /// under the owner's pick (B: the address in the title).
+    /// The map page while it is up (map.rs).
     map: Option<map::MapPage>,
-    map_b: bool,
     /// The place of the suggestion picked in the editor, with the street
     /// and city it came with (kept only if the address saved is that one),
     /// and the address the editor opened with.
@@ -375,7 +373,6 @@ impl Contacts {
     pub fn new() -> Self {
         Self {
             map: None,
-            map_b: false,
             geo_pick: None,
             addr_was: (Text::EMPTY, Text::EMPTY),
             people: [None; MAX],
@@ -807,8 +804,8 @@ impl Contacts {
         Reply::Redraw
     }
 
-    /// The previews' map page: person `i`, the picture lent, its layout.
-    pub fn mock_map(&mut self, i: u8, at: (i32, i32), pic: Option<Pic>, b: bool) {
+    /// The previews' map page: person `i`, the picture lent.
+    pub fn mock_map(&mut self, i: u8, at: (i32, i32), pic: Option<Pic>) {
         let id = self
             .people
             .get(usize::from(i))
@@ -821,28 +818,33 @@ impl Contacts {
             page.status = map::Status::Shown;
         }
         self.map = Some(page);
-        self.map_b = b;
         self.view = View::Map(i);
     }
 
-    /// The map page's taps and keys: zoom, copy, back.
+    /// The map page's taps and keys: zoom (the keys, or the D-pad's up and
+    /// down), the address copied (its card, or the centre key), back.
     fn map_event(&mut self, e: Event, i: u8, cx: &Ctx) -> Reply {
-        let b = self.map_b;
         let Some(page) = self.map.as_mut() else {
             return Reply::Nothing;
         };
-        let [plus, minus] = map::zoom_keys(b);
+        let [plus, minus] = map::ZOOM_KEYS;
         let by = match e {
             Event::PenUp { x, y } if plus.contains_point(x, y) => 1,
             Event::PenUp { x, y } if minus.contains_point(x, y) => -1,
             Event::Key(Key::Up) => 1,
             Event::Key(Key::Down) => -1,
-            Event::PenUp { x, y } if b && map::COPY_KEY.contains_point(x, y) => {
-                if let Some(p) = self.people.get(usize::from(i)).copied().flatten() {
-                    *cx.clip.borrow_mut() = Text::of(Self::card_text(&p, 4).get());
-                }
-                return Reply::Redraw;
+            Event::Tick if page.copied > 0 => {
+                page.copied -= 1;
+                return if page.copied > 0 {
+                    Reply::Animate
+                } else {
+                    Reply::Redraw
+                };
             }
+            Event::PenUp { x, y } if map::ADDRESS_CARD.contains_point(x, y) => {
+                return self.map_copy(i, cx);
+            }
+            Event::Key(Key::Enter) => return self.map_copy(i, cx),
             Event::Key(Key::SoftLeft) => {
                 self.map = None;
                 self.go(View::Card(i));
@@ -855,6 +857,18 @@ impl Contacts {
         } else {
             Reply::Nothing
         }
+    }
+
+    /// The map page's address onto the clipboard, with its mark for a
+    /// second (as the card's lines).
+    fn map_copy(&mut self, i: u8, cx: &Ctx) -> Reply {
+        if let Some(p) = self.people.get(usize::from(i)).copied().flatten() {
+            *cx.clip.borrow_mut() = Text::of(Self::card_text(&p, 4).get());
+        }
+        if let Some(page) = self.map.as_mut() {
+            page.copied = 32;
+        }
+        Reply::Animate
     }
 
     /// The person being changed taken out of the store.
@@ -1752,7 +1766,6 @@ impl Program for Contacts {
                 };
                 let mut nm = [0u8; 64];
                 let nn = name(&p, &mut nm);
-                let b = self.map_b;
                 if let Some(page) = self.map.as_mut() {
                     map::draw(
                         f,
@@ -1761,7 +1774,6 @@ impl Program for Contacts {
                         &nm[..nn],
                         p.address[0].get(),
                         p.address[1].get(),
-                        b,
                     );
                 }
             }

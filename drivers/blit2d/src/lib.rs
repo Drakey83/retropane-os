@@ -75,6 +75,15 @@ pub const FIFO_WORDS: u32 = 0x1FE;
 /// No scaling: the driver sends it once at start-up.
 pub const SCALE_1_TO_1: u32 = 0x6080_0200;
 
+/// The scale word: `sx` and `sy` 32nds of a source pixel a destination
+/// pixel (32: 1:1; 64: half size; 16: twice), nearest pixel, no filtering
+/// (rp-mbx-blend B9 on the X51v, docs/hw/2700g.md: source `(i * s) >> 5`).
+/// Each is 1-1023.
+#[must_use]
+pub const fn scale(sx: u32, sy: u32) -> u32 {
+    0x6000_0000 | (sx & 0x3FF) << 18 | (sy & 0x3FF) << 4
+}
+
 /// Operation header bit: no colour word follows.
 pub const OP_NO_COLOUR: u32 = 1 << 16;
 /// Operation header bit: the blend state applies (likely: Dell's

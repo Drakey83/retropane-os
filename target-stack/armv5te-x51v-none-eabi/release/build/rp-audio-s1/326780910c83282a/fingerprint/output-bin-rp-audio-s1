@@ -1,0 +1,1 @@
+{"$message_type":"unused_extern","lint_level":"force-warn","unused_extern_names":["rp_drv_pxa_i2c","rp_drv_wm8750","rp_hal_api"]}

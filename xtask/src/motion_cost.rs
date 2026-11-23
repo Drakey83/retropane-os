@@ -32,11 +32,12 @@ fn price(s: &rp_mbx_render::FrameStats) -> u32 {
         + px(s.px_convert, 32)
 }
 
-/// One motion: its name, the view it starts on, and what starts it.
+/// One motion: its name (and its frames' file names), the view it starts
+/// on, and what starts it.
 struct Scene {
     name: &'static str,
+    file: &'static str,
     view: rp_app_calendar::View,
-    variant: (bool, bool),
     start: Vec<Input>,
 }
 
@@ -57,41 +58,31 @@ pub fn run(root: &std::path::Path) -> Result<(), String> {
     let scenes = [
         Scene {
             name: "strip: drag a week left, release, settle (Day)",
+            file: "strip",
             view: View::Day,
-            variant: (false, false),
-            start: drag.clone(),
-        },
-        Scene {
-            name: "strip B: the same with the dates chip",
-            view: View::Day,
-            variant: (true, false),
             start: drag,
         },
         Scene {
-            name: "zoom A: Month into Day (the chosen day tapped)",
+            name: "zoom D: Month into Day (the chosen day tapped)",
+            file: "month-day",
             view: View::Month,
-            variant: (false, false),
             start: tap(110, 189),
         },
         Scene {
-            name: "zoom C: Month into Day, the month dimmed",
-            view: View::Month,
-            variant: (false, true),
-            start: tap(110, 189),
-        },
-        Scene {
-            name: "zoom A: Day out to Month (the Month tab)",
+            name: "zoom D: Day out to Month (the Month tab)",
+            file: "day-month",
             view: View::Day,
-            variant: (false, false),
             start: tap(416, 578),
         },
         Scene {
-            name: "zoom A: Week into Day (the day's column)",
+            name: "zoom D: Week into Day (the day's wide column)",
+            file: "week-day",
             view: View::Week,
-            variant: (false, false),
-            start: tap(150, 300),
+            start: tap(150, 140),
         },
     ];
+    let out = root.join("target").join("motion-cost");
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut worst_moving = 0;
     for sc in &scenes {
         let mem = model::memory();
@@ -113,16 +104,30 @@ pub fn run(root: &std::path::Path) -> Result<(), String> {
         shell.give_pics(crate::emu::preview_pics());
         let mut c = rp_app_calendar::Calendar::new(&crate::app_mockups::CALS, 19_723);
         c.show(sc.view);
-        c.mock_variant(sc.variant.0, sc.variant.1);
         shell.open_program(Box::leak(Box::new(c)));
         let mut frame = Frame::new();
         let mut shown = None;
         let mut now = 1000u32;
+        let mut shot = 0;
         let mut draw = |shell: &mut rp_shell::Shell, gpu: &mut Mbx2dRenderer<Bus, Mem>| {
             crate::emu::backdrop(gpu, shell, &wall, None, &mut shown);
             shell.frame(&mut frame);
             gpu.draw(&frame);
             while !gpu.poll() {}
+            // The screen as shown, kept (the frames the owner's pick names).
+            let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+            let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+            let rgb: Vec<u8> = mem.borrow()[base..base + rp_mbx_render::SCREEN_BYTES]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|p| crate::emu::shown_565(u16::from_le_bytes(*p)))
+                .collect();
+            let _ = std::fs::write(
+                out.join(format!("{}-{shot:02}.png", sc.file)),
+                crate::ui_preview::png_rgb(480, 640, &rgb),
+            );
+            shot += 1;
             (price(&gpu.last), gpu.last.blits)
         };
         // Settled first (the whole screen once: not the motion's).

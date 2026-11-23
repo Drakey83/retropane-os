@@ -27,7 +27,7 @@ pub mod kit;
 pub mod timepad;
 
 pub use rp_draw::pics::{Pic, Pics};
-pub use rp_draw::{Argb, Cmd, Font, Frame, PanelArt, Rect};
+pub use rp_draw::{Argb, Cmd, Font, Frame, LayerOp, PanelArt, Rect};
 
 /// The screen.
 pub const W: u16 = 480;

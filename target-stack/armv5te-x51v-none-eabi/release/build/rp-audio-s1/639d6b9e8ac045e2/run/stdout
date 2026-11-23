@@ -1,0 +1,8 @@
+cargo:rerun-if-changed=../../boot/link.x
+cargo:rerun-if-env-changed=RP_AUDIO_LEVEL
+cargo:rerun-if-env-changed=RP_AUDIO_AMP_TEST
+cargo:rerun-if-env-changed=RP_AUDIO_AMP_TIMING
+cargo:rerun-if-env-changed=RP_AUDIO_AB_TEST
+cargo:rerun-if-env-changed=RP_AUDIO_SWEEP
+cargo:rerun-if-env-changed=RP_AUDIO_SLEEP
+cargo:rustc-link-arg-bins=-TC:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\services\audio-s1/../../boot/link.x

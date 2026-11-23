@@ -798,12 +798,15 @@ fn a_zoom_grows_out_of_the_very_cell_drawn() {
 
 #[test]
 fn zooms_run_their_frames_and_land_on_the_view() {
+    // The owner's pick D (2026-11-23): frame 0 captures the arriving view
+    // into the renderer's layer B; frames 1-6 show it scaled into a card
+    // growing out of the chosen day's cell, the last the whole page; every
+    // frame also holds the arriving view whole (a renderer without layers
+    // makes the change at once) and the arriving view's targets.
     let cx = ctx(store());
     let mut c = opened(19_723);
     c.view = View::Month;
     draw(&mut c, &cx);
-    // The chosen day tapped again zooms into Day: six frames, the card
-    // growing each frame, clipped, the page cleared under it.
     let cell = c.hits.find(Hit::Day(19_723)).unwrap();
     let tap = Event::PenUp {
         x: cell.x + 5,
@@ -811,42 +814,76 @@ fn zooms_run_their_frames_and_land_on_the_view() {
     };
     assert_eq!(c.event(tap, &cx), Reply::Animate);
     assert_eq!(c.view, View::Day);
+    let op = |c: &mut Calendar| {
+        let mut f = Box::new(Frame::new());
+        f.clip(Some(rp_app::CONTENT));
+        c.draw(&mut f, &cx);
+        assert!(!f.overflowed(), "a zoom frame fits the frame");
+        assert_eq!(f.clip_now(), rp_app::CONTENT, "the window's clip kept");
+        assert!(
+            c.hits.find(Hit::View(View::Month)).is_some(),
+            "the day's targets"
+        );
+        f.cmds().find_map(|m| match m {
+            rp_app::Cmd::Layers { op } => Some(*op),
+            _ => None,
+        })
+    };
+    assert_eq!(op(&mut c), Some(rp_app::LayerOp::Capture { part: 0 }));
+    assert_eq!(c.event(Event::Tick, &cx), Reply::Animate);
+    assert_eq!(op(&mut c), Some(rp_app::LayerOp::Capture { part: 1 }));
     let mut last = cell;
     for k in 1..=motion::FRAMES {
-        let mut f = Box::new(Frame::new());
-        c.draw(&mut f, &cx);
-        let clip = f
-            .cmds()
-            .find_map(|m| match m {
-                rp_app::Cmd::Clip { r } if r.w < u16::MAX => Some(*r),
-                _ => None,
-            })
-            .expect("a zoom frame clips its card");
-        assert!(clip.intersect(&last) == last, "frame {k} shrank");
-        last = clip;
-        let want = if k < motion::FRAMES {
-            Reply::Animate
-        } else {
-            Reply::Redraw
+        assert_eq!(c.event(Event::Tick, &cx), Reply::Animate, "frame {k}");
+        let Some(rp_app::LayerOp::Show {
+            card,
+            from,
+            arriving_in_card,
+        }) = op(&mut c)
+        else {
+            panic!("frame {k} shows the layers");
         };
-        assert_eq!(c.event(Event::Tick, &cx), want, "frame {k}");
+        assert!(arriving_in_card && from == rp_app::CONTENT);
+        assert!(card.intersect(&last) == last, "frame {k} shrank");
+        last = card;
     }
     assert_eq!(last, rp_app::CONTENT, "the last frame is the whole page");
+    // One frame more lands the captured view as the screen's.
+    assert_eq!(c.event(Event::Tick, &cx), Reply::Animate);
+    assert_eq!(op(&mut c), Some(rp_app::LayerOp::Land));
+    assert_eq!(c.event(Event::Tick, &cx), Reply::Redraw);
     assert_eq!(c.motion, None);
-    // And out again: Month's tab shrinks the day back into its cell.
-    draw(&mut c, &cx);
+    assert_eq!(op(&mut c), None, "an ordinary frame after");
+    // And out again: Month's tab shrinks the day back into its cell (A, the
+    // day as left, in the card over B, the month).
     let r = c.hits.find(Hit::View(View::Month)).unwrap();
+    let up = Event::PenUp {
+        x: r.x + 4,
+        y: r.y + 4,
+    };
+    assert_eq!(c.event(up, &cx), Reply::Animate);
+    assert_eq!(op(&mut c), Some(rp_app::LayerOp::Capture { part: 0 }));
+    for _ in 0..motion::FRAMES {
+        c.event(Event::Tick, &cx);
+    }
+    c.event(Event::Tick, &cx);
+    let Some(rp_app::LayerOp::Show {
+        card,
+        arriving_in_card,
+        ..
+    }) = op(&mut c)
+    else {
+        panic!("the last frame shows the layers");
+    };
+    assert!(!arriving_in_card);
     assert_eq!(
-        c.event(
-            Event::PenUp {
-                x: r.x + 4,
-                y: r.y + 4
-            },
-            &cx
-        ),
-        Reply::Animate
+        card,
+        c.zoom_cell(View::Day, View::Month, true),
+        "into its cell"
     );
-    assert_eq!(land(&mut c, &cx), motion::FRAMES - 1);
+    c.event(Event::Tick, &cx);
+    assert_eq!(op(&mut c), Some(rp_app::LayerOp::Land));
+    assert_eq!(c.event(Event::Tick, &cx), Reply::Redraw);
     assert_eq!(c.view, View::Month);
     // A tap mid-zoom lands it at once (the pen never waits).
     c.view = View::Day;

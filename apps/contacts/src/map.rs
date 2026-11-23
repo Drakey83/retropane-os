@@ -21,7 +21,7 @@
 //!   as the radar; any country on Earth.
 
 use rp_app::kit::{self, DIM, TEXT, tint};
-use rp_app::{Ctx, Frame, MARGIN, MapAsk, Pic, Rect, W, WIDE};
+use rp_app::{Ctx, Frame, MARGIN, MapAsk, Pic, Rect};
 
 /// The zooms the map offers (+ and -): 8 is ~200 km across at mid
 /// latitudes (the region), 10 ~50 km (the town and its roads: Natural
@@ -32,25 +32,23 @@ pub const OPENS_AT: u8 = 10;
 
 /// Where the map picture sits on the page.
 pub const MAP_AT: (u16, u16) = (MARGIN, 120);
-/// The zoom keys (variant A: over the map's right edge; B: under it).
-pub fn zoom_keys(b: bool) -> [Rect; 2] {
-    let (w, h) = rp_app::kit::MAP_PIC;
-    if b {
-        let y = MAP_AT.1 + h + 10;
-        [
-            Rect::new(MARGIN, y, 64, 44),
-            Rect::new(MARGIN + 72, y, 64, 44),
-        ]
-    } else {
-        let x = MAP_AT.0 + w - 56;
-        [
-            Rect::new(x, MAP_AT.1 + 12, 44, 44),
-            Rect::new(x, MAP_AT.1 + 62, 44, 44),
-        ]
-    }
-}
-/// Variant B's Copy key, beside the zoom keys.
-pub const COPY_KEY: Rect = Rect::new(MARGIN + 152, 120 + 336 + 10, WIDE - 152, 44);
+/// The zoom keys, + over -, glass on the map's right edge (the owner's
+/// pick A of 2026-11-23).
+pub const ZOOM_KEYS: [Rect; 2] = {
+    let x = MAP_AT.0 + rp_app::kit::MAP_PIC.0 - 56;
+    [
+        Rect::new(x, MAP_AT.1 + 12, 44, 44),
+        Rect::new(x, MAP_AT.1 + 62, 44, 44),
+    ]
+};
+
+/// The address's card under the map (a tap copies it).
+pub const ADDRESS_CARD: Rect = Rect::new(
+    MAP_AT.0,
+    MAP_AT.1 + rp_app::kit::MAP_PIC.1 + 10,
+    rp_app::kit::MAP_PIC.0,
+    62,
+);
 
 /// What the map page knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +86,8 @@ pub struct MapPage {
     pub asked: bool,
     /// The pin, painted once in the person's colour.
     pub pin: Option<(Pic, u32)>,
+    /// Ticks the address card's COPIED mark has left.
+    pub copied: u8,
 }
 
 impl MapPage {
@@ -106,6 +106,7 @@ impl MapPage {
             pic: None,
             asked: false,
             pin: None,
+            copied: 0,
         }
     }
 
@@ -245,27 +246,13 @@ pub fn paint_pin(px: &mut [u32], colour: u32) {
     }
 }
 
-/// The page: the person's name and address over the map (variant A: the
-/// zoom keys over the map's right edge, the address on a glass strip over
-/// its foot; B: the address in the title, the keys and Copy under the
-/// map), the pin at the place, the data's credit in the corner.
-#[allow(clippy::too_many_arguments)]
-pub fn draw(
-    f: &mut Frame,
-    cx: &Ctx,
-    page: &mut MapPage,
-    name: &[u8],
-    street: &[u8],
-    city: &[u8],
-    b: bool,
-) {
+/// The page (the owner's pick A of 2026-11-23): the person's name over the
+/// map, the zoom keys on the map's right edge, the pin at the place, the
+/// data's credit in the corner, the address on a glass card under it (a tap
+/// copies it).
+pub fn draw(f: &mut Frame, cx: &Ctx, page: &mut MapPage, name: &[u8], street: &[u8], city: &[u8]) {
     let (mw, mh) = rp_app::kit::MAP_PIC;
-    let summary = if b {
-        street
-    } else {
-        b"Where they are" as &[u8]
-    };
-    kit::large_title(f, cx, 36, name, summary, tint::CONTACTS);
+    kit::large_title(f, cx, 36, name, b"Where they are", tint::CONTACTS);
     let frame = Rect::new(MAP_AT.0 - 4, MAP_AT.1 - 4, mw + 8, mh + 8);
     kit::panel(f, cx, frame);
     let map = Rect::new(MAP_AT.0, MAP_AT.1, mw, mh);
@@ -344,7 +331,7 @@ pub fn draw(
         }
     }
     // The zoom keys, each live only when it can move.
-    let [plus, minus] = zoom_keys(b);
+    let [plus, minus] = ZOOM_KEYS;
     for (r, word, live) in [
         (plus, &b"+"[..], page.zoom < *ZOOMS.end()),
         (minus, b"-", page.zoom > *ZOOMS.start()),
@@ -353,40 +340,37 @@ pub fn draw(
         let c = if live { TEXT } else { kit::alpha(DIM, 0x70) };
         kit::centred(f, r, r.y + r.h / 2 + 9, cx.fonts.num, c, word);
     }
-    if b {
-        kit::key(f, cx, COPY_KEY, kit::KeyState::Rest);
-        kit::centred(
+    // The address on a card of glass under the map.
+    let strip = ADDRESS_CARD;
+    kit::panel(f, cx, strip);
+    kit::fitted(
+        f,
+        strip.x + 14,
+        strip.y + 26,
+        cx.fonts.ui,
+        TEXT,
+        street,
+        mw - 28,
+    );
+    kit::fitted(
+        f,
+        strip.x + 14,
+        strip.y + 50,
+        cx.fonts.ui,
+        DIM,
+        city,
+        mw - 28,
+    );
+    if page.copied > 0 {
+        kit::right(
             f,
-            COPY_KEY,
-            COPY_KEY.y + 28,
-            cx.fonts.label,
-            TEXT,
-            b"COPY ADDRESS",
-        );
-    } else {
-        // The address on a strip of glass over the map's foot.
-        let strip = Rect::new(map.x, map.bottom() + 10, mw, 62);
-        kit::panel(f, cx, strip);
-        kit::fitted(
-            f,
-            strip.x + 14,
+            strip.right() - 14,
             strip.y + 26,
-            cx.fonts.ui,
-            TEXT,
-            street,
-            mw - 28,
-        );
-        kit::fitted(
-            f,
-            strip.x + 14,
-            strip.y + 50,
-            cx.fonts.ui,
-            DIM,
-            city,
-            mw - 28,
+            cx.fonts.label,
+            tint::CONTACTS,
+            b"COPIED",
         );
     }
-    let _ = W;
 }
 
 #[cfg(test)]

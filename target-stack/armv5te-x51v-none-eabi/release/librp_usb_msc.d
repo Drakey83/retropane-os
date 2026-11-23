@@ -1,0 +1,1 @@
+C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\target-stack\armv5te-x51v-none-eabi\release\librp_usb_msc.rlib: C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\drivers\usb-msc\src\lib.rs C:\Users\reidc\retropane-os\.claude\worktrees\apps-e-motion-map-9f4dcb\hal\api\src\lib.rs

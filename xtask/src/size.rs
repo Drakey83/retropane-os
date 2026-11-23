@@ -635,9 +635,15 @@ pub const BUDGETS: &[Budget] = &[
     // Then load 187 -> 188 KiB (2026-11-15, test image): the renderers'
     // coverage picture (`Cmd::Cover`, ink a sheet at an eighth of the
     // bytes: R215, R221), 191,552 B (187.1 KiB) measured.
+    // Then load 188 -> 190 KiB (2026-11-23, test image): the renderers'
+    // 16-bit picture (`Cmd::Pic16`, a program's map at half the bytes) and
+    // a zoom's layers (`Cmd::Layers`: a frame captured into layer B, shown
+    // as two 16-bit copies, Calendar's zoom D), 193,760 B (189.2 KiB)
+    // measured; 191 KiB with the capture in two parts (one a frame inside
+    // the budget), 194,748 B (190.2 KiB) measured.
     Budget {
         image: "rp-scene",
-        max_load: 188 * 1024,
+        max_load: 191 * 1024,
         max_zero: 53 * 1024,
         device: OnDevice::Returns,
     },

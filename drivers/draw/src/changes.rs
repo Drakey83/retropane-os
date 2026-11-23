@@ -142,6 +142,22 @@ fn key(f: &Frame, c: &Cmd, clip: Rect) -> Option<[u32; KEY_WORDS]> {
                 h.u32(pic.key());
                 h.u32(u32::from(pic.w) | u32::from(pic.h) << 16);
             }
+            Cmd::Layers { op } => {
+                h.u32(11 + u32::from(op == crate::LayerOp::Land));
+                if let crate::LayerOp::Capture { part } = op {
+                    h.u32(u32::from(part));
+                }
+                if let crate::LayerOp::Show {
+                    card,
+                    from,
+                    arriving_in_card,
+                } = op
+                {
+                    h.rect(card);
+                    h.rect(from);
+                    h.u32(u32::from(arriving_in_card));
+                }
+            }
             Cmd::Pic16 { x, y, pic } => {
                 h.u32(10);
                 h.u32(u32::from(x) | u32::from(y.cast_unsigned()) << 16);

@@ -1108,6 +1108,24 @@ pub fn frame_key(f: &rp_draw::Frame, mut h: u32) -> u32 {
                 mix(u32::from(pic.w) | u32::from(pic.h) << 16);
                 mix(color);
             }
+            Cmd::Layers { op } => {
+                mix(11 + u32::from(op == rp_draw::LayerOp::Land));
+                if let rp_draw::LayerOp::Capture { part } = op {
+                    mix(u32::from(part));
+                }
+                if let rp_draw::LayerOp::Show {
+                    card,
+                    from,
+                    arriving_in_card,
+                } = op
+                {
+                    mix(rect(card));
+                    mix(size(card));
+                    mix(rect(from));
+                    mix(size(from));
+                    mix(u32::from(arriving_in_card));
+                }
+            }
             Cmd::Pic16 { x, y, pic } => {
                 mix(10);
                 mix(u32::from(x) | u32::from(y.cast_unsigned()) << 16);

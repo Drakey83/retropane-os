@@ -805,3 +805,129 @@ fn a_person_s_picture_is_chosen_from_the_avatar_kept_shown_and_removed() {
     c.net_answer(false, b"", &cx);
     assert_eq!(c.photo_note, b"No connection (Wi-Fi or the dock)");
 }
+
+#[test]
+fn the_map_key_shows_the_address_kept_found_once_and_never_stale() {
+    // contacts-rule0.md "Where they are" (group E, the owner's pick A).
+    let pim = store();
+    let cx = ctx(pim);
+    let id = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Contact,
+            None,
+            &[
+                (tag::FIRST, b"Grace"),
+                (tag::ADDRESS, b"2100 Clarendon Blvd\nArlington, VA 22201"),
+            ],
+        )
+        .unwrap();
+    let mut c = Contacts::new();
+    draw(&mut c, &cx);
+    c.view = View::Card(0);
+    draw(&mut c, &cx);
+    // The Map key is live with an address, and opens the page.
+    let key = c.card_at[..c.n_card]
+        .iter()
+        .find(|t| t.1 == MAP_KEY)
+        .expect("live")
+        .0;
+    c.event(
+        Event::PenUp {
+            x: key.x + 5,
+            y: key.y + 5,
+        },
+        &cx,
+    );
+    assert_eq!(c.view, View::Map(0));
+    // No place kept: the address asked about once, nothing to map yet.
+    assert_eq!(c.map_ask(), None);
+    let q = c.net_ask().expect("the address asked");
+    assert_eq!(
+        (q.what, q.arg.get()),
+        (
+            &b"ADDR"[..],
+            &b"2100 Clarendon Blvd, Arlington, VA 22201"[..]
+        )
+    );
+    assert!(c.net_ask().is_none(), "once");
+    // No connection: said so, nothing asked again.
+    c.net_answer(false, b"", &cx);
+    assert_eq!(c.map.unwrap().status, map::Status::Offline);
+    // Again with a connection: the first place found is kept on the record.
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    c.open_map(0, &cx);
+    c.net_ask().unwrap();
+    let answer = br#"{"features":[{"properties":{"housenumber":"2100","street":"Clarendon Blvd","city":"Arlington"},"geometry":{"coordinates":[-77.0947,38.8871]}}]}"#;
+    c.net_answer(true, answer, &cx);
+    let want = rp_app::MapAsk {
+        lat: 38_887_100,
+        lon: -77_094_700,
+        zoom: map::OPENS_AT,
+    };
+    assert_eq!(c.map_ask(), Some(want));
+    let kept = |pim: &core::cell::RefCell<Option<Store<'static>>>| {
+        map::geo_of(
+            pim.borrow()
+                .as_ref()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .text(tag::GEO),
+        )
+    };
+    assert_eq!(kept(pim), Some((38_887_100, -77_094_700)));
+    // The shell's answer: none to be had, then a picture.
+    assert_eq!(c.map_answer(want, None, &cx), Reply::Redraw);
+    assert_eq!(c.map.unwrap().status, map::Status::NoMap);
+    draw(&mut c, &cx);
+    // Zoom: out to 8 and no further, in to 10 and no further; each a new ask.
+    for (k, want_zoom) in [
+        (Key::Down, 9),
+        (Key::Down, 8),
+        (Key::Down, 8),
+        (Key::Up, 9),
+        (Key::Up, 10),
+        (Key::Up, 10),
+    ] {
+        c.event(Event::Key(k), &cx);
+        assert_eq!(c.map_ask().map(|a| a.zoom), Some(want_zoom));
+    }
+    // The centre key copies the address, with its mark.
+    assert_eq!(c.event(Event::Key(Key::Enter), &cx), Reply::Animate);
+    assert_eq!(
+        cx.clip.borrow().get(),
+        b"2100 Clarendon Blvd, Arlington, VA 22201"
+    );
+    // Opened again: the kept place, no question.
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    assert_eq!(c.view, View::Card(0));
+    c.open_map(0, &cx);
+    assert!(c.net_ask().is_none());
+    assert_eq!(c.map_ask(), Some(want));
+    c.event(Event::Key(Key::SoftLeft), &cx);
+    // An address changed by hand takes the place off (a stale pin is worse
+    // than none); unchanged, it stays.
+    c.open_edit(0);
+    c.keep(&cx);
+    assert_eq!(
+        kept(pim),
+        Some((38_887_100, -77_094_700)),
+        "unchanged: kept"
+    );
+    draw(&mut c, &cx);
+    c.open_edit(0);
+    c.put(EditField::Street, b"1 Other St");
+    c.keep(&cx);
+    assert_eq!(kept(pim), None, "changed: dropped");
+    // A suggestion picked brings its place with it.
+    draw(&mut c, &cx);
+    c.open_edit(0);
+    c.view = View::Edit(EditField::Street);
+    c.set_places_from(answer);
+    c.event(Event::Suggestion(0), &cx);
+    c.keep(&cx);
+    assert_eq!(kept(pim), Some((38_887_100, -77_094_700)), "picked: kept");
+}

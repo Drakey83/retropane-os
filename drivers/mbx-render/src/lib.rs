@@ -62,7 +62,7 @@
 #[cfg(any(test, feature = "model"))]
 pub mod model;
 
-use rp_draw::{Argb, Cmd, Drawn, Frame, MAX_CMDS, MAX_DIRTY, Rect, Renderer};
+use rp_draw::{Argb, Cmd, Drawn, Frame, LayerOp, MAX_CMDS, MAX_DIRTY, Rect, Renderer};
 use rp_drv_blit2d::{self as cmd, BLEND_DELL_TEXT, Engine, Format, OP_BLEND, ROP_SRCCOPY};
 use rp_hal_api::RegisterBus;
 
@@ -582,6 +582,14 @@ pub struct Mbx2dRenderer<R, M> {
     front_whole: bool,
     /// The frame queued finished without a stall.
     pending_whole: bool,
+    /// The frame queued was drawn into layer B (`LayerOp::Capture`): never
+    /// shown.
+    pending_hidden: bool,
+    /// A capture's damage, its bounding box, from its part 0 for its part 1
+    /// (whose own list is part 0's: it differs from the screen nowhere the
+    /// shell can see). A box, not the list: the views a zoom joins differ
+    /// almost everywhere, and rp-today's zeroed RAM had 48 bytes left.
+    capture_damage: Rect,
     /// Cached areas: (key, rectangle, address).
     cached: [(u32, Rect, usize); CACHED],
     cached_n: usize,
@@ -705,6 +713,8 @@ macro_rules! renderer_start {
             wall_gen: 0,
             front_whole: false,
             pending_whole: false,
+            pending_hidden: false,
+            capture_damage: Rect::new(0, 0, 0, 0),
             cached: [(0, Rect::new(0, 0, 0, 0), 0); CACHED],
             cached_n: 0,
             cache_top: 0,
@@ -1802,7 +1812,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 h = fnv(h, w);
             }
             let words: [u32; 5] = match *c {
-                Cmd::Clip { .. } => continue,
+                Cmd::Clip { .. } | Cmd::Layers { .. } => continue,
                 Cmd::Fill { r, color } => {
                     let [a, b] = rect(r);
                     [1, a, b, color, 0]
@@ -1945,7 +1955,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     #[inline(never)]
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {
         match *c {
-            Cmd::Clip { .. } => {}
+            // (A frame's layers are the frame's, `draw`.)
+            Cmd::Clip { .. } | Cmd::Layers { .. } => {}
             // Its fills and images (ADR-0023 rule 3): the wallpaper copied
             // once under its body (the clears), then its rows and rim only
             // blended over it, not each a copy and a blend (R176); the
@@ -2134,6 +2145,75 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     }
 }
 
+impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
+    /// A zoom's frame (`LayerOp::Show`): one layer copied whole into the
+    /// picture drawn into, the other's `from` scaled into `card` by the
+    /// engine's scale word (nearest pixel, `s = 32 x source / destination`
+    /// each way: rp-mbx-blend B9 on the X51v), both 16-bit to 16-bit (no
+    /// work picture, dither or conversion: a full-screen copy 5.0 ms, the
+    /// scaled one at half that speed a pixel, B9). With no card
+    /// (`LayerOp::Land`): layer B whole, the captured frame now the
+    /// screen's, so drawing goes on from it (the other picture brought
+    /// forward whole next frame, one copy) with nothing drawn again; a zoom
+    /// left before it lands has the screens drawn whole.
+    #[inline(never)]
+    fn show_layers(&mut self, card: Option<(Rect, Rect, bool)>, t0: u32) -> Drawn {
+        let (a, b) = (self.l.work, self.l.cache.0);
+        let (whole, inner) = match card {
+            Some((_, _, true)) => (a, b),
+            _ => (b, a),
+        };
+        let back = 1 - self.front;
+        let dst = self.l.screens[back];
+        self.copy_as(narrow(dst), narrow(whole), SCREEN);
+        if let Some((card, from, _)) = card
+            && let (card, from) = (card.intersect(&SCREEN), from.intersect(&SCREEN))
+            && !card.is_empty()
+            && !from.is_empty()
+        {
+            let s = |src: u16, to: u16| (u32::from(src) * 32 / u32::from(to)).clamp(1, 0x3FF);
+            self.submit(&[cmd::scale(s(from.w, card.w), s(from.h, card.h))]);
+            self.last.px_copy += u32::from(card.w) * u32::from(card.h) * 2;
+            self.last.blits += 1;
+            match cmd::blit(
+                narrow(dst),
+                narrow(inner),
+                (from.x, from.y),
+                Self::coords(card),
+                ROP_SRCCOPY,
+                0,
+                0,
+            ) {
+                Some((w, n)) => self.submit(&w[..n]),
+                None => self.refused += 1,
+            }
+            self.submit(&[cmd::SCALE_1_TO_1]);
+        }
+        let n = self.e.next_fence();
+        let fence = cmd::fence(self.l.fence, n);
+        if self.e.submit(&fence).is_err() && !self.dropping {
+            self.drop_frame();
+        }
+        self.pending = Some((back, n, (self.now)()));
+        let landing = card.is_none();
+        self.pending_whole = landing;
+        self.pending_dropped = self.dropping;
+        // Landed: the front picture is the captured frame, whole; the other
+        // comes forward next frame (the landing takes one off). Still
+        // moving: drawn whole if the zoom is left now.
+        self.fresh = if landing { 2 } else { 3 };
+        self.cached_n = 0;
+        self.prev_n = 0;
+        self.drawn[0] = SCREEN;
+        self.drawn_n = 1;
+        self.last.queue_us = self.us_since(t0);
+        Drawn {
+            cmds: 1,
+            pixels: u64::from(W) * u64::from(H),
+        }
+    }
+}
+
 impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
     // Out of line: one copy, not one per call site (16 KB inlined into
     // rp-today's main loop, 2026-10-14).
@@ -2171,6 +2251,29 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         // The frame's floor (an app's own window, R201), before anything
         // reads the wallpaper.
         self.set_floor(frame.floor(), frame.floor_picture());
+        // A zoom's layers (`Cmd::Layers`, the owner's pick D of 2026-11-23):
+        // a shown frame is two copies and nothing else; a captured one is
+        // drawn whole into layer B, the screen untouched.
+        let op = frame.cmds().find_map(|c| match *c {
+            Cmd::Layers { op } => Some(op),
+            _ => None,
+        });
+        if let Some(LayerOp::Show {
+            card,
+            from,
+            arriving_in_card,
+        }) = op
+        {
+            return self.show_layers(Some((card, from, arriving_in_card)), t0);
+        }
+        if op == Some(LayerOp::Land) {
+            return self.show_layers(None, t0);
+        }
+        let part = match op {
+            Some(LayerOp::Capture { part }) => Some(part),
+            _ => None,
+        };
+        let capture = part.is_some();
         // Which commands go in the background, and has it changed?
         // The previous frame has landed: no row of the ring is read now.
         self.epoch = self.epoch.wrapping_add(1);
@@ -2321,7 +2424,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         // unusable now, or the pictures' contents unknown (a reset, a new
         // wallpaper): drawn whole, as the caller's damage assumed the base.
         let asked = core::mem::take(&mut self.seed_next);
-        let seeded = asked && self.kept_ok() && self.fresh <= 1;
+        let seeded = asked && self.kept_ok() && self.fresh <= 1 && !capture;
         if asked && !seeded {
             self.fresh = 2;
         }
@@ -2330,7 +2433,35 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let mut n = 0;
         let mut forward = [Rect::default(); MAX_DIRTY];
         let mut nf = 0;
-        if !seeded && (self.fresh > 1 || (self.fresh == 1 && !self.front_whole)) {
+        // A captured frame starts from the screen shown (copied into layer
+        // B below) and draws only where its list differs from it (the
+        // shell's difference), as a seeded frame starts from the kept
+        // picture; whole while the screens' contents are unknown.
+        let unknown = self.fresh > 1 || (self.fresh == 1 && !self.front_whole);
+        let capture_seeded = capture && !unknown;
+        if let Some(part) = part {
+            // Part 0's damage (the whole screen while the screens' contents
+            // are unknown) kept for part 1; each part its own half of it.
+            if part == 0 {
+                self.capture_damage = if capture_seeded {
+                    frame
+                        .dirty()
+                        .iter()
+                        .map(|r| r.intersect(&SCREEN))
+                        .filter(|r| !r.is_empty())
+                        .reduce(|a, b| a.union(&b))
+                        .unwrap_or_default()
+                } else {
+                    SCREEN
+                };
+            }
+            let half = Rect::new(0, if part == 0 { 0 } else { H / 2 }, W, H / 2);
+            let r = self.capture_damage.intersect(&half);
+            if !r.is_empty() {
+                rects[0] = r;
+                n = 1;
+            }
+        } else if !seeded && unknown {
             rects[0] = SCREEN;
             n = 1;
         } else {
@@ -2358,6 +2489,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 }
             }
         }
+        // (A captured frame changes no screen: what the last one changed
+        // still comes forward.)
+        let prev_n = self.prev_n;
         self.prev_n = frame.dirty().len().min(MAX_DIRTY);
         self.prev[..self.prev_n].copy_from_slice(&frame.dirty()[..self.prev_n]);
         // The band switch's area, brought forward into the other picture
@@ -2378,18 +2512,24 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             self.drawn_n = n;
             self.drawn[..n].copy_from_slice(&rects[..n]);
         }
-        if n == 0 && nf == 0 && !seeded {
+        if n == 0 && nf == 0 && !seeded && !capture {
             // (A keep waits for a frame that draws: the screen is as shown.)
             return drawn;
         }
         let back = 1 - self.front;
-        let dst = self.l.screens[back];
+        // A captured frame goes into layer B (the area cache's room: its
+        // areas are dropped after), never a screen.
+        let dst = if capture {
+            self.l.cache.0
+        } else {
+            self.l.screens[back]
+        };
         let shown = self.l.screens[self.front];
         let work = self.l.work;
         // The screen shown into the kept picture, ahead of everything this
         // frame draws (it reads the picture on screen, which this frame
         // doesn't write).
-        if core::mem::take(&mut self.keep_next) {
+        if !capture && core::mem::take(&mut self.keep_next) {
             if self.bands.2.iter().all(Option::is_none) {
                 self.copy_as(narrow(self.l.kept), narrow(shown), SCREEN);
                 self.kept = Some((self.wall_gen, self.wall_id, false));
@@ -2403,6 +2543,10 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             self.copy_as(narrow(dst), narrow(self.l.kept), SCREEN);
             drawn.pixels += u64::from(W) * u64::from(H);
         }
+        if part == Some(0) {
+            self.copy_as(narrow(dst), narrow(shown), SCREEN);
+            drawn.pixels += u64::from(W) * u64::from(H);
+        }
         // First: drawing over these afterwards is still right.
         for &r in &forward[..nf] {
             self.copy_as(narrow(dst), narrow(shown), r);
@@ -2412,7 +2556,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             drawn.pixels += u64::from(clip.w) * u64::from(clip.h);
             // An area drawn before, unchanged (the same background and
             // commands): one copy from the cache.
-            let key = (u32::from(clip.w) * u32::from(clip.h) >= CACHE_MIN_PX)
+            let key = (!capture && u32::from(clip.w) * u32::from(clip.h) >= CACHE_MIN_PX)
                 .then(|| self.area_key(frame, cmds, clip));
             if let Some(key) = key
                 && let Some(&(_, _, at)) = self.cached[..self.cached_n]
@@ -2469,6 +2613,14 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 self.keep(dst, clip, key);
             }
         }
+        if part == Some(1) {
+            // The screen as shown into layer A (the work picture's room,
+            // free between frames: nothing composes until the zoom ends),
+            // behind the frame in the engine's queue. The screens are as
+            // they were: their bookkeeping holds.
+            self.copy_as(narrow(work), narrow(shown), SCREEN);
+            self.cached_n = 0;
+        }
         self.last.rects = n as u32;
         self.last.forward = nf as u32;
         // The fence, and back to the caller: `poll` flips.
@@ -2491,6 +2643,11 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.pending = Some((back, n, (self.now)()));
         self.pending_whole = self.stalls == stalls0 && !self.dropping;
+        if capture {
+            // Layer B took the area cache's room (its areas dropped above).
+            self.pending_hidden = true;
+            self.prev_n = prev_n;
+        }
         if seeded {
             // The other picture differs from this one everywhere: the next
             // frame brings the whole screen forward (as after a whole one).
@@ -2519,6 +2676,10 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         if core::mem::take(&mut self.keep_landing) {
             let whole = self.pending_whole && !self.pending_dropped;
             self.kept = self.kept.filter(|_| whole).map(|(g, id, _)| (g, id, true));
+        }
+        if core::mem::take(&mut self.pending_hidden) {
+            // Drawn into layer B: the screen stays as it is.
+            return true;
         }
         if self.pending_dropped {
             // Missing commands: never shown. The picture on screen stays,

@@ -286,7 +286,9 @@ impl<'a> CpuRenderer<'a> {
                 self.set_columns(rect(r).intersect(&clip), (color, color, 0, 1));
             }
             Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),
-            Cmd::Clip { .. } => {}
+            // No layers here: the frame's other commands hold the arriving
+            // view whole (the change made at once).
+            Cmd::Clip { .. } | Cmd::Layers { .. } => {}
             Cmd::HGradient { r, left, right } => {
                 let full = rect(r);
                 let to = full.intersect(&clip);

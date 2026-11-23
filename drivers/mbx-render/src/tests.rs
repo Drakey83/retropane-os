@@ -1732,3 +1732,160 @@ fn a_16_bit_picture_draws_as_its_widened_pixels_from_half_the_bytes() {
         assert_eq!((small, big), (96, 192), "half the bytes uploaded");
     }
 }
+
+/// A zoom's layers (`Cmd::Layers`, Calendar's zoom D): a captured frame is
+/// drawn whole into layer B and the screen shown kept in layer A, the
+/// screen untouched; a shown frame is A whole with B's content scaled into
+/// the card by the scale word (nearest pixel, source `(i * s) >> 5`, B9),
+/// both ways; the next ordinary frame is drawn whole and right.
+#[test]
+fn a_zoom_shows_one_layer_whole_and_the_other_scaled_into_its_card() {
+    use rp_draw::LayerOp;
+    let scene = |f: &mut Frame, k: u32| {
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 36, W, 564),
+            color: 0xFF00_0000 | (k * 0x30_2010),
+        });
+        for i in 0..8u16 {
+            f.push(Cmd::Fill {
+                r: Rect::new(20 + i * 50, 60 + i * 40, 30 + i * 3, 25),
+                color: 0xFF00_0000 | (u32::from(i) * 0x1F_0B07 + k * 0x55_0000),
+            });
+        }
+    };
+    let frame = |k: u32, op: Option<LayerOp>| {
+        let mut f = Frame::new();
+        scene(&mut f, k);
+        if let Some(op) = op {
+            f.push(Cmd::Layers { op });
+        }
+        f.damage(Rect::new(0, 0, W, H));
+        f
+    };
+    // What each view looks like drawn plainly.
+    let plain = |k: u32| {
+        let (mut r, mem) = gpu();
+        r.draw(&frame(k, None));
+        assert!(r.poll());
+        shown(&mut r, &mem)
+    };
+    let (month, day) = (plain(1), plain(2));
+    for zoom_in in [true, false] {
+        let (mut r, mem) = gpu();
+        r.draw(&frame(1, None));
+        assert!(r.poll());
+        assert_eq!(shown(&mut r, &mem), month);
+        // Captured: nothing shown changes. Only where the lists differ is
+        // drawn (the content: the shell's difference), the rest from the
+        // screen shown, and the landing shows exactly the day (below).
+        let mut f = Frame::new();
+        scene(&mut f, 2);
+        f.push(Cmd::Layers {
+            op: LayerOp::Capture { part: 0 },
+        });
+        f.damage(Rect::new(0, 36, W, 564));
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(r.last.rects, 1, "only the damage drawn, its top half");
+        assert_eq!(shown(&mut r, &mem), month, "the screen stays as it was");
+        // Part 1: the same list (no damage of its own), its bottom half.
+        let mut f = Frame::new();
+        scene(&mut f, 2);
+        f.push(Cmd::Layers {
+            op: LayerOp::Capture { part: 1 },
+        });
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(r.last.rects, 1, "the damage's bottom half");
+        assert_eq!(shown(&mut r, &mem), month, "the screen still as it was");
+        // Layer A is the month (on screen at the capture), B the day; the
+        // card holds B zooming in, A zooming out.
+        let (whole, inner) = (&month, &day);
+        let content = Rect::new(0, 36, W, 564);
+        for card in [
+            Rect::new(80, 166, 64, 46),
+            Rect::new(46, 111, 239, 264),
+            Rect::new(0, 36, W, 564),
+        ] {
+            r.draw(&frame(
+                2,
+                Some(LayerOp::Show {
+                    card,
+                    from: content,
+                    arriving_in_card: zoom_in,
+                }),
+            ));
+            assert!(r.poll());
+            let got = shown(&mut r, &mem);
+            let (sx, sy) = (
+                u32::from(content.w) * 32 / u32::from(card.w),
+                u32::from(content.h) * 32 / u32::from(card.h),
+            );
+            let (bg, fg) = if zoom_in {
+                (whole, inner)
+            } else {
+                (inner, whole)
+            };
+            for (y, x) in (0..H)
+                .step_by(7)
+                .flat_map(|y| (0..W).step_by(5).map(move |x| (y, x)))
+            {
+                let i = usize::from(y) * usize::from(W) + usize::from(x);
+                let want = if card.contains_point(x, y) {
+                    let fx = u32::from(content.x) + ((u32::from(x - card.x) * sx) >> 5);
+                    let fy = u32::from(content.y) + ((u32::from(y - card.y) * sy) >> 5);
+                    fg[fy as usize * usize::from(W) + fx as usize]
+                } else {
+                    bg[i]
+                };
+                assert_eq!(got[i], want, "{card:?} at ({x}, {y}), in {zoom_in}");
+            }
+        }
+        // Landed: layer B, the frame captured, is the screen's; then
+        // ordinary frames go on from it drawing nothing again (the other
+        // picture brought forward whole once), right every time.
+        r.draw(&frame(2, Some(LayerOp::Land)));
+        assert!(r.poll());
+        assert_eq!(shown(&mut r, &mem), day, "landed on the captured frame");
+        let mut once = true;
+        for _ in 0..3 {
+            let mut f = frame(2, None);
+            // (The shell's difference: the list as the landed frame's, no
+            // damage.)
+            f.clear();
+            scene(&mut f, 2);
+            r.draw(&f);
+            assert!(r.poll());
+            assert_eq!(shown(&mut r, &mem), day);
+            if once {
+                assert_eq!(r.last.forward, 1, "the other picture brought forward");
+                once = false;
+            }
+            assert_eq!(r.last.rects, 0, "nothing drawn again");
+        }
+    }
+    // A zoom left before it lands: ordinary frames drawn whole, right.
+    let (mut r, mem) = gpu();
+    r.draw(&frame(1, None));
+    assert!(r.poll());
+    r.draw(&frame(2, Some(LayerOp::Capture { part: 0 })));
+    assert!(r.poll());
+    r.draw(&frame(2, Some(LayerOp::Capture { part: 1 })));
+    assert!(r.poll());
+    r.draw(&frame(
+        2,
+        Some(LayerOp::Show {
+            card: Rect::new(46, 111, 239, 264),
+            from: Rect::new(0, 36, W, 564),
+            arriving_in_card: true,
+        }),
+    ));
+    assert!(r.poll());
+    for _ in 0..3 {
+        let mut f = Frame::new();
+        scene(&mut f, 2);
+        r.draw(&f);
+        assert!(r.poll());
+        assert_eq!(shown(&mut r, &mem), day);
+    }
+}

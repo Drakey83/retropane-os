@@ -1,0 +1,1 @@
+{"$message_type":"unused_extern","lint_level":"force-warn","unused_extern_names":["rp_drv_pxa_keypad","rp_hal_api","rp_hal_pxa27x","rp_hal_x51v","rp_image","rp_vram_map"]}
