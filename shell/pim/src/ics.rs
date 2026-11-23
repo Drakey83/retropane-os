@@ -234,6 +234,7 @@ fn rrule(v: &[u8], start_day: i32) -> Option<Rule> {
         n: n.max(1),
         days: if every == Every::Week { days } else { 0 },
         until,
+        after: false,
     };
     // COUNT becomes the day of its last occurrence (walked, at most 3
     // years ahead).

@@ -220,9 +220,35 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
         },
         &cx,
     );
+    // Make a task (tasks-rule0.md, the tie-in): one task in Tasks with
+    // the appointment's title, due on its day, its time and place in the
+    // note; a second tap makes no second one.
+    for _ in 0..2 {
+        c.event(
+            Event::PenUp {
+                x: 100,
+                y: E_DELETE + 20,
+            },
+            &cx,
+        );
+    }
+    assert!(c.edit.unwrap().task_made);
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let tasks: std::vec::Vec<_> = s.all(Kind::Task).collect();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(tag::TITLE), b"Dentist");
+        // Weekly from Monday 1 January 2024: the next one from today is today.
+        assert_eq!(tasks[0].num(tag::DUE), Some(19_723));
+        assert_eq!(
+            tasks[0].text(tag::NOTE),
+            b"From Calendar: Mon 1 Jan, 3:05 PM"
+        );
+    }
     c.event(
         Event::PenUp {
-            x: 200,
+            x: 360,
             y: E_DELETE + 20,
         },
         &cx,
@@ -237,7 +263,7 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
     );
     c.event(
         Event::PenUp {
-            x: 200,
+            x: 360,
             y: E_DELETE + 20,
         },
         &cx,
@@ -498,13 +524,16 @@ fn the_dpad_works_the_editor_the_calendars_and_the_quick_add_sheet() {
         c.event(Event::Key(Key::Down), &cx);
     }
     assert_eq!(c.edit.unwrap().row, Some(8));
-    c.event(Event::Key(Key::Enter), &cx);
+    // Right is Delete (the centre is Make a task, beside it).
+    c.event(Event::Key(Key::Right), &cx);
     assert!(c.edit.unwrap().confirm_delete);
     c.event(Event::Key(Key::Up), &cx);
     c.event(Event::Key(Key::Down), &cx);
     assert!(!c.edit.unwrap().confirm_delete);
     c.event(Event::Key(Key::Enter), &cx);
-    c.event(Event::Key(Key::Enter), &cx);
+    assert!(c.edit.unwrap().task_made && !c.edit.unwrap().confirm_delete);
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Right), &cx);
     assert!(pim.borrow().as_ref().unwrap().get(id).is_none());
     // The calendars' list: its rows and the key that asks the PC are in
     // reach; the centre hides a calendar as a tap does.
@@ -1096,4 +1125,259 @@ fn made_in_its_slot_it_is_the_same_app() {
     draw(c, &cx);
     assert_eq!(c.day, 19_723);
     assert_eq!(c.view, View::Home);
+}
+
+/// A repeating task shows on each of its days to come in the agenda; an
+/// after-done one on its due day only.
+#[test]
+fn repeating_tasks_show_on_each_of_their_days() {
+    use rp_pim::repeat::{Every, Rule};
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let rule = |after| {
+            Rule {
+                every: Every::Day,
+                n: 2,
+                days: 0,
+                until: None,
+                after,
+            }
+            .pack(19_723)
+            .to_le_bytes()
+        };
+        let due = 19_723u32.to_le_bytes();
+        let (fixed, after) = (rule(false), rule(true));
+        s.put(
+            Kind::Task,
+            None,
+            &[
+                (tag::TITLE, b"Run"),
+                (tag::DUE, &due),
+                (tag::REPEAT, &fixed),
+            ],
+        )
+        .unwrap();
+        s.put(
+            Kind::Task,
+            None,
+            &[
+                (tag::TITLE, b"Water"),
+                (tag::DUE, &due),
+                (tag::REPEAT, &after),
+            ],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    let titles = |c: &Calendar, day| {
+        let (list, n) = c.on(day);
+        list[..n]
+            .iter()
+            .filter(|a| a.task)
+            .map(|a| a.title.get().to_vec())
+            .collect::<std::vec::Vec<_>>()
+    };
+    assert_eq!(titles(&c, 19_723), [b"Run".to_vec(), b"Water".to_vec()]);
+    assert!(titles(&c, 19_724).is_empty());
+    assert_eq!(titles(&c, 19_725), [b"Run".to_vec()]);
+    assert_eq!(titles(&c, 19_727), [b"Run".to_vec()]);
+}
+
+/// The Birthdays calendar (calendar-rule0.md, contacts-rule0.md): made the
+/// first time a contact has a birthday, after this device's own calendar;
+/// the contacts' days on it, gone when hidden or when the contact goes;
+/// its rows open no editor, and no appointment can be put in it.
+#[test]
+fn contacts_birthdays_make_the_birthdays_calendar() {
+    use rp_pim::contact::Day;
+    let pim = store();
+    let born = Day {
+        year: Some(1983),
+        month: 1,
+        day: 3,
+    }
+    .field()
+    .unwrap();
+    let sam = pim
+        .borrow_mut()
+        .as_mut()
+        .unwrap()
+        .put(
+            Kind::Contact,
+            None,
+            &[
+                (tag::FIRST, b"Sam"),
+                (tag::LAST, b"Lee"),
+                (tag::BIRTHDAY, &born),
+            ],
+        )
+        .unwrap();
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    c.show(View::Agenda);
+    draw(&mut c, &cx);
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let cals: std::vec::Vec<_> = s
+            .all(Kind::Calendar)
+            .map(|r| r.text(tag::NAME).to_vec())
+            .collect();
+        assert_eq!(cals, [b"Calendar".to_vec(), b"Birthdays".to_vec()]);
+        assert!(rp_pim::birthdays::calendar(s).is_some());
+    }
+    draw(&mut c, &cx);
+    // Wednesday 3 January 2024.
+    let (list, n) = c.on(19_725);
+    let b = list[..n]
+        .iter()
+        .find(|a| a.id == sam)
+        .expect("the birthday");
+    assert_eq!(b.title.get(), b"Sam Lee's 41st birthday");
+    assert_eq!(b.len, 0);
+    assert_eq!(c.cals[usize::from(b.cal)].name.get(), b"Birthdays");
+    // Its row opens no editor.
+    c.open_edit(&cx, Some(sam));
+    assert!(c.edit.is_none());
+    assert_ne!(c.view, View::Edit);
+    // The editor's calendars leave it out.
+    let (ix, k) = c.chip_cals();
+    assert_eq!(k, 1);
+    assert_eq!(c.cals[ix[0]].name.get(), b"Calendar");
+    // Hidden, its days go; shown again, back.
+    let bid = c.cals[usize::from(b.cal)].id;
+    c.toggle_hidden(&cx, bid);
+    draw(&mut c, &cx);
+    assert!(!c.on(19_725).0[..c.on(19_725).1].iter().any(|a| a.id == sam));
+    c.toggle_hidden(&cx, bid);
+    draw(&mut c, &cx);
+    assert!(c.on(19_725).0[..c.on(19_725).1].iter().any(|a| a.id == sam));
+    // The contact gone: its birthday too, no record left behind.
+    pim.borrow_mut().as_mut().unwrap().remove(sam).unwrap();
+    draw(&mut c, &cx);
+    assert!(!c.on(19_725).0[..c.on(19_725).1].iter().any(|a| a.id == sam));
+    assert_eq!(
+        pim.borrow()
+            .as_ref()
+            .unwrap()
+            .all(Kind::Appointment)
+            .count(),
+        0
+    );
+}
+
+/// R375: the editor's chips say only "WEEKLY" or "MONTHLY"; a rule they
+/// say in part (an iCal import, every 2 weeks on Mon and Wed to an end
+/// day) is kept whole through an edit, and through a chip tapped away and
+/// back; another chip chosen and kept is the plain rule it names.
+#[test]
+fn an_edit_keeps_a_repeat_the_chips_show_only_in_part() {
+    use rp_pim::repeat::{Every, Rule};
+    let pim = store();
+    // Monday 1 January 2024.
+    let day = 19_723;
+    let rule = Rule {
+        every: Every::Week,
+        n: 2,
+        days: 1 | 1 << 2,
+        until: Some(day + 60),
+        after: false,
+    };
+    let id = {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = (date::start_of(day) + 15 * 60).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Standup"),
+                (tag::START, &at),
+                (tag::REPEAT, &rule.pack(day).to_le_bytes()),
+            ],
+        )
+        .unwrap()
+    };
+    let cx = ctx(pim);
+    let kept = |want: Rule| {
+        let g = pim.borrow();
+        let r = g.as_ref().unwrap().get(id).unwrap();
+        let got = Rule::unpack(r.num(tag::REPEAT).unwrap(), day).unwrap();
+        assert_eq!(got, want);
+    };
+    let tap = |c: &mut Calendar, chip: u16, y: u16| {
+        c.event(
+            Event::PenUp {
+                x: MARGIN + WIDE * chip / 5 + 10,
+                y: y + 24,
+            },
+            &cx,
+        );
+    };
+    let mut c = opened(day);
+    // A change elsewhere (a quarter later), saved: the rule is the same.
+    c.open_edit(&cx, Some(id));
+    assert_eq!(c.edit.unwrap().repeat, 2);
+    draw(&mut c, &cx);
+    c.event(
+        Event::PenUp {
+            x: W - 40,
+            y: E_START + 20,
+        },
+        &cx,
+    );
+    c.event(Event::Key(Key::SoftRight), &cx);
+    kept(rule);
+    // DAILY and back to WEEKLY: still its own.
+    c.open_edit(&cx, Some(id));
+    tap(&mut c, 1, E_REPEAT);
+    tap(&mut c, 2, E_REPEAT);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    kept(rule);
+    // DAILY kept: plain daily.
+    c.open_edit(&cx, Some(id));
+    tap(&mut c, 1, E_REPEAT);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    kept(Rule {
+        every: Every::Day,
+        n: 1,
+        days: 0,
+        until: None,
+        after: false,
+    });
+    // The 2nd Tuesday of the month shows as MONTHLY and stays the 2nd
+    // Tuesday (it became the 9th of each month before).
+    let tue = day + 8;
+    let nth = Rule {
+        every: Every::MonthWeekday,
+        n: 1,
+        days: 0,
+        until: None,
+        after: false,
+    };
+    let id = {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let at = date::start_of(tue).to_le_bytes();
+        s.put(
+            Kind::Appointment,
+            None,
+            &[
+                (tag::TITLE, b"Club"),
+                (tag::START, &at),
+                (tag::REPEAT, &nth.pack(tue).to_le_bytes()),
+            ],
+        )
+        .unwrap()
+    };
+    c.open_edit(&cx, Some(id));
+    assert_eq!(c.edit.unwrap().repeat, 3);
+    c.event(Event::Key(Key::SoftRight), &cx);
+    let g = pim.borrow();
+    let r = g.as_ref().unwrap().get(id).unwrap();
+    assert_eq!(Rule::unpack(r.num(tag::REPEAT).unwrap(), tue), Some(nth));
 }

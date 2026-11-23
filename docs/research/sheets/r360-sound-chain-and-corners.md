@@ -297,3 +297,86 @@ while its inputs (the state it starts from, the command, the physics
 entities it can touch) are unchanged would run each command once, not
 once a frame. It needs a design that proves the inputs the same (the
 moving physics entities are part of them), so it is a sheet first.
+
+## Step 11: the prediction replay (design sheet; not built yet)
+
+**What it costs now (run 351a, the committed code, helpers charged to
+their callers):** `CL_PredictMovement` 1.0% of the fight (its own 12
+samples, `memcpy` 47: the 6.5 KB `local_state_t` copied for every command
+it runs, `*to = *from`, and the 5.6 KB weapon data from the frame),
+`PM_PlayerTraceExt` 0.55%, `HUD_WeaponsPostThink` 0.34% (the client's
+weapons, run for every replayed command), `CL_RunUsercmd` 0.16%, the
+client's own `PM_*` ~0.1%, and the client's share of `RP_HullCheckQ`'s
+2.0% (most of it the server's monster moves; not split in the samples).
+About **2.2-2.6% of the fight** runs inside the replay loop.
+
+**Why most of it repeats.** Every rendered frame (~29 a second) the
+client starts again from the last server frame and runs every command the
+server hasn't acknowledged, one after another (`CL_RunUsercmd`: set up
+`pmove`, `pfnPlayerMove`, `pfnPostRunCmd`). An acknowledgement comes only
+with a packet, at the server's 20 Hz tick (kit 106). Between packets, a
+command already run last frame is run again from the same start, with the
+same command, time, seed and physics entities. Only the newest command,
+which is still being built, changes. Run 250 showed the cost follows the
+count: at 15 Hz (more commands waiting per packet) `CL_PredictMovement`
+went 67 -> 82 samples and `PM_PlayerTraceExt` 58 -> 83.
+
+| | What it does |
+|---|---|
+| Quake / QuakeWorld (1996), GoldSrc, Xash | the whole chain replayed from the last server frame every rendered frame |
+| Source (2004; `cl_pred_optimize`, default 2, per Source SDK 2013's `prediction.cpp`: a claim to read again, not verified here) | (1) no copy and no replay of old commands when no packet came since the last frame, only the new command run; (2) when a packet's state matches what was predicted for its command, no replay at all |
+| Ours, phase 1 | Source's (1) proven input by input, with counters: a command's stored result reused while every input to its run is the same, the newest command always run |
+| Ours, phase 2 (only if phase 1's counters say it pays) | Source's (2) bit for bit: when a packet arrives, the server's state for the acknowledged command compared with our stored prediction for it (6.5 KB, once a packet, 20 a second); equal means the chain after it is still valid and only moves slots |
+
+**Why ours beats the original.** Source decides by "no packet arrived",
+an argument; ours keys every input the run reads and proves each skip
+with a check switch on the X51v (every skipped command also run and its
+result compared byte for byte), so a missed input shows up as a count,
+not as a feel. And phase 2 is taken only if the counters show the
+server's state usually equals the prediction to the bit (the server's
+weapons and the client's are different code and may round differently).
+
+**The inputs of one command's run, and how each is keyed** (phase 1; a
+slot's stored key is compared before the run, and the run skipped only
+when every part is equal):
+
+| Input | Where it comes from | Key |
+|---|---|---|
+| the start state (`from`) | the server frame `cl.frames[parsecountmod]` for the first command, else the previous command's result | `cl.parsecount` plus a generation moved by every write to a frame's player, client and weapon data (`CL_ParseClientData`, `CL_ClearState`, as step 8 had), and for later commands: the previous command was skipped or its run was equal |
+| the command | `cl.commands[n].cmd` (52 bytes) | its bytes, compared every time (the newest command is rewritten each frame until sent; a sent one should not change, but a compare costs less than a doubt) |
+| time and seed | `frame->time` plus each command's `msec`; the seed is the command number | the command number; the time after the run stored with the result (so a double added in the same order, the same bits) |
+| `runfuncs` | true the first time a command runs, false after | the result the same either way is the claim the check proves (HL's `pm_shared` and weapons gate sounds and events on it); the first run of a command is never skipped |
+| the physics entities | `CL_SetSolidEntities` (step 7a's direct link already keys its build on the parse) and `CL_SetSolidPlayers` | the build's key (parse, entity range, world, player) and `numphysent` |
+| the rest of `pmove` | `CL_SetupPMove`: `clgame.movevars`, `cl.local.health` (`dead`), `cl.maxclients`, `cls.spectator` | the movevars' bytes compared (~200, once a frame) and the three words |
+| the slot itself | `cl.predicted_frames[(parsecountmod + i) & mask]`, written only by this loop | a slot's key cleared whenever anything else writes it (the base copy) |
+
+**What a skipped command still does:** its predicted origin copied, its
+`processedfuncs` set, the stored time taken, `cl.local.lastground` taken
+from the stored result. The loop's last command (the one the screen is
+lerped to) always runs, so the client DLL's globals (the weapon objects
+`HUD_WeaponsPostThink` loads from `from` each run, `g_lastFOV`) end each
+frame as the old loop leaves them.
+
+**Switches and proof.** `-rpreplay0` the old loop; `-rpreplaycheck` runs
+every command anyway and compares the whole `local_state_t`,
+`lastground` and the stored time with what the skip would have used
+(must be 0 differences), and counts what phase 2 would see: at each
+packet, whether the server's state for the acknowledged command equals
+our stored prediction for it. The log prints commands run, skipped,
+differed, and the phase-2 matches.
+
+**Estimate.** At ~29 frames a second against 20 packets, about one
+command in two to three per frame is a repeat. Skipping it saves roughly
+a third to a half of the loop's 2.2-2.6%: **~0.7-1.2% (~120-200 ms of
+the fight)**, three to five times the layout noise. Phase 2 would add
+the frames right after a packet, if their states match.
+
+**What overturns it.** The check counts any difference (then the
+missing input is found and keyed, or the lever is taken out). The fight
+is not faster than both its `-rpreplay0` run and the build before it
+(the step 9 rule). The counters show fewer repeats than estimated.
+
+**The batch (hands-free, 5% volume, `-rpfight -rpflash`, 500 frames):**
+a/b the lever, c `-rpreplay0`, d `-rpreplaycheck`. The kit is built and
+checked on the PC first (it builds, and the emulator's fight runs with
+`-rpreplaycheck` at 0 differences, if the emulator still runs the fight).

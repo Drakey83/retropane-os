@@ -64,6 +64,52 @@ pub struct Task {
     pub steps: (u8, u8),
     /// It repeats.
     pub repeats: bool,
+    /// A repeating task's past completions (it moves on to its next day
+    /// when ticked, so these count its done days).
+    pub log: Log,
+}
+
+/// The days a repeating task was done (`tag::DONE_LOG`), newest last.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Log {
+    days: [u16; tag::DONE_LOG_MAX],
+    n: u8,
+}
+
+impl Log {
+    /// Read from the field's bytes.
+    #[must_use]
+    pub fn of(b: &[u8]) -> Self {
+        let mut l = Self::default();
+        for c in b.as_chunks::<2>().0.iter().take(tag::DONE_LOG_MAX) {
+            l.days[usize::from(l.n)] = u16::from_le_bytes(*c);
+            l.n += 1;
+        }
+        l
+    }
+
+    /// Whether it was done on `day`.
+    #[must_use]
+    pub fn has(&self, day: i32) -> bool {
+        self.days[..usize::from(self.n)]
+            .iter()
+            .any(|&d| i32::from(d) == day)
+    }
+
+    /// With `day` added (the oldest dropped when full), as the field's
+    /// bytes and their length.
+    #[must_use]
+    pub fn with(&self, day: i32) -> ([u8; 2 * tag::DONE_LOG_MAX], usize) {
+        let mut out = [0u8; 2 * tag::DONE_LOG_MAX];
+        let kept = &self.days[..usize::from(self.n)];
+        let kept = &kept[kept.len().saturating_sub(tag::DONE_LOG_MAX - 1)..];
+        let mut k = 0;
+        for &d in kept.iter().chain(&[day.clamp(0, 0xFFFF) as u16]) {
+            out[k..k + 2].copy_from_slice(&d.to_le_bytes());
+            k += 2;
+        }
+        (out, k)
+    }
 }
 
 /// The views.
@@ -334,6 +380,7 @@ impl Tasks {
                 done_day: r.num(tag::DONE).map(|m| (m / 1440) as i32),
                 steps: (done, of),
                 repeats: r.num(tag::REPEAT).is_some(),
+                log: Log::of(r.text(tag::DONE_LOG)),
             });
         }
     }
@@ -342,9 +389,22 @@ impl Tasks {
     /// priority (`!1` high .. `!3` low, as Todoist writes them; a bare `!`
     /// high), `#list` names a list.
     fn add_typed(&mut self, cx: &Ctx) -> bool {
-        let line = &self.line[..self.line_n];
+        // The repeat first ("every mon wed", "every 3 days after done"):
+        // its words out of the line before the date words are read, so a
+        // weekday in it is a repeat and not a due date.
+        let (rest, rest_n, repeat) = Self::take_repeat(&self.line[..self.line_n]);
+        let line = &rest[..rest_n];
         let mut title = [0u8; rp_pim::quick::TITLE_MAX];
-        let (q, tn) = rp_pim::quick::parse(line, cx.now.day, cx.us, &mut title);
+        let (mut q, tn) = rp_pim::quick::parse(line, cx.now.day, cx.us, &mut title);
+        // Weekly on named days with no date typed: due on the first of
+        // them from today.
+        if let Some(r) = repeat
+            && q.day.is_none()
+            && r.every == rp_pim::repeat::Every::Week
+            && r.days != 0
+        {
+            q.day = (cx.now.day..cx.now.day + 7).find(|&d| r.days & (1 << date::weekday(d)) != 0);
+        }
         // The title without "#list" and "!n" words the parser left in.
         let mut clean = [0u8; rp_pim::quick::TITLE_MAX];
         let mut cn = 0;
@@ -356,8 +416,6 @@ impl Tasks {
             _ => 0,
         };
         let mut list_id = self.lists[open.min(self.n_lists.saturating_sub(1))].id;
-        let mut repeat: Option<rp_pim::repeat::Rule> = None;
-        let mut every_next = false;
         for w in title[..tn].split(|&b| b == b' ').filter(|w| !w.is_empty()) {
             if let Some(name) = w.strip_prefix(b"#") {
                 if let Some(l) = self.lists[..self.n_lists]
@@ -371,33 +429,6 @@ impl Tasks {
             if w.len() == 2 && w[0] == b'!' && (b'1'..=b'3').contains(&w[1]) {
                 flag = u32::from(b'4' - w[1]);
                 continue;
-            }
-            // "every day/weekday/week/month/year": the repeat, and its
-            // words out of the title.
-            if w.eq_ignore_ascii_case(b"every") {
-                every_next = true;
-                continue;
-            }
-            if every_next {
-                every_next = false;
-                use rp_pim::repeat::Every;
-                let (e, days) = match w {
-                    b"day" | b"daily" => (Some(Every::Day), 0),
-                    b"weekday" | b"weekdays" => (Some(Every::Week), 0b1_1111),
-                    b"week" | b"weekly" => (Some(Every::Week), 0),
-                    b"month" | b"monthly" => (Some(Every::MonthDate), 0),
-                    b"year" | b"yearly" => (Some(Every::Year), 0),
-                    _ => (None, 0),
-                };
-                if let Some(every) = e {
-                    repeat = Some(rp_pim::repeat::Rule {
-                        every,
-                        n: 1,
-                        days,
-                        until: None,
-                    });
-                    continue;
-                }
             }
             for &c in w.iter().chain(b" ") {
                 if cn < clean.len() {
@@ -463,6 +494,47 @@ impl Tasks {
             self.line_n = 0;
         }
         ok
+    }
+
+    /// The line with its repeat phrase ("every" and the words
+    /// [`rp_pim::repeat::phrase`] reads after it) taken out, and the rule.
+    fn take_repeat(line: &[u8]) -> ([u8; 64], usize, Option<rp_pim::repeat::Rule>) {
+        let cut = Self::repeat_words(line);
+        let words = line.split(|&b| b == b' ').filter(|w| !w.is_empty());
+        let mut out = [0u8; 64];
+        let mut k = 0;
+        for (i, w) in words.enumerate() {
+            if cut.is_some_and(|(a, b, _)| i >= a && i <= b) {
+                continue;
+            }
+            for &c in w.iter().chain(b" ") {
+                if k < out.len() {
+                    out[k] = c;
+                    k += 1;
+                }
+            }
+        }
+        (out, k.saturating_sub(1), cut.map(|(_, _, r)| r))
+    }
+
+    /// Where the line's repeat phrase lies: its first and last word (the
+    /// "every" and the last word [`rp_pim::repeat::phrase`] took), and the
+    /// rule. The add line highlights exactly these words.
+    fn repeat_words(line: &[u8]) -> Option<(usize, usize, rp_pim::repeat::Rule)> {
+        let mut words: [&[u8]; 16] = [b""; 16];
+        let mut n = 0;
+        for w in line.split(|&b| b == b' ').filter(|w| !w.is_empty()) {
+            if n < words.len() {
+                words[n] = w;
+                n += 1;
+            }
+        }
+        (0..n).find_map(|i| {
+            if !words[i].eq_ignore_ascii_case(b"every") {
+                return None;
+            }
+            rp_pim::repeat::phrase(&words[i + 1..n]).map(|(rule, used)| (i, i + used, rule))
+        })
     }
 
     /// The lists kept in the store, if they were only the ones a new
@@ -784,11 +856,93 @@ impl Tasks {
         }
     }
 
-    /// Task `id` ticked done (with the minute), or opened again.
+    /// Task `id` ticked done (with the minute), or opened again. A
+    /// repeating one moves on to its next day instead, today added to its
+    /// log and its steps opened again (Things resets a checklist the same
+    /// way); once its rule has ended it is done like any other.
     fn tick(&mut self, cx: &Ctx, id: u32) {
-        let done = self.tasks.iter().flatten().any(|t| t.id == id && t.done);
+        let (done, repeats) = cx
+            .pim
+            .and_then(|c| c.try_borrow().ok())
+            .and_then(|g| {
+                g.as_ref()
+                    .and_then(|s| s.get(id))
+                    .map(|r| (r.num(tag::DONE).is_some(), r.num(tag::REPEAT).is_some()))
+            })
+            .unwrap_or((false, false));
         let minute = (date::start_of(cx.now.day) + u32::from(cx.now.minute)).to_le_bytes();
+        if !done && repeats && self.roll(cx, id) {
+            return;
+        }
         self.set_field(cx, id, tag::DONE, (!done).then_some(&minute[..]));
+    }
+
+    /// Repeating task `t` done today: moved to its next day. False when
+    /// its rule has ended (or the store is busy): then it is done.
+    fn roll(&mut self, cx: &Ctx, id: u32) -> bool {
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let today = cx.now.day;
+        let Some(r) = store.get(id) else { return false };
+        let due = r.num(tag::DUE).map_or(today, |d| d as i32);
+        let time = r.num(tag::REMIND_AT).map(|m| m % date::DAY_MIN);
+        let log = Log::of(r.text(tag::DONE_LOG));
+        let Some(rule) = r
+            .num(tag::REPEAT)
+            .and_then(|v| rp_pim::repeat::Rule::unpack(v, due))
+        else {
+            return false;
+        };
+        let Some(next) = rule.next_after(due, due, today) else {
+            return false;
+        };
+        // The rule kept from its new day (its end stays the same day:
+        // `pack` counts it from the day it is given). The new day is one
+        // of its days, so the every-N beat stays the same. On its last
+        // day it is a plain task (an end on the start day packs as none).
+        let packed = rule.pack(next).to_le_bytes();
+        let packed: &[u8] = if rule.until == Some(next) {
+            &[]
+        } else {
+            &packed
+        };
+        let (log, log_n) = log.with(today);
+        let day = (next as u32).to_le_bytes();
+        let at = time.map(|m| (date::start_of(next) + m).to_le_bytes());
+        let mut fields: [(u8, &[u8]); 4] = [
+            (tag::DUE, &day),
+            (tag::REPEAT, packed),
+            (tag::DONE_LOG, &log[..log_n]),
+            (tag::REMIND_AT, &[]),
+        ];
+        let n = match &at {
+            Some(a) => {
+                fields[3].1 = a;
+                4
+            }
+            None => 3,
+        };
+        if store.change(id, &fields[..n]).is_err() {
+            return false;
+        }
+        // Its steps open again for the next time.
+        loop {
+            let step = store
+                .all(Kind::Task)
+                .find(|r| r.num(tag::PARENT) == Some(id) && r.num(tag::DONE).is_some())
+                .map(|r| r.id);
+            match step {
+                Some(s) if store.change(s, &[(tag::DONE, &[])]).is_ok() => {}
+                _ => break,
+            }
+        }
+        self.seen = None;
+        true
     }
 
     /// A swipe's action on task `id`: 0 tomorrow, 1 next week, 2 delete.
@@ -891,7 +1045,7 @@ impl Tasks {
             self.tasks
                 .iter()
                 .flatten()
-                .filter(|t| t.done_day == Some(day))
+                .filter(|t| t.done_day == Some(day) || t.log.has(day))
                 .count() as u32
         };
         let done_today = done_on(today);
@@ -1154,12 +1308,15 @@ impl Tasks {
             );
         } else {
             let mut x = field.x + 14;
-            for w in self.line[..self.line_n]
+            let rep = Self::repeat_words(&self.line[..self.line_n]);
+            for (i, w) in self.line[..self.line_n]
                 .split(|&b| b == b' ')
                 .filter(|w| !w.is_empty())
+                .enumerate()
             {
                 let understood = !find
-                    && (w.starts_with(b"!")
+                    && (rep.is_some_and(|(a, b, _)| i >= a && i <= b)
+                        || w.starts_with(b"!")
                         || w.starts_with(b"#")
                         || [
                             &b"today"[..],
@@ -1171,9 +1328,6 @@ impl Tasks {
                             b"fri",
                             b"sat",
                             b"sun",
-                            b"every",
-                            b"week",
-                            b"month",
                         ]
                         .contains(&w));
                 kit::text(

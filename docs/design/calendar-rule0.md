@@ -71,6 +71,16 @@ not.
   to type at google.com/device on any phone or PC); each calendar's colour
   and on/off.
 
+- **Birthdays as built (2026-11-23):** the contacts' birthdays and
+  anniversaries worked out from Contacts each time (`rp_pim::birthdays`, no
+  records copied): "Sam Lee's 41st birthday", all day, in the Birthdays
+  calendar (the eighth colour, made the first time a contact has one, shown
+  and hidden as any calendar, never offered in the editor's chips).
+- **Today's panel as built:** T1's layout fed from the store: what is left
+  of today (all day first), tomorrow's in the room it leaves, "+2" for the
+  rest; hidden calendars stay off it; a tap opens Calendar. Worked once per
+  change of the store or minute, not per frame (`shell/core/src/today_feed.rs`).
+
 ## Build list
 
 | Item | From | Status | Code |
@@ -89,9 +99,9 @@ not.
 | Reminders as a banner over any screen, several per appointment | apps-and-packs: reminders through the notification centre | built | shell/pim/src/remind.rs, shell/core/src/apps/mod.rs, shell/core/src/lib.rs, apps/calendar/src/lib.rs, apps/calendar/src/tests.rs, shell/core/src/tests.rs |
 | Reminder sound and snooze | apps-and-packs: reminder sound and snooze | built | services/audio/src/chime.rs, shell/today/src/main.rs, shell/core/src/apps/mod.rs |
 | Online calendars: iCal link (read), CalDAV (read and write), Google sign-in (device code, read and write), over any connection, offline queue | apps-and-packs: Google Calendar and other online calendars (iCal link, CalDAV, Google sign-in: §7) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against (the iCal link, read only, is built) | |
-| Birthdays from Contacts as a calendar | apps-and-packs: birthdays from Contacts | pending | |
+| Birthdays from Contacts as a calendar | apps-and-packs: birthdays from Contacts | built | shell/pim/src/birthdays.rs, apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | Tasks on their due days in the agenda | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
-| Today screen's calendar panel fed from the store | sheet | pending | |
+| Today screen's calendar panel fed from the store | sheet | built | shell/core/src/today_feed.rs, shell/core/src/lib.rs, shell/core/src/tests.rs |
 | Search in Calendar | sheet | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
 | .ics import and export (a file from the PC or the card) | sheet | built | shell/pim/src/ics.rs, apps/calendar/src/files.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs, apps/calendar/src/tests.rs |
 | Time zones: events kept in UTC with their zone; shown in the device's zone | sheet | built | shell/pim/src/zone.rs, shell/pim/src/zone_table.rs, tools/zones/gen.py, shell/pim/src/ics.rs, apps/calendar/src/files.rs, apps/calendar/src/lib.rs |

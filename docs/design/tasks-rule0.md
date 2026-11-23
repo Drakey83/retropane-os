@@ -53,6 +53,24 @@ tick it off with a satisfying tap.
   list (colour chips), subtasks with their own checkboxes. Delete asks in
   place.
 
+- **Repeats as built (2026-11-23):** typed after "every" ("every 3 days",
+  "every other week", "every tue and thu", "every month after done"), read
+  before the date words so a weekday in a repeat is not the due date, and
+  highlighted word for word. A tick moves the one task to its next day
+  (past both its due day and today: a late daily task comes back tomorrow,
+  not late), keeps its time, opens its steps again and logs the day in the
+  task itself (32 days), which the ring, the 7-day count and the streak
+  read: no copy per completion, so a daily task never fills the store.
+- **Calendar tie-in as built:** a repeating task shows on each of its days
+  in Calendar's agenda (after-done ones on their due day); an appointment's
+  editor has **Make a task** beside Delete (alone on a calendar link's): the
+  title, due on its day, "From Calendar: Mon 1 Jan, 3:00 PM, <place>" in
+  the note.
+- **Today's tasks line:** "3 TASKS DUE · 1 LATE" on the calendar panel's top
+  line opens Tasks (A). Two other places are drawn for the owner's pick
+  (B the panel's second row, C a third row): `docs/img/today-tasks/`,
+  reminder R374.
+
 ## Build list
 
 | Item | From | Status | Code |
@@ -64,10 +82,10 @@ tick it off with a satisfying tap.
 | Swipe right to complete, swipe left for Tomorrow, Next week, Delete | apps-and-packs: Swipe to complete | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Coloured priority flags (word in the editor) | sheet | built | apps/tasks/src/lib.rs |
 | Subtasks with "2 of 5" | apps-and-packs: subtasks | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
-| Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | pending | |
+| Repeating tasks (daily, weekdays, weekly on days, monthly, yearly, every N, after done) | apps-and-packs: repeating tasks | built | shell/pim/src/repeat.rs, apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | Reminders through the notification banner and sound | apps-and-packs: reminders | built | shell/pim/src/remind.rs, shell/core/src/apps/mod.rs, services/audio/src/chime.rs, shell/today/src/main.rs, shell/core/src/tests.rs |
-| Tasks on their due days in Calendar; make a task from an appointment | apps-and-packs: tie-ins with Calendar | pending | |
-| Today screen's tasks line fed from the store | sheet | pending | |
+| Tasks on their due days in Calendar; make a task from an appointment | apps-and-packs: tie-ins with Calendar | built | apps/calendar/src/lib.rs, apps/calendar/src/tests.rs |
+| Today screen's tasks line fed from the store | sheet | built | shell/core/src/today_feed.rs, shell/core/src/lib.rs, xtask/src/app_mockups.rs, docs/img/today-tasks/today-tasks-a-header.png |
 | CalDAV tasks and Google Tasks sync over any connection | sheet | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |
 | Search across tasks | sheet | built | apps/tasks/src/lib.rs, apps/tasks/src/tests.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |

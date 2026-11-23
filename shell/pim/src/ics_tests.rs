@@ -131,6 +131,7 @@ fn events_round_trip_through_a_written_file() {
         n: 2,
         days: 0,
         until: Some(day(2027, 12, 31)),
+        after: false,
     });
     ev.push(long);
     let file = write_all(&ev);

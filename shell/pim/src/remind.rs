@@ -262,6 +262,7 @@ mod tests {
             n: 1,
             days: 0,
             until: None,
+            after: false,
         }
         .pack(DAY);
         let id = appt(&mut s, start, &[15], Some(weekly));
@@ -290,6 +291,7 @@ mod tests {
             n: 1,
             days: 0,
             until: Some(DAY + 2),
+            after: false,
         }
         .pack(DAY);
         let id = appt(&mut s, start, &[60], Some(daily));
@@ -360,6 +362,7 @@ mod tests {
             n: 1,
             days: 0,
             until: None,
+            after: false,
         }
         .pack(DAY);
         let id = appt(&mut s, start, &[0], Some(daily));

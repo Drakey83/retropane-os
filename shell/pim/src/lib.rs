@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod birthdays;
 pub mod calc;
 pub mod contact;
 pub mod date;

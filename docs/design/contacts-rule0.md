@@ -86,7 +86,7 @@ without fighting the keyboard; the same people as the phone and the PC.
 | Duplicates offered as one merge | sheet | built | shell/pim/src/contact.rs, shell/pim/src/vcard.rs, apps/contacts/src/io.rs, apps/contacts/src/tests.rs |
 | vCard 3 and 4 import and export | apps-and-packs: vCard import/export | built | shell/pim/src/vcard.rs, shell/pim/src/jpeg_out.rs, apps/contacts/src/io.rs, shell/today/src/cardfiles.rs, shell/today/src/main.rs, xtask/src/usb.rs |
 | CardDAV and Google contacts sync, read and write, over any connection | apps-and-packs: online contacts (CardDAV, Google) | blocked: owner 2026-11-15 sign off without it: CalDAV, CardDAV and Google sign-in need an app registration and accounts only the owner can create, and a server to test against | |
-| Birthdays feed Calendar's Birthdays calendar | sheet | pending | |
+| Birthdays feed Calendar's Birthdays calendar | sheet | built | shell/pim/src/birthdays.rs, shell/pim/src/contact.rs, apps/calendar/src/lib.rs, shell/core/src/today_feed.rs |
 | The Contacts button opens Contacts | sheet | built | shell/core/src/lib.rs, shell/core/src/tests.rs |
 | The light look: the app's own light palette (its content is drawn after the shell's look pass, so rounded shapes keep one colour edge to edge) | sheet | built | shell/core/src/lib.rs, apps/api/src/kit.rs, tools/shell-assets/accents.py |
 | Chips and cards as rounded shapes of one colour, no glass art inside (the owner, 2026-11-14: "a box on top of the button") | owner 2026-11-14 | built | apps/api/src/kit.rs, shell/core/src/panel_art.rs |

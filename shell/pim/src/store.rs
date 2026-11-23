@@ -159,6 +159,13 @@ pub mod tag {
     pub const HIDDEN: u8 = 37;
     /// Note: its paper (0 ruled, 1 plain, 2 grid).
     pub const PAPER: u8 = 38;
+    /// Task, repeating: the days it was done, two bytes each (days from
+    /// 1970, little-endian), newest last, [`DONE_LOG_MAX`] at most. The
+    /// task itself moves on to its next day ([`crate::repeat::Rule::next_after`]),
+    /// so the log is what counts its past completions.
+    pub const DONE_LOG: u8 = 40;
+    /// The completions [`DONE_LOG`] keeps.
+    pub const DONE_LOG_MAX: usize = 32;
 
     // Contacts and calendar version 3 (2026-11-23, tags 50-59; a reader of
     // version 2 skips them). [`BIRTHDAY`] and [`ANNIVERSARY`] are the day
