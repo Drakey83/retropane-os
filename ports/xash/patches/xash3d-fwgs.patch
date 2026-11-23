@@ -9157,10 +9157,111 @@ index 03790d8..01f9cb2 100644
  	}
  
 diff --git a/ref/soft/r_surf.c b/ref/soft/r_surf.c
-index e47e115..bc9eb5f 100644
+index e47e115..b220a01 100644
 --- a/ref/soft/r_surf.c
 +++ b/ref/soft/r_surf.c
-@@ -133,14 +133,24 @@ static void R_AddDynamicLights( const msurface_t *surf )
+@@ -64,6 +64,100 @@ static surfcache_t *sc_base;
+ 
+ 
+ static void R_BuildLightMap( void );
++
++/*
++RetroPane (R360 step 5, ADR-0040 7e under ADR-0039): the dynamic lights'
++luxel loop in integers. Run 342a: R_AddDynamicLights 1.0% of the
++flashlight fight, two thirds of it in the software-float helpers (about
++nine calls a lit luxel: the distances' subtract, multiply and truncation,
++the compare, the amount's subtract, multiply and truncation). Iterate,
++don't imitate: ref_soft and ref_gl walk each luxel in floats, as an FPU
++makes free; on the PXA270 each is a call. The same sums exactly, from the
++floats' own bits:
++- the amount: rad - dist is exact in float when 0 <= dist < rad (both are
++  multiples of rad's last bit and the result no larger), so
++  (int)((rad - dist) * 256) = floor(256 rad) - 256 dist, made once a light;
++- the test: dist < minlight for an integer dist is dist < ceil(minlight);
++- each luxel's distance: trunc(sl - sample_size * s) from sl's 16.16 bits
++  and whether bits lie below them, exact unless the float subtraction's
++  rounding could cross a whole number, which needs sl's fraction within
++  2^-11 of one: such a light (fraction within 2^-8), sample_frac not 1, a
++  negative minlight or |sl|, |tl| or the face's extent past 2^13 keep the
++  float loop.
++-rpdlfloat the float loop; -rpdlcheck both on every luxel, compared.
++*/
++static int      rp_dlfloat = -1, rp_dlcheck;
++static uint32_t rp_dl_luxels, rp_dl_differ, rp_dl_lights, rp_dl_floatlights, rp_dl_said;
++
++/* f as 16.16 rounded down (*x) and whether bits lie below (*below); 0 if
++   |f| >= 2^13 */
++static int RP_DlFix16( float f, int32_t *x, int *below )
++{
++	union
++	{
++		float    f;
++		uint32_t u;
++	} b = { f };
++	uint32_t      a = b.u & 0x7FFFFFFFu, m;
++	int           e, sh;
++	int32_t       v;
++	int           r;
++
++	if( a == 0 )
++	{
++		*x = 0;
++		*below = 0;
++		return 1;
++	}
++	if( a >= 0x46000000u ) /* 2^13, Inf and NaN too */
++		return 0;
++	e = (int)( a >> 23 );
++	m = e ? ( a & 0x7FFFFFu ) | 0x800000u : ( a & 0x7FFFFFu );
++	sh = 150 - ( e ? e : 1 ) - 16; /* the value is m * 2^(e - 150); 16.16: m * 2^(e - 134) */
++	if( sh <= 0 )
++	{
++		v = (int32_t)( m << -sh );
++		r = 0;
++	}
++	else if( sh < 32 )
++	{
++		v = (int32_t)( m >> sh );
++		r = ( m & (( 1u << sh ) - 1 )) != 0;
++	}
++	else
++	{
++		v = 0;
++		r = 1;
++	}
++	if( b.u >> 31 )
++	{
++		/* floor of a negative: one unit further down when bits lay below */
++		v = -v - r;
++	}
++	*x = v;
++	*below = r;
++	return 1;
++}
++
++/* trunc(|x - k|) for x = (X + below) / 2^16 and an integer k: |the float
++   subtraction truncated|, exact when RP_DlSafe passed */
++static inline int RP_DlDist( int32_t X, int below, int32_t k )
++{
++	int32_t v = X - ( k << 16 );
++
++	return v >= 0 ? v >> 16 : ( -v - below ) >> 16;
++}
++
++/* sl's fraction far enough from a whole number (and the whole loop's
++   values under 2^13) for the float subtraction's rounding to keep the
++   truncation */
++static inline int RP_DlSafe( int32_t X, int below )
++{
++	uint32_t f = (uint32_t)X & 0xFFFFu;
++
++	return ( f == 0 && !below ) || ( f >= 256 && f < 65536 - 256 );
++}
++
+ /*
+ ===============
+ R_AddDynamicLights
+@@ -133,14 +227,84 @@ static void R_AddDynamicLights( const msurface_t *surf )
  
  		int monolight = LightToTexGamma(( dl->color.r + dl->color.g + dl->color.b ) / 3 * 4 ) * 3;
  
@@ -9175,6 +9276,66 @@ index e47e115..bc9eb5f 100644
 +		int t0 = Q_max( 0, (int)( tl / sample_size - half ));
 +		int t1 = Q_min( tmax - 1, (int)( tl / sample_size + half ));
 +
++		if( rp_dlfloat < 0 )
++		{
++			rp_dlfloat = gEngfuncs.Sys_CheckParm( "-rpdlfloat" ) != 0;
++			rp_dlcheck = gEngfuncs.Sys_CheckParm( "-rpdlcheck" ) != 0;
++		}
++		{
++			int32_t sx, tx;
++			int     sb, tb;
++			int     ss = (int)sample_size;
++
++			rp_dl_lights++;
++			if( !rp_dlfloat && sample_frac == 1 && (float)ss == sample_size && ss > 0 && dl->minlight >= 0.0f
++				&& minlight >= 0.0f && rad < 8192.0f && ( smax + tmax ) * ss < 4096
++				&& RP_DlFix16( sl, &sx, &sb ) && RP_DlFix16( tl, &tx, &tb ) && RP_DlSafe( sx, sb ) && RP_DlSafe( tx, tb ))
++			{
++				/* the integer loop: the same luxels, tests and sums */
++				const int32_t r256 = (int32_t)( rad * 256 );
++				int32_t       mi = (int32_t)minlight;
++
++				if( (float)mi < minlight )
++					mi++; /* dist < minlight == dist < ceil( minlight ) */
++				for( int t = t0; t <= t1; t++ )
++				{
++					const int td = RP_DlDist( tx, tb, ss * t );
++
++					for( int s = s0; s <= s1; s++ )
++					{
++						const int sd = RP_DlDist( sx, sb, ss * s );
++						const int d = sd > td ? sd + ( td >> 1 ) : td + ( sd >> 1 );
++						const int lit = d < mi;
++						const int add = lit ? (( r256 - ( d << 8 )) * monolight ) / 256 : 0;
++
++						if( lit )
++							blocklights[( s + ( t * smax ))] += add;
++						if( rp_dlcheck )
++						{
++							/* the float loop's own expressions for this luxel */
++							int   ftd = ( tl - sample_size * t ) * sample_frac, fsd = ( sl - sample_size * s ) * sample_frac;
++							float fdist;
++
++							if( ftd < 0 )
++								ftd = -ftd;
++							if( fsd < 0 )
++								fsd = -fsd;
++							fdist = fsd > ftd ? fsd + ( ftd >> 1 ) : ftd + ( fsd >> 1 );
++							rp_dl_luxels++;
++							if(( fdist < minlight ) != lit
++								|| ( lit && ((int)(( rad - fdist ) * 256 ) * monolight ) / 256 != add ))
++								rp_dl_differ++;
++						}
++					}
++				}
++				if( rp_dlcheck && ( rp_dl_lights & 1023 ) == 1 && rp_dl_said++ < 64 )
++					gEngfuncs.Con_Printf( "rp-dl: -rpdlcheck: %u luxels lit both ways, %u differed (must be 0); %u lights, %u of them the float loop\n",
++						rp_dl_luxels, rp_dl_differ, rp_dl_lights, rp_dl_floatlights );
++				continue;
++			}
++			rp_dl_floatlights++;
++		}
++
 +		for( int t = t0; t <= t1; t++ )
  		{
  			int td = ( tl - sample_size * t ) * sample_frac;
@@ -9187,7 +9348,7 @@ index e47e115..bc9eb5f 100644
  			{
  				int   sd = ( sl - sample_size * s ) * sample_frac;
  				float dist;
-@@ -229,6 +239,68 @@ static void R_BuildLightMap( void )
+@@ -229,6 +393,68 @@ static void R_BuildLightMap( void )
  }
  
  
@@ -9256,7 +9417,7 @@ index e47e115..bc9eb5f 100644
  /*
  ===============
  R_TextureAnimation
-@@ -236,7 +308,7 @@ R_TextureAnimation
+@@ -236,7 +462,7 @@ R_TextureAnimation
  Returns the proper texture for a given time and surface
  ===============
  */
@@ -9265,7 +9426,7 @@ index e47e115..bc9eb5f 100644
  {
  	texture_t *base = s->texinfo->texture;
  	int       reletive;
-@@ -320,7 +392,7 @@ void R_DrawSurface( void )
+@@ -320,7 +546,7 @@ void R_DrawSurface( void )
  	}
  	mt = r_drawsurf.image;
  
@@ -9274,7 +9435,7 @@ index e47e115..bc9eb5f 100644
  
  // the fractional light values should range from 0 to (VID_GRADES - 1) << 16
  // from a source range of 0 - 255
-@@ -636,6 +708,11 @@ void R_DrawSurfaceBlock8_mip1( void )
+@@ -636,6 +862,11 @@ void R_DrawSurfaceBlock8_mip1( void )
  			{
  				pix = psource[b];
  				prowdest[b] = BLEND_LM( pix, light );
@@ -9286,7 +9447,7 @@ index e47e115..bc9eb5f 100644
  				// ((unsigned char *)vid.colormap)
  				// [(light & 0xFF00) + pix];
  				light += lightstep;
-@@ -687,7 +764,9 @@ void R_DrawSurfaceBlock8_mip2( void )
+@@ -687,7 +918,9 @@ void R_DrawSurfaceBlock8_mip2( void )
  			for( b = 3; b >= 0; b-- )
  			{
  				pix = psource[b];
@@ -9297,7 +9458,7 @@ index e47e115..bc9eb5f 100644
  				// ((unsigned char *)vid.colormap)
  				// [(light & 0xFF00) + pix];
  				light += lightstep;
-@@ -739,7 +818,9 @@ void R_DrawSurfaceBlock8_mip3( void )
+@@ -739,7 +972,9 @@ void R_DrawSurfaceBlock8_mip3( void )
  			for( b = 1; b >= 0; b-- )
  			{
  				pix = psource[b];
@@ -9308,7 +9469,7 @@ index e47e115..bc9eb5f 100644
  				// ((unsigned char *)vid.colormap)
  				// [(light & 0xFF00) + pix];
  				light += lightstep;
-@@ -782,6 +863,13 @@ void R_InitCaches( void )
+@@ -782,6 +1017,13 @@ void R_InitCaches( void )
  			size += ( pix - 64000 ) * 3;
  	}
  
@@ -9322,7 +9483,7 @@ index e47e115..bc9eb5f 100644
  	// round up to page size
  	size = ( size + 8191 ) & ~8191;
  
-@@ -976,16 +1064,16 @@ static void R_DrawSurfaceDecals( void )
+@@ -976,16 +1218,16 @@ static void R_DrawSurfaceDecals( void )
  		if( t2 > tex->height )
  			t2 = tex->height;
  
@@ -9343,7 +9504,7 @@ index e47e115..bc9eb5f 100644
  
  		height = h;
  		if( y < 0 )
-@@ -1137,9 +1225,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
+@@ -1137,9 +1379,13 @@ surfcache_t *D_CacheSurface( msurface_t *surface, int miplevel )
  //
  // allocate memory if needed
  //

@@ -159,3 +159,28 @@ fps (~30% of the frame) has to come from a stage removed, not a function
 tuned: ADR-0040's 7d (collision on the integer hulls) and 7f (the
 engine's mixing into the OS mixer), and the float callers above moved to
 integers as a class.
+
+## Step 5: the float callers ranked, and the dynamic lights' luxels in integers (built, kept)
+
+**The ranking** (run 342a, every helper sample charged to the function at
+its return address): the helpers are 16.1% of the fight, and no caller
+holds more than 1.8% with its own samples: `RP_HullCheckQ` 1.8% (its
+crossings' divide and lerps, which go straight into the game's physics:
+left), `R_AddDynamicLights` 1.0% (two thirds in helpers), `CL_PredictMovement`
+0.9% (copies), `R_StudioSetupChrome` 0.9%, `S_PaintChannels` 1.3% (a
+memset), `R_StudioSetupLighting` 0.7%. The fused dot (`rp_fdot3_asm`)
+costs what its separate calls did (run 239), so most of this class only
+goes faster as integers, and outside the luxel loop below those are
+close, not bit for bit (a ruling for the owner, as kit 51's bones were).
+
+| | What it does |
+|---|---|
+| ref_soft / ref_gl | each luxel a light reaches walked in floats: the distances' subtract, multiply and truncation, a compare, the amount's subtract, multiply and truncation (about nine software-float calls a lit luxel on the PXA270) |
+| **Ours** | the same loop in integers from the floats' bits (`r_surf.c`): the amount `floor(256 rad) - 256 dist` (exact: `rad - dist` is exact in float when 0 <= dist < rad), the test `dist < ceil(minlight)`, each distance from `sl`, `tl` in 16.16 with a flag for the bits below; a light whose fraction lies within 2^-8 of a whole number (where the float subtraction's rounding could cross one), `sample_frac` not 1, or values past 2^13 keeps the float loop |
+| Why it wins | the same sums bit for bit, no calls in the loop |
+| Old way | `-rpdlfloat`; `-rpdlcheck` both ways on every luxel |
+| Proof | the PC (gcc, SSE floats: IEEE as our helpers, `-rpfloat`): 2.67 million lights, 329 million luxels, 0 differ; the X51v (run 345c): 111,439 lit luxels of the fight, 0 differ, no light on the float loop |
+
+**Runs 345a-d (2026-11-23, one kit):** new 17,360 and 17,360 ms (28.8
+fps), `-rpdlfloat` 17,406 (the build before it, run 342a: 17,404),
+`-rpdlcheck` 17,905. **Kept: 44 ms over the 500 frames.**
