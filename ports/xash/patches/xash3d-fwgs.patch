@@ -1237,13 +1237,39 @@ index 2cd7030..00d288b 100644
  
  	if((int)(endtime - snd.soundtime) > samps )
 diff --git a/engine/client/sound/s_mix.c b/engine/client/sound/s_mix.c
-index fe5ece4..2c43331 100644
+index fe5ece4..cd7a04f 100644
 --- a/engine/client/sound/s_mix.c
 +++ b/engine/client/sound/s_mix.c
-@@ -19,14 +19,23 @@ GNU General Public License for more details.
+@@ -18,15 +18,49 @@ GNU General Public License for more details.
+ #include "client.h"
  
  static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAINTBUFFER_SIZE+1)];
++/*
++RetroPane (R360 step 6, ADR-0040 7f under ADR-0039): the paint buffer
++only when something paints into it. Run 342a: S_PaintChannels 1.3% of
++the fight with its memset. Xash (and Quake before it) clears the paint
++buffer, adds the room buffer into it with the master gain, then clips the
++paint buffer out to the DMA ring: a clear, an add pass and a re-read of
++6 KB a pass, though in play only the voice and background-music streams
++paint there directly. Here the paint buffer is cleared only when such a
++stream paints (rp_paint_used), and otherwise the transfer clips the room
++buffer with the gain straight out (0 + x == x: the same samples).
++-rpsndfuse0 the old way; -rpsndcheck both, every output sample compared.
++*/
++static int      rp_paint_used, rp_paint_nums, rp_sndfuse = -1, rp_sndcheck;
++static uint32_t rp_snd_passes, rp_snd_fused, rp_snd_samples, rp_snd_differ, rp_snd_said;
  
++/* the paint buffer cleared before a stream first paints into it this pass */
++static portable_samplepair_t *RP_PaintBuffer( void )
++{
++	if( !rp_paint_used )
++	{
++		memset( paintbuffer, 0, ( rp_paint_nums + 1 ) * sizeof( portable_samplepair_t ));
++		rp_paint_used = 1;
++	}
++	return paintbuffer;
++}
++
 +/*
 +RetroPane (kit 68, run 65: S_MixChannelToBuffer 1.7% of the play, its 8-bit
 +loop loading each source byte twice and a volume from the stack each
@@ -1266,7 +1292,7 @@ index fe5ece4..2c43331 100644
  		} \
  	} \
  
-@@ -34,25 +43,50 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -34,25 +68,50 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	static void S_MixStereo ## x( portable_samplepair_t *pbuf, const int *volume, const void *buf, int num_samples ) \
  	{ \
  		const int##x##_t *data = buf; \
@@ -1324,7 +1350,7 @@ index fe5ece4..2c43331 100644
  		} \
  	} \
  
-@@ -61,13 +95,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -61,13 +120,14 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1344,7 +1370,7 @@ index fe5ece4..2c43331 100644
  		} \
  	} \
  
-@@ -76,14 +111,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -76,14 +136,15 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1366,7 +1392,7 @@ index fe5ece4..2c43331 100644
  		} \
  	} \
  
-@@ -92,15 +128,16 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
+@@ -92,15 +153,16 @@ static portable_samplepair_t roombuffer[(PAINTBUFFER_SIZE+1)], paintbuffer[(PAIN
  	{ \
  		const int##x##_t *data = buf; \
  		uint sample_idx = 0; \
@@ -1390,6 +1416,140 @@ index fe5ece4..2c43331 100644
  		} \
  	} \
  
+@@ -443,7 +505,7 @@ static int S_MixRawChannels( int end )
+ 		{
+ 			// for streams we don't have fancy things like volume controls
+ 			// or DSP processing or upsampling, so paint it directly into result buffer
+-			pbuf = paintbuffer;
++			pbuf = RP_PaintBuffer( );
+ 		}
+ 		else
+ 		{
+@@ -542,10 +604,48 @@ void S_ClearBuffers( int num_samples )
+ 	memset( paintbuffer, 0, num_bytes );
+ }
+ 
++/* The room buffer with the gain (or silence) clipped straight into the
++   DMA ring: S_TransferPaintBuffer's walk, each sample what the paint
++   buffer would have held (0 plus the gain's sum) */
++static void RP_TransferRoom( const portable_samplepair_t *src, int endtime, int mixed, int gain )
++{
++	const int *snd_p = (const int *)src;
++	const int sampleMask = (( snd.samples >> 1 ) - 1 );
++	int       lpaintedtime = snd.paintedtime;
++
++	SNDDMA_BeginPainting( );
++	while( lpaintedtime < endtime )
++	{
++		int    lpos = lpaintedtime & sampleMask;
++		short *snd_out = (short *)snd.buffer + ( lpos << 1 );
++		int    n = ( snd.samples >> 1 ) - lpos;
++
++		if( lpaintedtime + n > endtime )
++			n = endtime - lpaintedtime;
++		n <<= 1;
++		if( !mixed )
++			memset( snd_out, 0, n * sizeof( short ));
++		else if( gain == 256 )
++			for( int i = 0; i < n; i++ )
++				snd_out[i] = CLIP16( snd_p[i] );
++		else
++			for( int i = 0; i < n; i++ )
++				snd_out[i] = CLIP16(( snd_p[i] * gain ) >> 8 );
++		snd_p += n;
++		lpaintedtime += n >> 1;
++	}
++	SNDDMA_Submit( );
++}
++
+ void S_PaintChannels( int endtime )
+ {
+ 	int gain = S_GetMasterVolume() * 256;
+ 
++	if( rp_sndfuse < 0 )
++	{
++		rp_sndfuse = !Sys_CheckParm( "-rpsndfuse0" );
++		rp_sndcheck = Sys_CheckParm( "-rpsndcheck" ) != 0;
++	}
+ 	while( snd.paintedtime < endtime )
+ 	{
+ 		// if paintbuffer is smaller than DMA buffer
+@@ -555,7 +655,17 @@ void S_PaintChannels( int endtime )
+ 
+ 		const int num_samples = end - snd.paintedtime;
+ 
+-		S_ClearBuffers( num_samples );
++		if( rp_sndfuse )
++		{
++			memset( roombuffer, 0, ( num_samples + 1 ) * sizeof( portable_samplepair_t ));
++			rp_paint_used = 0;
++			rp_paint_nums = num_samples;
++		}
++		else
++		{
++			S_ClearBuffers( num_samples );
++			rp_paint_used = 1;
++		}
+ 
+ 		int room_channels = S_MixNormalChannelsToRoombuffer( roombuffer, end );
+ 
+@@ -565,11 +675,52 @@ void S_PaintChannels( int endtime )
+ 		if( cls.key_dest != key_menu )
+ 			SX_RoomFX( roombuffer, num_samples );
+ 
+-		if( room_channels > 0 || cls.key_dest != key_menu )
+-			S_MixBufferWithGain( paintbuffer, roombuffer, num_samples, gain );
++		const int mixed = room_channels > 0 || cls.key_dest != key_menu;
+ 
+-		// transfer out according to DMA format
+-		S_TransferPaintBuffer( paintbuffer, end );
++		rp_snd_passes++;
++		if( !rp_paint_used )
++		{
++			/* nothing painted into the paint buffer: straight out */
++			static short ref[( PAINTBUFFER_SIZE + 1 ) * 2];
++
++			rp_snd_fused++;
++			if( rp_sndcheck )
++			{
++				/* the old way's samples, kept to compare */
++				memset( paintbuffer, 0, ( num_samples + 1 ) * sizeof( portable_samplepair_t ));
++				if( mixed )
++					S_MixBufferWithGain( paintbuffer, roombuffer, num_samples, gain );
++				for( int i = 0; i < num_samples; i++ )
++				{
++					ref[2 * i] = CLIP16( paintbuffer[i].left );
++					ref[2 * i + 1] = CLIP16( paintbuffer[i].right );
++				}
++			}
++			RP_TransferRoom( roombuffer, end, mixed, gain );
++			if( rp_sndcheck )
++			{
++				const int mask = ( snd.samples >> 1 ) - 1;
++
++				for( int i = 0; i < num_samples; i++ )
++				{
++					const short *o = (const short *)snd.buffer + ((( snd.paintedtime + i ) & mask ) << 1 );
++
++					rp_snd_samples += 2;
++					rp_snd_differ += ( o[0] != ref[2 * i] ) + ( o[1] != ref[2 * i + 1] );
++				}
++				if(( rp_snd_passes & 255 ) == 1 && rp_snd_said++ < 64 )
++					Con_Printf( "rp-snd: -rpsndcheck: %u output samples compared, %u differed (must be 0); %u passes, %u of them straight from the room buffer\n",
++						rp_snd_samples, rp_snd_differ, rp_snd_passes, rp_snd_fused );
++			}
++		}
++		else
++		{
++			if( mixed )
++				S_MixBufferWithGain( paintbuffer, roombuffer, num_samples, gain );
++
++			// transfer out according to DMA format
++			S_TransferPaintBuffer( paintbuffer, end );
++		}
+ 		snd.paintedtime = end;
+ 	}
+ }
 diff --git a/engine/client/sound/s_stream.c b/engine/client/sound/s_stream.c
 index e74a4d2..ced56e1 100644
 --- a/engine/client/sound/s_stream.c

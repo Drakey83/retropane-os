@@ -184,3 +184,17 @@ close, not bit for bit (a ruling for the owner, as kit 51's bones were).
 **Runs 345a-d (2026-11-23, one kit):** new 17,360 and 17,360 ms (28.8
 fps), `-rpdlfloat` 17,406 (the build before it, run 342a: 17,404),
 `-rpdlcheck` 17,905. **Kept: 44 ms over the 500 frames.**
+
+## Step 6: the paint buffer only when something paints into it (built, kept)
+
+| | What it does |
+|---|---|
+| Quake / Xash | each pass clears the room and paint buffers, mixes into the room buffer, adds it with the master gain into the cleared paint buffer, then clips the paint buffer out to the DMA ring (a 6 KB clear, an add pass and a re-read a pass) |
+| **Ours** | the paint buffer cleared only when a voice or music stream paints into it directly (the only writers); otherwise the transfer clips the room buffer with the gain straight out: 0 + x is x, the same samples (`s_mix.c`, `RP_TransferRoom`) |
+| Old way | `-rpsndfuse0`; `-rpsndcheck` both, every output sample compared |
+
+**Runs 346a-d (2026-11-23, one kit):** new 17,304 and 17,308 ms (28.8
+fps), `-rpsndfuse0` 17,367 (the build before it: 17,360),
+`-rpsndcheck` 18,002 with 1,936,248 output samples compared, 0 differed,
+every pass straight from the room buffer. **Kept: ~60 ms over the 500
+frames.**
