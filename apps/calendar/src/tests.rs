@@ -220,9 +220,35 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
         },
         &cx,
     );
+    // Make a task (tasks-rule0.md, the tie-in): one task in Tasks with
+    // the appointment's title, due on its day, its time and place in the
+    // note; a second tap makes no second one.
+    for _ in 0..2 {
+        c.event(
+            Event::PenUp {
+                x: 100,
+                y: E_DELETE + 20,
+            },
+            &cx,
+        );
+    }
+    assert!(c.edit.unwrap().task_made);
+    {
+        let g = pim.borrow();
+        let s = g.as_ref().unwrap();
+        let tasks: std::vec::Vec<_> = s.all(Kind::Task).collect();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].text(tag::TITLE), b"Dentist");
+        // Weekly from Monday 1 January 2024: the next one from today is today.
+        assert_eq!(tasks[0].num(tag::DUE), Some(19_723));
+        assert_eq!(
+            tasks[0].text(tag::NOTE),
+            b"From Calendar: Mon 1 Jan, 3:05 PM"
+        );
+    }
     c.event(
         Event::PenUp {
-            x: 200,
+            x: 360,
             y: E_DELETE + 20,
         },
         &cx,
@@ -237,7 +263,7 @@ fn the_editor_changes_start_repeat_and_alert_then_deletes_on_the_second_tap() {
     );
     c.event(
         Event::PenUp {
-            x: 200,
+            x: 360,
             y: E_DELETE + 20,
         },
         &cx,
@@ -498,13 +524,16 @@ fn the_dpad_works_the_editor_the_calendars_and_the_quick_add_sheet() {
         c.event(Event::Key(Key::Down), &cx);
     }
     assert_eq!(c.edit.unwrap().row, Some(8));
-    c.event(Event::Key(Key::Enter), &cx);
+    // Right is Delete (the centre is Make a task, beside it).
+    c.event(Event::Key(Key::Right), &cx);
     assert!(c.edit.unwrap().confirm_delete);
     c.event(Event::Key(Key::Up), &cx);
     c.event(Event::Key(Key::Down), &cx);
     assert!(!c.edit.unwrap().confirm_delete);
     c.event(Event::Key(Key::Enter), &cx);
-    c.event(Event::Key(Key::Enter), &cx);
+    assert!(c.edit.unwrap().task_made && !c.edit.unwrap().confirm_delete);
+    c.event(Event::Key(Key::Right), &cx);
+    c.event(Event::Key(Key::Right), &cx);
     assert!(pim.borrow().as_ref().unwrap().get(id).is_none());
     // The calendars' list: its rows and the key that asks the PC are in
     // reach; the centre hides a calendar as a tap does.
@@ -744,4 +773,64 @@ fn a_start_and_an_alert_are_set_to_the_minute() {
     );
     let e = c.edit.unwrap();
     assert_eq!((e.alert, e.alert_minutes()), (5, Some(7)));
+}
+
+/// A repeating task shows on each of its days to come in the agenda; an
+/// after-done one on its due day only.
+#[test]
+fn repeating_tasks_show_on_each_of_their_days() {
+    use rp_pim::repeat::{Every, Rule};
+    let pim = store();
+    {
+        let mut g = pim.borrow_mut();
+        let s = g.as_mut().unwrap();
+        let rule = |after| {
+            Rule {
+                every: Every::Day,
+                n: 2,
+                days: 0,
+                until: None,
+                after,
+            }
+            .pack(19_723)
+            .to_le_bytes()
+        };
+        let due = 19_723u32.to_le_bytes();
+        let (fixed, after) = (rule(false), rule(true));
+        s.put(
+            Kind::Task,
+            None,
+            &[
+                (tag::TITLE, b"Run"),
+                (tag::DUE, &due),
+                (tag::REPEAT, &fixed),
+            ],
+        )
+        .unwrap();
+        s.put(
+            Kind::Task,
+            None,
+            &[
+                (tag::TITLE, b"Water"),
+                (tag::DUE, &due),
+                (tag::REPEAT, &after),
+            ],
+        )
+        .unwrap();
+    }
+    let cx = ctx(pim);
+    let mut c = opened(19_723);
+    draw(&mut c, &cx);
+    let titles = |c: &Calendar, day| {
+        let (list, n) = c.on(day);
+        list[..n]
+            .iter()
+            .filter(|a| a.task)
+            .map(|a| a.title.get().to_vec())
+            .collect::<std::vec::Vec<_>>()
+    };
+    assert_eq!(titles(&c, 19_723), [b"Run".to_vec(), b"Water".to_vec()]);
+    assert!(titles(&c, 19_724).is_empty());
+    assert_eq!(titles(&c, 19_725), [b"Run".to_vec()]);
+    assert_eq!(titles(&c, 19_727), [b"Run".to_vec()]);
 }

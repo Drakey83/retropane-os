@@ -151,6 +151,9 @@ struct Edit {
     read_only: bool,
     typing: Option<EditText>,
     confirm_delete: bool,
+    /// "Make a task" was pressed: the task is in Tasks (the key says so
+    /// and makes no second one).
+    task_made: bool,
     /// The D-pad's row ([`EDIT_ROWS`]): up and down move it, left and
     /// right change its value, the centre types in it or presses it.
     row: Option<u8>,
@@ -204,6 +207,21 @@ const EDIT_ROWS: [(u16, u16); 9] = [
     (E_CAL + 14, 30),
     (E_DELETE, 40),
 ];
+
+/// The editor's last row: "Make a task" and, for an appointment of this
+/// device, Delete beside it (a calendar link's is read only: Make a task
+/// alone, the width of the row).
+const fn edit_keys(read_only: bool) -> (Rect, Option<Rect>) {
+    if read_only {
+        (Rect::new(MARGIN, E_DELETE, WIDE, 40), None)
+    } else {
+        let half = (WIDE - 8) / 2;
+        (
+            Rect::new(MARGIN, E_DELETE, half, 40),
+            Some(Rect::new(MARGIN + half + 8, E_DELETE, half, 40)),
+        )
+    }
+}
 
 /// The key on the title band that opens the calendars.
 const CALENDARS_KEY: Rect = Rect::new(W - MARGIN - 128, 46, 128, 30);
@@ -555,7 +573,11 @@ impl Calendar {
             }
         }
         // Tasks on their due days (calendar-rule0.md, tasks-rule0.md: the
-        // tie-in), the open ones, in the tasks' blue.
+        // tie-in), the open ones, in the tasks' blue; a repeating one on
+        // each of its days to come as well (Fantastical shows repeating
+        // reminders once; the agenda is where the week is planned). An
+        // "after done" task shows on its due day only: its next day is
+        // not known until it is done.
         for r in store
             .all(Kind::Task)
             .filter(|r| r.num(tag::DONE).is_none() && r.num(tag::PARENT).is_none())
@@ -563,15 +585,27 @@ impl Calendar {
             let Some(due) = r.num(tag::DUE).map(|d| d as i32) else {
                 continue;
             };
-            if k < MAX && due >= from && due < from + WINDOW {
+            let rule = r
+                .num(tag::REPEAT)
+                .and_then(|v| rp_pim::repeat::Rule::unpack(v, due));
+            for day in due.max(from)..from + WINDOW {
+                if k >= MAX {
+                    break;
+                }
+                if day != due && !rule.is_some_and(|x| x.occurs(due, day)) {
+                    if rule.is_none() {
+                        break;
+                    }
+                    continue;
+                }
                 self.appts[k] = Some(Appt {
-                    day: due,
+                    day,
                     start: 0,
                     len: 0,
                     title: Text::of(r.text(tag::TITLE)),
                     place: Text::EMPTY,
                     cal: 0,
-                    repeats: false,
+                    repeats: rule.is_some(),
                     task: true,
                     id: r.id,
                 });
@@ -604,6 +638,7 @@ impl Calendar {
             read_only: false,
             typing: None,
             confirm_delete: false,
+            task_made: false,
             row: None,
         };
         match id {
@@ -726,6 +761,65 @@ impl Calendar {
             self.line_n = 0;
         }
         ok
+    }
+
+    /// "Make a task" (tasks-rule0.md: the tie-in with Calendar): a task in
+    /// Tasks' first list with the appointment's title, due on its day (a
+    /// repeating one's next day from the one shown), and a note saying
+    /// where it came from: when and where the appointment is. Fantastical
+    /// copies the title alone; the note keeps the time and place with the
+    /// task, so it reads on its own in Tasks. True once it is kept.
+    fn make_task(cx: &Ctx, e: &Edit) -> bool {
+        let Some(cell) = cx.pim else { return false };
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(store) = guard.as_mut() else {
+            return false;
+        };
+        let rule =
+            e.id.and_then(|id| store.get(id))
+                .and_then(|r| r.num(tag::REPEAT))
+                .and_then(|v| rp_pim::repeat::Rule::unpack(v, e.day));
+        let due = match rule {
+            Some(r) => {
+                let from = e.day.max(cx.now.day);
+                (from..from + 1462)
+                    .find(|&d| r.occurs(e.day, d))
+                    .unwrap_or(e.day)
+            }
+            None => e.day,
+        };
+        let mut note = Buf::<96>::new();
+        let dd = date::date_of(due);
+        note.s(b"From Calendar: ")
+            .s(date::WEEKDAYS[usize::from(date::weekday(due))].as_bytes())
+            .s(b" ")
+            .num(u32::from(dd.day))
+            .s(b" ")
+            .s(&MONTHS[usize::from(dd.month - 1)][..3]);
+        if !e.all_day {
+            note.s(b", ").s(clock(e.start).get());
+        }
+        if e.place_n > 0 {
+            note.s(b", ").s(&e.place[..e.place_n]);
+        }
+        let list = store.all(Kind::List).next().map(|l| l.id.to_le_bytes());
+        let day = (due.max(0) as u32).to_le_bytes();
+        let mut fields: [(u8, &[u8]); 4] = [
+            (tag::TITLE, &e.title[..e.title_n]),
+            (tag::DUE, &day),
+            (tag::NOTE, note.get()),
+            (tag::LIST, &[]),
+        ];
+        let n = match &list {
+            Some(l) => {
+                fields[3].1 = l;
+                4
+            }
+            None => 3,
+        };
+        e.title_n > 0 && store.put(Kind::Task, None, &fields[..n]).is_ok()
     }
 
     /// The editor's grouped cards.
@@ -853,29 +947,47 @@ impl Calendar {
             &names[..n],
             e.cal.min(n.saturating_sub(1)),
         );
+        // A kept appointment (a calendar link's too) makes a task in
+        // Tasks; one of this device's can be deleted beside it.
+        if e.id.is_some() {
+            let (made, delete) = edit_keys(e.read_only);
+            kit::key(f, cx, made, kit::KeyState::Rest);
+            kit::centred(
+                f,
+                made,
+                made.y + 27,
+                cx.fonts.ui,
+                if e.task_made { tint::TASKS } else { TEXT },
+                if e.task_made {
+                    b"Task made in Tasks"
+                } else {
+                    b"Make a task"
+                },
+            );
+            if let Some(r) = delete {
+                kit::key(f, cx, r, kit::KeyState::Down);
+                kit::centred(
+                    f,
+                    r,
+                    r.y + 27,
+                    cx.fonts.ui,
+                    kit::LATE,
+                    if e.confirm_delete {
+                        b"Tap again"
+                    } else {
+                        b"Delete"
+                    },
+                );
+            }
+        }
         if e.read_only {
             kit::text(
                 f,
                 MARGIN + 4,
-                E_DELETE + 28,
+                E_DELETE + 64,
                 cx.fonts.ui,
                 DIM,
                 b"From a calendar link: read only",
-            );
-        } else if e.id.is_some() {
-            let r = Rect::new(MARGIN, E_DELETE, WIDE, 40);
-            kit::key(f, cx, r, kit::KeyState::Down);
-            kit::centred(
-                f,
-                r,
-                r.y + 27,
-                cx.fonts.ui,
-                kit::LATE,
-                if e.confirm_delete {
-                    b"Tap again to delete"
-                } else {
-                    b"Delete"
-                },
             );
         }
         if let Some(&(top, h)) = e.row.and_then(|r| EDIT_ROWS.get(usize::from(r))) {
@@ -900,7 +1012,7 @@ impl Calendar {
         let Some(e) = self.edit.as_mut() else {
             return Reply::Nothing;
         };
-        let last = if e.id.is_some() && !e.read_only { 8 } else { 7 };
+        let last = if e.id.is_some() { 8 } else { 7 };
         let to = match (k, e.row) {
             (Key::Down, None) => 0,
             (Key::Up, None) => last,
@@ -912,7 +1024,17 @@ impl Calendar {
                 let right = k != Key::Left;
                 let x = match r {
                     // (The centre on the start: its time pad.)
-                    0 | 1 | 3 | 8 if k == Key::Enter => W / 2,
+                    0 | 1 | 3 if k == Key::Enter => W / 2,
+                    // The last row: Make a task (the centre and left), and
+                    // Delete on the right.
+                    8 => {
+                        let (made, delete) = edit_keys(e.read_only);
+                        match (k, delete) {
+                            (Key::Right, Some(d)) => d.x + d.w / 2,
+                            (Key::Right, None) => return Reply::Nothing,
+                            _ => made.x + made.w / 2,
+                        }
+                    }
                     2..=4 if k != Key::Enter => {
                         if right {
                             W - MARGIN - 30
@@ -966,10 +1088,22 @@ impl Calendar {
         };
         let hit = |top: u16, h: u16| y >= top && y < top + h;
         let chip = |n: usize| usize::from((x.saturating_sub(MARGIN)) * n as u16 / WIDE).min(n - 1);
+        let (made, delete) = edit_keys(e.read_only);
+        if e.id.is_some() && made.contains_point(x, y) {
+            e.confirm_delete = false;
+            if !e.task_made {
+                let e = *e;
+                if let Some(ed) = self.edit.as_mut() {
+                    ed.task_made = Self::make_task(cx, &e);
+                }
+            }
+            return Reply::Redraw;
+        }
         if e.read_only {
             return Reply::Nothing;
         }
-        if !hit(E_DELETE, 40) {
+        let on_delete = delete.is_some_and(|d| d.contains_point(x, y));
+        if !on_delete {
             e.confirm_delete = false;
         }
         if hit(E_TITLE, 40) {
@@ -1009,7 +1143,7 @@ impl Calendar {
             }
         } else if hit(E_CAL + 14, 30) && n_cals > 0 {
             e.cal = chip(n_cals);
-        } else if hit(E_DELETE, 40) && e.id.is_some() {
+        } else if on_delete && e.id.is_some() {
             if e.confirm_delete {
                 let id = e.id;
                 self.edit = None;
