@@ -179,12 +179,14 @@ pub const BINDS_FILE: &str = "rp_binds.cfg";
 /// weapon before, the wireless button the next, the owner's swap of run
 /// 277, which 48051789 made in [`BINDS`] without raising this, so the saved
 /// config's layout 3 kept the old order: the owner, run 279, "the record
-/// and wifi swap got swapped back"). [`LAYOUT_OF`] holds the binds' sum
+/// and wifi swap got swapped back"; 5: the touch keys' glass at 0.18, the
+/// owner 2026-11-22, which 0c35f47a made in [`BINDS`] without raising this,
+/// so his saved layout 4 kept 0.25). [`LAYOUT_OF`] holds the binds' sum
 /// each layout was raised for: a test fails a change to [`BINDS`] that
 /// left the number as it was.
-pub const LAYOUT: u32 = 4;
+pub const LAYOUT: u32 = 5;
 /// The CRC-32 of [`BINDS`] when [`LAYOUT`] was last raised.
-pub const LAYOUT_OF: u32 = 0x53505B6C;
+pub const LAYOUT_OF: u32 = 0xFBEB6547;
 
 /// The 2700G's clock while the game draws (the runner's `-rpclock`: PLL
 /// M, N, P, the cores' divider): 125.67 / 1, the owner's ruling of
@@ -963,6 +965,32 @@ engine c
         assert!(
             body.contains("RP_Put( RP_Bits( zi ));") && body.contains("RP_Put( RP_Bits( dist * zi ));"),
             "the depth word and the texture's perspective word kept apart"
+        );
+    }
+
+    /// R352's guard (after run 333): a still brush entity's face in a world
+    /// face's plane and side (c2a5f's steel ribs against the wall's top
+    /// band) is drawn just behind it, so the world wins the tie every frame
+    /// as ref_soft draws it, and the faces are found once a map.
+    #[test]
+    fn brush_faces_in_a_world_plane_lose_the_tie() {
+        let src = include_str!("../../ports/xash/ref_rp/r_emit.c");
+        let tables = src.find("static int RP_WorldTables( void )").expect("RP_WorldTables");
+        let cook = src[tables..].find("RP_CookRead( mod )").expect("the cooked path");
+        assert!(
+            src[tables..tables + cook].contains("RP_CoplanarMark( mod );"),
+            "the ties marked before the cooked map's early return"
+        );
+        let face = src.find("static int RP_ChipFaceFixed(").expect("RP_ChipFaceFixed");
+        let lm = src[face..].find("if( rp_lm_on && RP_ChipFaceLm(").expect("option B");
+        let body = &src[face..face + lm];
+        assert!(
+            body.contains("rp_bview.still") && body.contains("zis[i] -= RP_COPLANAR_BIAS;"),
+            "a marked face of an unmoved entity pushed back before either path draws it"
+        );
+        assert!(
+            body.find("nearzi = zis[i];") < body.find("zis[i] -= RP_COPLANAR_BIAS;"),
+            "the mip level taken from the face's own depth"
         );
     }
 
